@@ -1,0 +1,1317 @@
+//! FML-style mod load: discover jars, order dependencies, construct `@Mod` classes,
+//! bind `DeferredRegister`s, and post the NeoForge lifecycle on the mod and game buses.
+//!
+//! Bytecode calls into NeoForge and Minecraft land in [`FmlLoader`]'s `HostApi`.
+//! The host covers the registration and lifecycle surface a typical Java mod touches.
+//! Chunk streaming, `BlockState` palettes, and the real packet codec are still absent;
+//! `ServerLevel.setBlock(int, int, int, String)` is the stand-in for `Level#setBlock`.
+
+use crate::{
+    dispatch_event_on_bus, is_mod_bus_event_class, BusId, ContentProperties, DeferredSupplier,
+    EventCallback, EventPriority, NeoForgeState, REGISTRATION_ORDER,
+};
+use mmga_classfile::{
+    op, resolve_mod_load_order, ClassFile, DiscoveredModEntrypoint, DiscoveredSubscriber,
+    MemberRef, ModEntry, ModJar, ModLoaderKind, ModsToml, SubscriberBusTarget,
+};
+use mmga_runtime::{
+    alloc_new_object, invoke_closure, invoke_member, Data, ExecCtx, HostApi, LinkedSpace, Rt, V,
+};
+use std::collections::{BTreeMap, BTreeSet};
+
+const REGISTER_EVENT: &str = "net/neoforged/neoforge/registries/RegisterEvent";
+
+const CTOR_PREFERENCE: &[&str] = &[
+    "(Lnet/neoforged/bus/api/IEventBus;Lnet/neoforged/fml/ModContainer;)V",
+    "(Lnet/neoforged/bus/api/IEventBus;)V",
+    "(Lnet/neoforged/fml/ModContainer;)V",
+    "()V",
+];
+
+/// Where a loaded mod set sits in the FML state machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadPhase {
+    Discovered,
+    Constructed,
+    Registered,
+    CommonSetup,
+    SidedSetup,
+    LoadComplete,
+    ServerStarted,
+    Running,
+    Stopped,
+}
+
+impl LoadPhase {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Discovered => "discovered",
+            Self::Constructed => "constructed",
+            Self::Registered => "registered",
+            Self::CommonSetup => "common-setup",
+            Self::SidedSetup => "sided-setup",
+            Self::LoadComplete => "load-complete",
+            Self::ServerStarted => "server-started",
+            Self::Running => "running",
+            Self::Stopped => "stopped",
+        }
+    }
+}
+
+/// One mod accepted onto the load list.
+#[derive(Debug, Clone)]
+pub struct LoadedMod {
+    pub mod_id: String,
+    pub version: String,
+    pub display_name: String,
+    pub source_name: String,
+    pub entry_class: Option<String>,
+    pub instance: Option<V>,
+    constructor_descriptors: Vec<String>,
+    subscribers: Vec<DiscoveredSubscriber>,
+}
+
+/// Jars linked into a class space plus the host that will execute them.
+pub struct PreparedLoad {
+    pub linked: LinkedSpace,
+    pub loader: FmlLoader,
+}
+
+impl std::fmt::Debug for PreparedLoad {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedLoad")
+            .field("phase", &self.loader.phase)
+            .field("mods", &self.loader.mods)
+            .finish_non_exhaustive()
+    }
+}
+
+/// NeoForge `FML` / `ModLoader` host. Owns [`NeoForgeState`] and the bus handles mods see.
+#[derive(Debug)]
+pub struct FmlLoader {
+    pub state: NeoForgeState,
+    pub phase: LoadPhase,
+    pub mods: Vec<LoadedMod>,
+    pub dedicated_server: bool,
+    /// Phase labels in the order `bootstrap` entered them.
+    pub trace: Vec<&'static str>,
+    game_bus: Option<V>,
+    mod_buses: BTreeMap<String, V>,
+    mod_containers: BTreeMap<String, V>,
+}
+
+impl PreparedLoad {
+    /// Parses mods, rejects missing / incompatible / cyclic dependencies, and links classes.
+    pub fn from_jars(jars: Vec<ModJar>, dedicated_server: bool) -> Result<Self, String> {
+        let manifests = jars
+            .iter()
+            .map(manifest_for)
+            .collect::<Result<Vec<_>, _>>()?;
+        let refs: Vec<&ModsToml> = manifests.iter().collect();
+        let order = resolve_mod_load_order(&refs, dedicated_server)?;
+
+        let mut jar_of: BTreeMap<String, usize> = BTreeMap::new();
+        for (idx, manifest) in manifests.iter().enumerate() {
+            for entry in &manifest.mods {
+                if jar_of.insert(entry.mod_id.clone(), idx).is_some() {
+                    return Err(format!("duplicate mod id `{}`", entry.mod_id));
+                }
+            }
+        }
+
+        let mut classes: BTreeMap<String, ClassFile> = BTreeMap::new();
+        for jar in &jars {
+            for (name, cf) in &jar.classes {
+                if classes.contains_key(name) {
+                    return Err(format!(
+                        "duplicate class `{name}` (also in `{}`)",
+                        jar.source_name
+                    ));
+                }
+                classes.insert(name.clone(), cf.clone());
+            }
+        }
+
+        let mut mods = Vec::with_capacity(order.len());
+        for mod_id in &order {
+            let jar_idx = jar_of[mod_id];
+            let jar = &jars[jar_idx];
+            let manifest = &manifests[jar_idx];
+            let entry = manifest
+                .mods
+                .iter()
+                .find(|m| &m.mod_id == mod_id)
+                .ok_or_else(|| format!("mod `{mod_id}` vanished during ordering"))?;
+            let entrypoints = jar.discover_entrypoints();
+            let entrypoint = entrypoints.into_iter().find(|ep| &ep.mod_id == mod_id);
+            if let Some(ep) = &entrypoint {
+                if !ep.dist_restriction.matches_server(dedicated_server) {
+                    continue;
+                }
+            }
+            let sole = manifest.mods.len() == 1;
+            mods.push(loaded_mod(entry, jar, entrypoint, sole));
+        }
+
+        let mut linked = LinkedSpace::new();
+        linked.add_bytecode_classes(classes);
+        let mut loader = FmlLoader {
+            state: NeoForgeState::new(),
+            phase: LoadPhase::Discovered,
+            mods,
+            dedicated_server,
+            trace: Vec::new(),
+            game_bus: None,
+            mod_buses: BTreeMap::new(),
+            mod_containers: BTreeMap::new(),
+        };
+        loader.enter(LoadPhase::Discovered);
+        Ok(Self { linked, loader })
+    }
+
+    pub fn bootstrap(&mut self, rt: &mut Rt) -> Result<(), String> {
+        self.loader.bootstrap(rt, &self.linked)
+    }
+}
+
+impl FmlLoader {
+    fn enter(&mut self, phase: LoadPhase) {
+        self.phase = phase;
+        self.trace.push(phase.label());
+    }
+
+    /// Constructs mods and advances through server start.
+    pub fn bootstrap(&mut self, rt: &mut Rt, linked: &LinkedSpace) -> Result<(), String> {
+        let count = self.mods.len();
+        for index in 0..count {
+            self.construct_one(rt, linked, index)?;
+            self.register_subscribers(index)?;
+        }
+        self.enter(LoadPhase::Constructed);
+
+        self.run_registration(rt, linked)?;
+        self.enter(LoadPhase::Registered);
+
+        self.post_each_mod(
+            rt,
+            linked,
+            "net/neoforged/fml/event/lifecycle/FMLCommonSetupEvent",
+        )?;
+        self.enter(LoadPhase::CommonSetup);
+
+        let sided = if self.dedicated_server {
+            "net/neoforged/fml/event/lifecycle/FMLDedicatedServerSetupEvent"
+        } else {
+            "net/neoforged/fml/event/lifecycle/FMLClientSetupEvent"
+        };
+        self.post_each_mod(rt, linked, sided)?;
+        self.post_each_mod(
+            rt,
+            linked,
+            "net/neoforged/fml/event/lifecycle/InterModEnqueueEvent",
+        )?;
+        self.post_each_mod(
+            rt,
+            linked,
+            "net/neoforged/fml/event/lifecycle/InterModProcessEvent",
+        )?;
+        self.enter(LoadPhase::SidedSetup);
+
+        self.post_each_mod(
+            rt,
+            linked,
+            "net/neoforged/fml/event/lifecycle/FMLLoadCompleteEvent",
+        )?;
+        self.enter(LoadPhase::LoadComplete);
+
+        self.post_game(
+            rt,
+            linked,
+            "net/neoforged/neoforge/event/server/ServerAboutToStartEvent",
+        )?;
+        self.post_game(
+            rt,
+            linked,
+            "net/neoforged/neoforge/event/server/ServerStartingEvent",
+        )?;
+        self.post_game(
+            rt,
+            linked,
+            "net/neoforged/neoforge/event/RegisterCommandsEvent",
+        )?;
+        self.post_game(
+            rt,
+            linked,
+            "net/neoforged/neoforge/event/server/ServerStartedEvent",
+        )?;
+        self.enter(LoadPhase::ServerStarted);
+        self.enter(LoadPhase::Running);
+        Ok(())
+    }
+
+    /// Posts pre/post server tick events and advances [`crate::WorldState`].
+    pub fn tick_server(
+        &mut self,
+        rt: &mut Rt,
+        linked: &LinkedSpace,
+        ticks: u32,
+    ) -> Result<(), String> {
+        for _ in 0..ticks {
+            let watermark = rt.enter_young_epoch();
+            self.post_game(
+                rt,
+                linked,
+                "net/neoforged/neoforge/event/tick/ServerTickEvent$Pre",
+            )?;
+            self.state.world.tick();
+            self.post_game(
+                rt,
+                linked,
+                "net/neoforged/neoforge/event/tick/ServerTickEvent$Post",
+            )?;
+            let _ = rt.collect_young(watermark, &[]);
+        }
+        Ok(())
+    }
+
+    pub fn stop_server(&mut self, rt: &mut Rt, linked: &LinkedSpace) -> Result<(), String> {
+        self.post_game(
+            rt,
+            linked,
+            "net/neoforged/neoforge/event/server/ServerStoppingEvent",
+        )?;
+        self.post_game(
+            rt,
+            linked,
+            "net/neoforged/neoforge/event/server/ServerStoppedEvent",
+        )?;
+        self.enter(LoadPhase::Stopped);
+        Ok(())
+    }
+
+    fn construct_one(
+        &mut self,
+        rt: &mut Rt,
+        linked: &LinkedSpace,
+        index: usize,
+    ) -> Result<(), String> {
+        let Some(class_name) = self.mods[index].entry_class.clone() else {
+            return Ok(());
+        };
+        let desc = pick_constructor(&self.mods[index].constructor_descriptors)?;
+        let mod_id = self.mods[index].mod_id.clone();
+        let bus = self.mod_bus_handle(rt, &mod_id);
+        let container = self.mod_container_handle(rt, &mod_id);
+        let instance = {
+            let mut ctx = ExecCtx {
+                rt,
+                linked,
+                host: self,
+                depth: 0,
+            };
+            let obj = alloc_new_object(&mut ctx, &class_name);
+            let mut args = vec![obj];
+            match desc {
+                "()V" => {}
+                "(Lnet/neoforged/bus/api/IEventBus;)V" => args.push(bus),
+                "(Lnet/neoforged/fml/ModContainer;)V" => args.push(container),
+                "(Lnet/neoforged/bus/api/IEventBus;Lnet/neoforged/fml/ModContainer;)V" => {
+                    args.push(bus);
+                    args.push(container);
+                }
+                other => {
+                    return Err(format!("internal: unhandled constructor `{other}`"));
+                }
+            }
+            let member = MemberRef::new(&class_name, "<init>", desc);
+            let _ = invoke_member(&mut ctx, op::INVOKESPECIAL, &member, &args);
+            obj
+        };
+        raise_if_pending(rt, &format!("constructing mod `{mod_id}`"))?;
+        rt.pin(instance);
+        self.mods[index].instance = Some(instance);
+        Ok(())
+    }
+
+    fn register_subscribers(&mut self, index: usize) -> Result<(), String> {
+        let mod_id = self.mods[index].mod_id.clone();
+        let subscribers = self.mods[index].subscribers.clone();
+        for sub in subscribers {
+            if !sub.side.matches_server(self.dedicated_server) {
+                continue;
+            }
+            for method in &sub.methods {
+                if !method.is_static {
+                    continue;
+                }
+                let bus = match sub.bus {
+                    SubscriberBusTarget::Game => BusId::Game,
+                    SubscriberBusTarget::Mod => BusId::Mod(mod_id.clone()),
+                    SubscriberBusTarget::Auto => {
+                        if is_mod_bus_event_class(&method.event_class) {
+                            BusId::Mod(mod_id.clone())
+                        } else {
+                            BusId::Game
+                        }
+                    }
+                };
+                self.state
+                    .bus
+                    .register_listener(
+                        bus,
+                        method.event_class.clone(),
+                        EventPriority::parse(&method.priority),
+                        method.receive_canceled,
+                        V::NULL,
+                        EventCallback::StaticMethod {
+                            class_name: sub.class_name.clone(),
+                            method_name: method.method_name.clone(),
+                            method_desc: method.method_desc.clone(),
+                        },
+                    )
+                    .map_err(|err| format!("mod `{mod_id}` subscriber: {err}"))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn run_registration(&mut self, rt: &mut Rt, linked: &LinkedSpace) -> Result<(), String> {
+        let mut keys: Vec<String> = REGISTRATION_ORDER.iter().map(|k| (*k).to_owned()).collect();
+        let mut seen: BTreeSet<String> = keys.iter().cloned().collect();
+        for supplier in self.state.registries.pending_suppliers() {
+            if seen.insert(supplier.registry_key.clone()) {
+                keys.push(supplier.registry_key);
+            }
+        }
+        let mod_ids: Vec<String> = self.mods.iter().map(|m| m.mod_id.clone()).collect();
+        for key in &keys {
+            self.flush_registry(rt, linked, key)?;
+            for mod_id in &mod_ids {
+                let registry_key = key.clone();
+                self.post(
+                    rt,
+                    linked,
+                    &BusId::Mod(mod_id.clone()),
+                    REGISTER_EVENT,
+                    |rt, event| {
+                        let label = rt.intern_str(&registry_key);
+                        rt.put_field(event, "registryKey", label);
+                    },
+                )?;
+            }
+            self.flush_registry(rt, linked, key)?;
+        }
+        self.state.registries.freeze();
+        Ok(())
+    }
+
+    fn flush_registry(
+        &mut self,
+        rt: &mut Rt,
+        linked: &LinkedSpace,
+        key: &str,
+    ) -> Result<(), String> {
+        let pending: Vec<DeferredSupplier> = self
+            .state
+            .registries
+            .pending_suppliers()
+            .into_iter()
+            .filter(|supplier| supplier.registry_key == key)
+            .filter(|supplier| {
+                self.state
+                    .registries
+                    .lookup(&supplier.registry_key, &supplier.full_id)
+                    .is_none_or(|entry| entry.mod_id == "minecraft")
+            })
+            .collect();
+        for item in pending {
+            let value = {
+                let mut ctx = ExecCtx {
+                    rt,
+                    linked,
+                    host: self,
+                    depth: 0,
+                };
+                invoke_closure(&mut ctx, item.supplier, &[])
+            };
+            raise_if_pending(rt, &format!("registering `{}`", item.full_id))?;
+            let props = content_properties(rt, &item.registry_key, value);
+            self.state.registries.register_direct(
+                rt,
+                &item.registry_key,
+                &item.full_id,
+                &item.namespace,
+                value,
+                props,
+            );
+        }
+        Ok(())
+    }
+
+    fn post_each_mod(
+        &mut self,
+        rt: &mut Rt,
+        linked: &LinkedSpace,
+        event_class: &str,
+    ) -> Result<(), String> {
+        let ids: Vec<String> = self.mods.iter().map(|m| m.mod_id.clone()).collect();
+        for id in ids {
+            self.post(rt, linked, &BusId::Mod(id), event_class, |_, _| {})?;
+        }
+        Ok(())
+    }
+
+    fn post_game(
+        &mut self,
+        rt: &mut Rt,
+        linked: &LinkedSpace,
+        event_class: &str,
+    ) -> Result<(), String> {
+        self.post(rt, linked, &BusId::Game, event_class, |_, _| {})
+    }
+
+    fn post(
+        &mut self,
+        rt: &mut Rt,
+        linked: &LinkedSpace,
+        bus: &BusId,
+        event_class: &str,
+        decorate: impl FnOnce(&mut Rt, V),
+    ) -> Result<(), String> {
+        let event = rt.new_instance(event_class, 0);
+        rt.put_field(event, "$canceled", V::I(0));
+        decorate(rt, event);
+        let listeners = self.state.bus.matching_listeners(bus, event_class);
+        let (ran, _) = {
+            let mut ctx = ExecCtx {
+                rt,
+                linked,
+                host: self,
+                depth: 0,
+            };
+            dispatch_event_on_bus(&mut ctx, &listeners, event)
+        };
+        self.state.bus.record_dispatch(ran);
+        raise_if_pending(rt, &format!("dispatching `{event_class}`"))
+    }
+
+    fn mod_bus_handle(&mut self, rt: &mut Rt, mod_id: &str) -> V {
+        if let Some(handle) = self.mod_buses.get(mod_id) {
+            return *handle;
+        }
+        let handle = rt.new_pinned_handle(
+            "net/neoforged/bus/api/IEventBus",
+            "mod_event_bus",
+            0,
+            mod_id,
+        );
+        self.mod_buses.insert(mod_id.to_owned(), handle);
+        handle
+    }
+
+    fn game_bus_handle(&mut self, rt: &mut Rt) -> V {
+        if let Some(handle) = self.game_bus {
+            return handle;
+        }
+        let handle = rt.new_pinned_handle(
+            "net/neoforged/bus/api/IEventBus",
+            "game_event_bus",
+            0,
+            "neoforge",
+        );
+        self.game_bus = Some(handle);
+        handle
+    }
+
+    fn mod_container_handle(&mut self, rt: &mut Rt, mod_id: &str) -> V {
+        if let Some(handle) = self.mod_containers.get(mod_id) {
+            return *handle;
+        }
+        let handle =
+            rt.new_pinned_handle("net/neoforged/fml/ModContainer", "mod_container", 0, mod_id);
+        self.mod_containers.insert(mod_id.to_owned(), handle);
+        handle
+    }
+
+    fn bus_id_of(&self, rt: &Rt, bus: V) -> Option<BusId> {
+        let (kind, _, tag, _) = rt.handle_of(bus)?;
+        match kind {
+            "mod_event_bus" => Some(BusId::Mod(tag.to_owned())),
+            "game_event_bus" => Some(BusId::Game),
+            _ => None,
+        }
+    }
+
+    fn add_listener(&mut self, rt: &mut Rt, args: &[V], desc: &str) -> Option<V> {
+        let bus = self.bus_id_of(rt, *args.first()?)?;
+        let (priority, consumer_idx) = if desc.starts_with("(Ljava/util/function/Consumer;)") {
+            (EventPriority::Normal, 1usize)
+        } else if desc
+            .starts_with("(Lnet/neoforged/bus/api/EventPriority;Ljava/util/function/Consumer;)")
+        {
+            let ordinal = args.get(1).and_then(|v| rt.handle_of(*v)).map(|h| h.1);
+            let priority = match ordinal {
+                Some(0) => EventPriority::Highest,
+                Some(1) => EventPriority::High,
+                Some(3) => EventPriority::Low,
+                Some(4) => EventPriority::Lowest,
+                _ => EventPriority::Normal,
+            };
+            (priority, 2usize)
+        } else {
+            return None;
+        };
+        let consumer = *args.get(consumer_idx)?;
+        let event_class = event_class_of_listener(rt, consumer).or_else(|| {
+            rt.throw_exception(
+                "java/lang/IllegalArgumentException",
+                "addListener could not determine the event class from the callback",
+            );
+            None
+        })?;
+        rt.pin(consumer);
+        if let Err(err) = self.state.bus.register_listener(
+            bus,
+            event_class,
+            priority,
+            false,
+            consumer,
+            EventCallback::Consumer(consumer),
+        ) {
+            rt.throw_exception("java/lang/IllegalArgumentException", &err);
+        }
+        Some(V::Void)
+    }
+
+    fn deferred_create(&mut self, rt: &mut Rt, name: &str, args: &[V]) -> Option<V> {
+        let (registry_key, class_name, namespace) = match name {
+            "createBlocks" => (
+                "minecraft:block".to_owned(),
+                "net/neoforged/neoforge/registries/DeferredRegister$Blocks",
+                rt.str_of(*args.first()?)?.to_owned(),
+            ),
+            "createItems" => (
+                "minecraft:item".to_owned(),
+                "net/neoforged/neoforge/registries/DeferredRegister$Items",
+                rt.str_of(*args.first()?)?.to_owned(),
+            ),
+            "create" => {
+                let namespace = args
+                    .iter()
+                    .rev()
+                    .find_map(|v| rt.str_of(*v))
+                    .unwrap_or("minecraft")
+                    .to_owned();
+                let registry_key = args
+                    .first()
+                    .and_then(|v| rt.str_of(*v).map(str::to_owned))
+                    .or_else(|| {
+                        args.first()
+                            .and_then(|v| rt.handle_of(*v))
+                            .map(|(_, _, tag, _)| tag.to_owned())
+                    })
+                    .unwrap_or_else(|| "minecraft:custom".into());
+                (
+                    registry_key,
+                    "net/neoforged/neoforge/registries/DeferredRegister",
+                    namespace,
+                )
+            }
+            _ => return None,
+        };
+        let dr_id = self
+            .state
+            .registries
+            .create_deferred_register(&registry_key, &namespace);
+        Some(rt.new_pinned_handle(class_name, "deferred_register", dr_id, registry_key))
+    }
+
+    fn deferred_register(&mut self, rt: &mut Rt, args: &[V], desc: &str) -> Option<V> {
+        let receiver = *args.first()?;
+        let (dr_id, registry_key) = {
+            let (kind, id, tag, _) = rt.handle_of(receiver)?;
+            if kind != "deferred_register" {
+                return None;
+            }
+            (id, tag.to_owned())
+        };
+        if desc.starts_with("(Ljava/lang/String;Ljava/util/function/Supplier;)") {
+            let name = rt.str_of(*args.get(1)?)?.to_owned();
+            let supplier = *args.get(2)?;
+            let holder_class = holder_class_for(&registry_key);
+            return self.state.registries.enqueue_deferred_entry(
+                rt,
+                dr_id,
+                holder_class,
+                &name,
+                supplier,
+            );
+        }
+        if desc.starts_with("(Lnet/neoforged/bus/api/IEventBus;)") {
+            if let Some(bus) = args.get(1).copied() {
+                if let Some(("mod_event_bus", _, tag, _)) = rt.handle_of(bus) {
+                    let mod_id = tag.to_owned();
+                    self.state.registries.bind_mod_bus(dr_id, &mod_id);
+                }
+            }
+            return Some(V::Void);
+        }
+        None
+    }
+
+    fn content_init(&mut self, rt: &mut Rt, member: &MemberRef, args: &[V]) -> Option<V> {
+        let owner = member.owner.as_str();
+        let name = member.name.as_str();
+        match (owner, name) {
+            ("net/minecraft/world/level/block/Block$Properties", "<init>") => Some(V::Void),
+            ("net/minecraft/world/level/block/Block$Properties", "of") => {
+                Some(rt.new_instance("net/minecraft/world/level/block/Block$Properties", 0))
+            }
+            ("net/minecraft/world/level/block/Block$Properties", "strength") => {
+                let hardness = args.get(1).copied().unwrap_or(V::F(0.0));
+                rt.put_field(args[0], "hardness", hardness);
+                if args.len() > 2 {
+                    rt.put_field(args[0], "resistance", args[2]);
+                }
+                Some(args[0])
+            }
+            ("net/minecraft/world/level/block/Block", "<init>") => {
+                if let Some(props) = args.get(1).copied() {
+                    if let Some(hardness) = instance_field(rt, props, "hardness") {
+                        rt.put_field(args[0], "hardness", hardness);
+                    }
+                    if let Some(resistance) = instance_field(rt, props, "resistance") {
+                        rt.put_field(args[0], "resistance", resistance);
+                    }
+                }
+                Some(V::Void)
+            }
+            ("net/minecraft/world/item/Item$Properties", "<init>") => Some(V::Void),
+            ("net/minecraft/world/item/Item$Properties", "stacksTo") => {
+                let count = args.get(1).copied().unwrap_or(V::I(64));
+                rt.put_field(args[0], "maxStackSize", count);
+                Some(args[0])
+            }
+            ("net/minecraft/world/item/Item", "<init>") => {
+                if let Some(props) = args.get(1).copied() {
+                    if let Some(count) = instance_field(rt, props, "maxStackSize") {
+                        rt.put_field(args[0], "maxStackSize", count);
+                    }
+                }
+                Some(V::Void)
+            }
+            ("net/minecraft/server/level/ServerLevel", "setBlock") => {
+                let x = args.first().copied().unwrap_or(V::I(0)).i();
+                let y = args.get(1).copied().unwrap_or(V::I(0)).i();
+                let z = args.get(2).copied().unwrap_or(V::I(0)).i();
+                let block_id = args
+                    .get(3)
+                    .and_then(|v| rt.str_of(*v))
+                    .unwrap_or("minecraft:air")
+                    .to_owned();
+                self.state
+                    .world
+                    .set_block(crate::BlockCoord::overworld(x, y, z), block_id);
+                Some(V::Void)
+            }
+            _ => None,
+        }
+    }
+
+    fn holder_get(&self, rt: &Rt, args: &[V]) -> Option<V> {
+        let (kind, id, _, _) = rt.handle_of(*args.first()?)?;
+        if kind != "deferred_holder" {
+            return None;
+        }
+        Some(self.state.registries.holder_value(id).unwrap_or(V::NULL))
+    }
+}
+
+impl HostApi for FmlLoader {
+    fn get_static_field(&mut self, rt: &mut Rt, owner: &str, name: &str, _desc: &str) -> Option<V> {
+        if owner == "net/neoforged/neoforge/common/NeoForge" && name == "EVENT_BUS" {
+            return Some(self.game_bus_handle(rt));
+        }
+        if owner.ends_with("EventPriority") {
+            let priority = EventPriority::parse(name);
+            return Some(rt.new_pinned_handle(owner, "event_priority", priority as u64, name));
+        }
+        None
+    }
+
+    fn call_method(
+        &mut self,
+        rt: &mut Rt,
+        _linked: &LinkedSpace,
+        member: &MemberRef,
+        is_static: bool,
+        args: &[V],
+    ) -> Option<V> {
+        let owner = member.owner.as_str();
+        if owner.starts_with("net/neoforged/neoforge/registries/DeferredRegister")
+            && is_static
+            && matches!(
+                member.name.as_str(),
+                "create" | "createBlocks" | "createItems"
+            )
+        {
+            return self.deferred_create(rt, &member.name, args);
+        }
+        if owner.starts_with("net/neoforged/neoforge/registries/DeferredRegister")
+            && !is_static
+            && member.name == "register"
+        {
+            return self.deferred_register(rt, args, &member.desc);
+        }
+        if (owner == "net/neoforged/bus/api/IEventBus" || owner.ends_with("/EventBus"))
+            && !is_static
+            && member.name == "addListener"
+        {
+            return self.add_listener(rt, args, &member.desc);
+        }
+        if owner.ends_with("DeferredHolder") && !is_static && member.name == "get" {
+            return self.holder_get(rt, args);
+        }
+        if owner.starts_with("net/minecraft/") {
+            return self.content_init(rt, member, args);
+        }
+        None
+    }
+
+    fn is_api_subtype(&self, sub_class: &str, super_class: &str) -> bool {
+        if sub_class == super_class {
+            return true;
+        }
+        if super_class == "net/neoforged/neoforge/registries/DeferredRegister"
+            && sub_class.starts_with("net/neoforged/neoforge/registries/DeferredRegister")
+        {
+            return true;
+        }
+        if super_class == "net/neoforged/neoforge/registries/DeferredHolder"
+            && (sub_class.ends_with("DeferredHolder")
+                || sub_class.ends_with("DeferredBlock")
+                || sub_class.ends_with("DeferredItem"))
+        {
+            return true;
+        }
+        let mut cur = sub_class;
+        while let Some(spec) = crate::find_builtin_event(cur) {
+            if spec.class == super_class || spec.superclass == super_class {
+                return true;
+            }
+            if spec.superclass == "java/lang/Object" {
+                break;
+            }
+            cur = spec.superclass;
+        }
+        false
+    }
+}
+
+fn loaded_mod(
+    entry: &ModEntry,
+    jar: &ModJar,
+    entrypoint: Option<DiscoveredModEntrypoint>,
+    sole_mod_in_jar: bool,
+) -> LoadedMod {
+    let subscribers = jar
+        .discover_event_bus_subscribers()
+        .into_iter()
+        .filter(|sub| match &sub.mod_id {
+            Some(id) => id == &entry.mod_id,
+            None => sole_mod_in_jar,
+        })
+        .collect();
+    LoadedMod {
+        mod_id: entry.mod_id.clone(),
+        version: entry.version.clone(),
+        display_name: entry.display_name.clone(),
+        source_name: jar.source_name.clone(),
+        entry_class: entrypoint.as_ref().map(|ep| ep.class_name.clone()),
+        instance: None,
+        constructor_descriptors: entrypoint
+            .map(|ep| ep.constructor_descriptors)
+            .unwrap_or_default(),
+        subscribers,
+    }
+}
+
+fn manifest_for(jar: &ModJar) -> Result<ModsToml, String> {
+    if let Some(toml) = &jar.mods_toml {
+        return Ok(toml.clone());
+    }
+    let entrypoints = jar.discover_entrypoints();
+    if entrypoints.is_empty() {
+        return Err(format!(
+            "{}: no neoforge.mods.toml and no @Mod class",
+            jar.source_name
+        ));
+    }
+    Ok(ModsToml {
+        mod_loader: ModLoaderKind::JavaFml,
+        loader_version: "[0,)".into(),
+        license: "All Rights Reserved".into(),
+        mods: entrypoints
+            .iter()
+            .map(|ep| ModEntry {
+                mod_id: ep.mod_id.clone(),
+                namespace: ep.mod_id.clone(),
+                version: "0.0.0".into(),
+                display_name: ep.mod_id.clone(),
+                description: String::new(),
+                authors: String::new(),
+                enum_extensions: None,
+            })
+            .collect(),
+        mixins: Vec::new(),
+        access_transformers: Vec::new(),
+        dependencies: BTreeMap::new(),
+    })
+}
+
+fn pick_constructor(descriptors: &[String]) -> Result<&'static str, String> {
+    for preferred in CTOR_PREFERENCE {
+        if descriptors.iter().any(|desc| desc == preferred) {
+            return Ok(*preferred);
+        }
+    }
+    Err(format!(
+        "no supported mod constructor among [{}]",
+        descriptors.join(", ")
+    ))
+}
+
+fn holder_class_for(registry_key: &str) -> &'static str {
+    match registry_key {
+        "minecraft:block" => "net/neoforged/neoforge/registries/DeferredBlock",
+        "minecraft:item" => "net/neoforged/neoforge/registries/DeferredItem",
+        _ => "net/neoforged/neoforge/registries/DeferredHolder",
+    }
+}
+
+fn event_class_of_listener(rt: &Rt, callback: V) -> Option<String> {
+    let obj = rt.get_obj(callback)?;
+    let Data::Closure(closure) = &obj.data else {
+        return None;
+    };
+    object_param(&closure.instantiated_desc).or_else(|| object_param(&closure.sam_desc))
+}
+
+fn object_param(desc: &str) -> Option<String> {
+    let params = desc.strip_prefix('(')?.split_once(')')?.0;
+    let name = params.strip_prefix('L')?.strip_suffix(';')?;
+    if name.is_empty() || params.len() != name.len() + 2 {
+        return None;
+    }
+    Some(name.to_owned())
+}
+
+fn instance_field(rt: &Rt, obj: V, name: &str) -> Option<V> {
+    match rt.get_obj(obj).map(|object| &object.data) {
+        Some(Data::Fields(map)) => map.get(name).copied(),
+        _ => None,
+    }
+}
+
+fn content_properties(rt: &Rt, registry: &str, value: V) -> ContentProperties {
+    let kind = if registry.ends_with("block") {
+        "block"
+    } else if registry.contains("item") {
+        "item"
+    } else {
+        "object"
+    };
+    ContentProperties {
+        kind: kind.into(),
+        template: rt.class_of(value).unwrap_or(kind).to_owned(),
+        hardness: instance_field(rt, value, "hardness").map(|v| v.f()),
+        resistance: instance_field(rt, value, "resistance").map(|v| v.f()),
+        max_stack_size: instance_field(rt, value, "maxStackSize").map(|v| v.i()),
+        ..ContentProperties::default()
+    }
+}
+
+fn raise_if_pending(rt: &mut Rt, context: &str) -> Result<(), String> {
+    match rt.take_exception() {
+        Some(exc) => Err(format!("{context}: {}", rt.exception_summary(exc))),
+        None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::BlockCoord;
+    use std::process::Command;
+
+    fn empty_jar(name: &str, toml: &str) -> ModJar {
+        ModJar {
+            source_name: name.into(),
+            manifest_headers: BTreeMap::new(),
+            mods_toml: Some(ModsToml::parse(toml, None).unwrap()),
+            classes: BTreeMap::new(),
+            mixin_configs: BTreeMap::new(),
+            services: BTreeMap::new(),
+            resources: BTreeMap::new(),
+            nested_jars: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn rejects_missing_and_incompatible_dependencies() {
+        let missing = empty_jar(
+            "orphan.jar",
+            r#"
+            modLoader = "javafml"
+            loaderVersion = "[4,)"
+            license = "MIT"
+            [[mods]]
+            modId = "orphan"
+            version = "1.0.0"
+            [[dependencies.orphan]]
+            modId = "missing_lib"
+            type = "required"
+            versionRange = "[1,)"
+            ordering = "AFTER"
+            side = "BOTH"
+            "#,
+        );
+        let err = PreparedLoad::from_jars(vec![missing], true).unwrap_err();
+        assert!(err.contains("missing_lib"), "{err}");
+
+        let left = empty_jar(
+            "left.jar",
+            r#"
+            modLoader = "javafml"
+            loaderVersion = "[4,)"
+            license = "MIT"
+            [[mods]]
+            modId = "left"
+            version = "1"
+            [[dependencies.left]]
+            modId = "right"
+            type = "incompatible"
+            versionRange = "*"
+            ordering = "NONE"
+            side = "BOTH"
+            "#,
+        );
+        let right = empty_jar(
+            "right.jar",
+            r#"
+            modLoader = "javafml"
+            loaderVersion = "[4,)"
+            license = "MIT"
+            [[mods]]
+            modId = "right"
+            version = "1"
+            "#,
+        );
+        let err = PreparedLoad::from_jars(vec![left, right], true).unwrap_err();
+        assert!(err.contains("incompatibil"), "{err}");
+    }
+
+    #[test]
+    fn loads_compiled_pulse_mod_through_fml() {
+        let jar_path = match compile_pulse_jar() {
+            Some(path) => path,
+            None => return,
+        };
+        let jar = ModJar::from_path(&jar_path).unwrap();
+        let _ = std::fs::remove_dir_all(jar_path.parent().unwrap());
+
+        let mut prepared = PreparedLoad::from_jars(vec![jar], true).unwrap();
+        assert_eq!(prepared.loader.mods.len(), 1);
+        assert_eq!(prepared.loader.mods[0].mod_id, "pulse");
+        assert_eq!(prepared.loader.mods[0].version, "1.0.0");
+
+        let mut rt = Rt::new();
+        prepared.bootstrap(&mut rt).unwrap();
+        assert_eq!(prepared.loader.phase, LoadPhase::Running);
+        assert_eq!(
+            prepared.loader.trace,
+            [
+                "discovered",
+                "constructed",
+                "registered",
+                "common-setup",
+                "sided-setup",
+                "load-complete",
+                "server-started",
+                "running",
+            ]
+        );
+        assert!(prepared.loader.mods[0].instance.is_some());
+
+        let block = prepared
+            .loader
+            .state
+            .registries
+            .lookup("block", "pulse:pulse_block")
+            .unwrap();
+        assert_eq!(block.mod_id, "pulse");
+        assert_eq!(block.properties.hardness, Some(2.5));
+        let item = prepared
+            .loader
+            .state
+            .registries
+            .lookup("item", "pulse:pulse_item")
+            .unwrap();
+        assert_eq!(item.properties.max_stack_size, Some(16));
+        assert!(prepared.loader.state.registries.frozen);
+
+        let lines = rt
+            .get_static("com/example/pulse/PulseLog", "LINES")
+            .expect("PulseLog.LINES");
+        assert_eq!(rt.value_to_string(lines), "[common-setup, server-started]");
+        assert_eq!(
+            prepared
+                .loader
+                .state
+                .world
+                .get_block(&BlockCoord::overworld(0, 64, 0)),
+            "pulse:pulse_block"
+        );
+
+        prepared
+            .loader
+            .tick_server(&mut rt, &prepared.linked, 3)
+            .unwrap();
+        assert_eq!(prepared.loader.state.world.game_time, 3);
+        prepared
+            .loader
+            .stop_server(&mut rt, &prepared.linked)
+            .unwrap();
+        assert_eq!(prepared.loader.phase, LoadPhase::Stopped);
+
+        assert!(
+            rt.telemetry.unmapped_calls.is_empty(),
+            "unmapped host calls: {:?}",
+            rt.telemetry.unmapped_calls
+        );
+    }
+
+    fn compile_pulse_jar() -> Option<std::path::PathBuf> {
+        if Command::new("javac").arg("-version").output().is_err() {
+            return None;
+        }
+        let root = std::env::temp_dir().join(format!("mmga-pulse-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let src = root.join("src");
+        let classes = root.join("classes");
+        let resources = root.join("resources");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&classes).unwrap();
+        std::fs::create_dir_all(resources.join("META-INF")).unwrap();
+
+        let files = [
+            (
+                "net/neoforged/fml/common/Mod.java",
+                r#"package net.neoforged.fml.common;
+                import java.lang.annotation.*;
+                @Retention(RetentionPolicy.CLASS)
+                public @interface Mod { String value(); }"#,
+            ),
+            (
+                "net/neoforged/bus/api/EventPriority.java",
+                r#"package net.neoforged.bus.api;
+                public enum EventPriority { HIGHEST, HIGH, NORMAL, LOW, LOWEST }"#,
+            ),
+            (
+                "net/neoforged/bus/api/SubscribeEvent.java",
+                r#"package net.neoforged.bus.api;
+                import java.lang.annotation.*;
+                @Retention(RetentionPolicy.CLASS)
+                public @interface SubscribeEvent {
+                    EventPriority priority() default EventPriority.NORMAL;
+                    boolean receiveCanceled() default false;
+                }"#,
+            ),
+            (
+                "net/neoforged/bus/api/IEventBus.java",
+                r#"package net.neoforged.bus.api;
+                import java.util.function.Consumer;
+                public interface IEventBus {
+                    <T> void addListener(Consumer<T> listener);
+                }"#,
+            ),
+            (
+                "net/neoforged/fml/common/EventBusSubscriber.java",
+                r#"package net.neoforged.fml.common;
+                import java.lang.annotation.*;
+                @Retention(RetentionPolicy.CLASS)
+                public @interface EventBusSubscriber {
+                    String modid() default "";
+                    Bus bus() default Bus.GAME;
+                    enum Bus { GAME, MOD }
+                }"#,
+            ),
+            (
+                "net/neoforged/fml/event/lifecycle/FMLCommonSetupEvent.java",
+                "package net.neoforged.fml.event.lifecycle; public class FMLCommonSetupEvent {}",
+            ),
+            (
+                "net/neoforged/neoforge/event/server/ServerStartedEvent.java",
+                "package net.neoforged.neoforge.event.server; public class ServerStartedEvent {}",
+            ),
+            (
+                "net/neoforged/neoforge/registries/DeferredRegister.java",
+                r#"package net.neoforged.neoforge.registries;
+                import java.util.function.Supplier;
+                import net.minecraft.world.item.Item;
+                import net.minecraft.world.level.block.Block;
+                import net.neoforged.bus.api.IEventBus;
+                public class DeferredRegister<T> {
+                    public static DeferredRegister<Block> createBlocks(String modid) { return null; }
+                    public static DeferredRegister<Item> createItems(String modid) { return null; }
+                    public DeferredHolder<T> register(String name, Supplier<? extends T> supplier) { return null; }
+                    public void register(IEventBus bus) {}
+                }"#,
+            ),
+            (
+                "net/neoforged/neoforge/registries/DeferredHolder.java",
+                r#"package net.neoforged.neoforge.registries;
+                public class DeferredHolder<T> { public T get() { return null; } }"#,
+            ),
+            (
+                "net/minecraft/world/level/block/Block.java",
+                r#"package net.minecraft.world.level.block;
+                public class Block {
+                    public Block(Properties properties) {}
+                    public static class Properties {
+                        public static Properties of() { return new Properties(); }
+                        public Properties strength(float hardness) { return this; }
+                    }
+                }"#,
+            ),
+            (
+                "net/minecraft/world/item/Item.java",
+                r#"package net.minecraft.world.item;
+                public class Item {
+                    public Item(Properties properties) {}
+                    public static class Properties {
+                        public Properties stacksTo(int count) { return this; }
+                    }
+                }"#,
+            ),
+            (
+                "net/minecraft/server/level/ServerLevel.java",
+                r#"package net.minecraft.server.level;
+                public class ServerLevel {
+                    public static void setBlock(int x, int y, int z, String blockId) {}
+                }"#,
+            ),
+            (
+                "com/example/pulse/PulseMod.java",
+                r#"package com.example.pulse;
+                import java.util.ArrayList;
+                import net.minecraft.server.level.ServerLevel;
+                import net.minecraft.world.item.Item;
+                import net.minecraft.world.level.block.Block;
+                import net.neoforged.bus.api.IEventBus;
+                import net.neoforged.bus.api.SubscribeEvent;
+                import net.neoforged.fml.common.EventBusSubscriber;
+                import net.neoforged.fml.common.Mod;
+                import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
+                import net.neoforged.neoforge.event.server.ServerStartedEvent;
+                import net.neoforged.neoforge.registries.DeferredHolder;
+                import net.neoforged.neoforge.registries.DeferredRegister;
+
+                @Mod("pulse")
+                public class PulseMod {
+                    public static final DeferredRegister<Block> BLOCKS = DeferredRegister.createBlocks("pulse");
+                    public static final DeferredRegister<Item> ITEMS = DeferredRegister.createItems("pulse");
+                    public static final DeferredHolder<Block> PULSE_BLOCK =
+                        BLOCKS.register("pulse_block", () -> new Block(Block.Properties.of().strength(2.5f)));
+                    public static final DeferredHolder<Item> PULSE_ITEM =
+                        ITEMS.register("pulse_item", () -> new Item(new Item.Properties().stacksTo(16)));
+
+                    public PulseMod(IEventBus modBus) {
+                        BLOCKS.register(modBus);
+                        ITEMS.register(modBus);
+                        modBus.addListener(PulseMod::onCommonSetup);
+                    }
+
+                    private static void onCommonSetup(FMLCommonSetupEvent event) {
+                        PulseLog.line("common-setup");
+                    }
+                }
+
+                @EventBusSubscriber(modid = "pulse", bus = EventBusSubscriber.Bus.GAME)
+                class PulseGameEvents {
+                    @SubscribeEvent
+                    public static void onStarted(ServerStartedEvent event) {
+                        PulseLog.line("server-started");
+                        ServerLevel.setBlock(0, 64, 0, "pulse:pulse_block");
+                    }
+                }
+
+                class PulseLog {
+                    public static final ArrayList<String> LINES = new ArrayList<String>();
+                    public static void line(String text) { LINES.add(text); }
+                }"#,
+            ),
+        ];
+
+        let mut java_paths = Vec::new();
+        for (rel, body) in files {
+            let path = src.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, body).unwrap();
+            java_paths.push(path);
+        }
+        let javac = Command::new("javac")
+            .arg("-d")
+            .arg(&classes)
+            .args(&java_paths)
+            .output()
+            .unwrap();
+        assert!(
+            javac.status.success(),
+            "javac failed: {}",
+            String::from_utf8_lossy(&javac.stderr)
+        );
+
+        std::fs::write(
+            resources.join("META-INF/neoforge.mods.toml"),
+            r#"
+modLoader = "javafml"
+loaderVersion = "[4,)"
+license = "MIT"
+
+[[mods]]
+modId = "pulse"
+version = "1.0.0"
+displayName = "Pulse"
+description = "Sample NeoForge mod loaded by mmga"
+
+[[dependencies.pulse]]
+modId = "neoforge"
+type = "required"
+versionRange = "[21,)"
+ordering = "NONE"
+side = "BOTH"
+"#,
+        )
+        .unwrap();
+
+        let jar_path = root.join("pulse.jar");
+        let packed = Command::new("jar")
+            .arg("cf")
+            .arg(&jar_path)
+            .arg("-C")
+            .arg(&classes)
+            .arg("com")
+            .arg("-C")
+            .arg(&resources)
+            .arg("META-INF")
+            .output()
+            .unwrap();
+        assert!(
+            packed.status.success(),
+            "jar failed: {}",
+            String::from_utf8_lossy(&packed.stderr)
+        );
+        Some(jar_path)
+    }
+}

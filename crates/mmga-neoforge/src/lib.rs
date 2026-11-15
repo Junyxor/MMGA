@@ -1,10 +1,11 @@
 //! `mmga-neoforge`: NeoForge mod host implemented beside the Rust VM.
 //!
 //! `EventBusEngine`, `RegistryStore`, config/capability/attachment/network/command
-//! subsystems, and `WorldState` are native Rust. Java mods reach them through
-//! `NeoForgeState` and, once the loader is attached, `HostApi`.
+//! subsystems, and `WorldState` are native Rust. [`loader::FmlLoader`] implements
+//! `HostApi` and drives the FML lifecycle for jars linked into the VM.
 
 pub mod bus;
+pub mod loader;
 pub mod registries;
 pub mod subsystems;
 pub mod world;
@@ -13,6 +14,7 @@ pub use bus::{
     dispatch_event_on_bus, find_builtin_event, is_mod_bus_event_class, BuiltinEventSpec, BusId,
     EventBusEngine, EventCallback, EventListener, EventPriority, BUILTIN_EVENTS,
 };
+pub use loader::{FmlLoader, LoadPhase, LoadedMod, PreparedLoad};
 pub use registries::{
     canonical_registry_key, ContentProperties, DeferredRegisterRecord, DeferredSupplier,
     PendingDeferredItem, RegisteredEntry, RegistryStore, REGISTRATION_ORDER,
