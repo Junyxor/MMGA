@@ -143,6 +143,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mmga-neoforge"
+version = "0.1.0"
+dependencies = [
+ "mmga-classfile",
+ "mmga-runtime",
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
 name = "mmga-runtime"
 version = "0.1.0"
 dependencies = [

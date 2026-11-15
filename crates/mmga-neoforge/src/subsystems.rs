@@ -147,6 +147,25 @@ impl ConfigSubsystem {
         spec_id
     }
 
+    /// Attaches a built spec to a mod file (`ModConfig$Type`: `COMMON`, `CLIENT`, `SERVER`, `STARTUP`).
+    pub fn assign_mod(
+        &mut self,
+        spec_id: u64,
+        mod_id: &str,
+        config_type: &str,
+        file_name: Option<String>,
+    ) {
+        if let Some(spec) = self.specs.get_mut(&spec_id) {
+            spec.mod_id = Some(mod_id.to_owned());
+            spec.config_type = config_type.to_owned();
+            spec.file_name = file_name;
+        }
+    }
+
+    pub fn current(&self, entry_id: u64) -> Option<&ConfigPrimitive> {
+        self.values.get(&entry_id).map(|entry| &entry.current_val)
+    }
+
     /// Loads overrides from a TOML string into `spec_id`'s config entries, clamping numeric ranges!
     pub fn apply_toml_overrides(&mut self, spec_id: u64, toml_text: &str) -> Result<usize, String> {
         let doc: toml::Value =
@@ -270,7 +289,12 @@ impl CapabilityStore {
         });
     }
 
-    pub fn find_provider(&self, capability_id: &str, target_kind: &str, target_id: &str) -> Option<V> {
+    pub fn find_provider(
+        &self,
+        capability_id: &str,
+        target_kind: &str,
+        target_id: &str,
+    ) -> Option<V> {
         self.registrations
             .iter()
             .find(|r| {
@@ -316,6 +340,28 @@ impl AttachmentStore {
         );
         id
     }
+
+    pub fn set_data(&mut self, rt: &mut Rt, holder_key: &str, type_id: u64, value: V) {
+        rt.pin(value);
+        self.attached_data
+            .insert((holder_key.to_owned(), type_id), value);
+    }
+
+    pub fn has_data(&self, holder_key: &str, type_id: u64) -> bool {
+        self.attached_data
+            .contains_key(&(holder_key.to_owned(), type_id))
+    }
+
+    pub fn get_data(&self, holder_key: &str, type_id: u64) -> Option<V> {
+        self.attached_data
+            .get(&(holder_key.to_owned(), type_id))
+            .copied()
+    }
+
+    /// Returns the previous value. Missing data yields `None` (NeoForge `removeData`).
+    pub fn remove_data(&mut self, holder_key: &str, type_id: u64) -> Option<V> {
+        self.attached_data.remove(&(holder_key.to_owned(), type_id))
+    }
 }
 
 // =========================================================================
@@ -335,6 +381,31 @@ pub struct RegisteredPayloadChannel {
 pub struct NetworkStore {
     pub channels: Vec<RegisteredPayloadChannel>,
     pub sent_packets: Vec<(String, Vec<u8>)>,
+}
+
+impl NetworkStore {
+    pub fn register_channel(
+        &mut self,
+        rt: &mut Rt,
+        mod_namespace: impl Into<String>,
+        protocol_version: impl Into<String>,
+        payload_id: impl Into<String>,
+        direction: &'static str,
+        handler_closure: V,
+    ) {
+        rt.pin(handler_closure);
+        self.channels.push(RegisteredPayloadChannel {
+            mod_namespace: mod_namespace.into(),
+            protocol_version: protocol_version.into(),
+            payload_id: payload_id.into(),
+            direction,
+            handler_closure,
+        });
+    }
+
+    pub fn send(&mut self, payload_id: impl Into<String>, bytes: Vec<u8>) {
+        self.sent_packets.push((payload_id.into(), bytes));
+    }
 }
 
 // =========================================================================
@@ -465,10 +536,7 @@ impl BrigadierTree {
                     idx + 1
                 }
                 ArgumentKind::GreedyString => {
-                    args.insert(
-                        name.clone(),
-                        ConfigPrimitive::Text(tokens[idx..].join(" ")),
-                    );
+                    args.insert(name.clone(), ConfigPrimitive::Text(tokens[idx..].join(" ")));
                     tokens.len()
                 }
             },
@@ -485,5 +553,107 @@ impl BrigadierTree {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mmga_runtime::Rt;
+
+    #[test]
+    fn config_spec_clamps_toml_overrides() {
+        let mut cfg = ConfigSubsystem::default();
+        let builder = cfg.new_builder();
+        cfg.push_section(builder, "general");
+        cfg.set_comment(builder, "Ticks between pulses".into());
+        let speed = cfg.define_entry(builder, "speed", ConfigPrimitive::Int(4), Some((1.0, 20.0)));
+        cfg.pop_section(builder, 1);
+        let enabled = cfg.define_entry(builder, "enabled", ConfigPrimitive::Bool(true), None);
+        let spec = cfg.build_spec(builder);
+        cfg.assign_mod(
+            spec,
+            "examplemod",
+            "COMMON",
+            Some("examplemod-common.toml".into()),
+        );
+
+        let updated = cfg
+            .apply_toml_overrides(spec, "general.speed = 100\nenabled = false\n")
+            .unwrap();
+        assert_eq!(updated, 2);
+        assert_eq!(cfg.current(speed), Some(&ConfigPrimitive::Int(20)));
+        assert_eq!(cfg.current(enabled), Some(&ConfigPrimitive::Bool(false)));
+        let rendered = cfg.render_toml(spec);
+        assert!(rendered.contains("# Ticks between pulses"));
+        assert!(rendered.contains("general.speed = 20"));
+        assert!(rendered.contains("enabled = false"));
+        assert!(cfg.apply_toml_overrides(spec, "not toml {").is_err());
+    }
+
+    #[test]
+    fn capabilities_attachments_network_and_commands() {
+        let mut rt = Rt::new();
+        let mut caps = CapabilityStore::default();
+        let provider = rt.intern_str("energy");
+        caps.register(
+            &mut rt,
+            "examplemod:energy".into(),
+            "block",
+            vec!["examplemod:example_block".into()],
+            provider,
+        );
+        assert_eq!(
+            caps.find_provider("examplemod:energy", "block", "examplemod:example_block"),
+            Some(provider)
+        );
+        assert!(caps
+            .find_provider("examplemod:energy", "block", "minecraft:stone")
+            .is_none());
+
+        let mut attachments = AttachmentStore::default();
+        let supplier = rt.intern_str("default-mana");
+        let type_id = attachments.define_type(&mut rt, supplier, true);
+        assert!(attachments.types[&type_id].copy_on_death);
+        assert!(!attachments.has_data("player:1", type_id));
+        let mana = rt.intern_str("mana");
+        attachments.set_data(&mut rt, "player:1", type_id, mana);
+        assert_eq!(attachments.get_data("player:1", type_id), Some(mana));
+        assert_eq!(attachments.remove_data("player:1", type_id), Some(mana));
+        assert!(!attachments.has_data("player:1", type_id));
+
+        let mut network = NetworkStore::default();
+        let handler = rt.intern_str("handler");
+        network.register_channel(
+            &mut rt,
+            "examplemod",
+            "1",
+            "examplemod:pulse",
+            "play_to_server",
+            handler,
+        );
+        network.send("examplemod:pulse", vec![1, 2, 3]);
+        assert_eq!(network.channels[0].handler_closure, handler);
+        assert_eq!(
+            network.sent_packets,
+            vec![("examplemod:pulse".into(), vec![1, 2, 3])]
+        );
+
+        let mut tree = BrigadierTree::default();
+        let root = tree.alloc_node(CommandNodeKind::Literal("kinetic".into()));
+        let speed = tree.alloc_node(CommandNodeKind::Literal("speed".into()));
+        let amount = tree.alloc_node(CommandNodeKind::Argument {
+            name: "amount".into(),
+            kind: ArgumentKind::Integer,
+        });
+        let executes = rt.intern_str("exec");
+        tree.set_executes(&mut rt, amount, executes);
+        tree.add_child(speed, amount);
+        tree.add_child(root, speed);
+        tree.register_root(root);
+        let (got, args) = tree.match_command("/kinetic speed 64").unwrap();
+        assert_eq!(got, executes);
+        assert_eq!(args.get("amount"), Some(&ConfigPrimitive::Int(64)));
+        assert!(tree.match_command("/unknown").is_none());
     }
 }

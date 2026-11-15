@@ -83,4 +83,62 @@ impl WorldState {
             },
         );
     }
+
+    pub fn entity(&self, uuid: &str) -> Option<&SimEntity> {
+        self.entities.get(uuid)
+    }
+
+    pub fn entity_mut(&mut self, uuid: &str) -> Option<&mut SimEntity> {
+        self.entities.get_mut(uuid)
+    }
+
+    pub fn give_item(&mut self, uuid: &str, item_id: &str, count: i32) {
+        if let Some(entity) = self.entities.get_mut(uuid) {
+            entity.main_hand_item = item_id.to_owned();
+            entity.main_hand_count = count;
+        }
+    }
+
+    /// Applies incoming damage. Returns whether the entity existed.
+    pub fn hurt(&mut self, uuid: &str, amount: f32) -> bool {
+        let Some(entity) = self.entities.get_mut(uuid) else {
+            return false;
+        };
+        if amount > 0.0 {
+            entity.health = (entity.health - amount).max(0.0);
+        }
+        true
+    }
+
+    /// Advances one server tick (`game_time` and `day_time`).
+    pub fn tick(&mut self) {
+        self.game_time = self.game_time.saturating_add(1);
+        self.day_time = self.day_time.saturating_add(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blocks_players_and_ticks() {
+        let mut world = WorldState::new();
+        let origin = BlockCoord::overworld(0, 64, 0);
+        assert_eq!(world.get_block(&origin), "minecraft:air");
+        world.set_block(origin.clone(), "examplemod:example_block");
+        assert_eq!(world.get_block(&origin), "examplemod:example_block");
+
+        world.spawn_player("steve", "Steve", 0.5, 65.0, 0.5);
+        world.give_item("steve", "minecraft:stick", 4);
+        assert!(world.hurt("steve", 5.0));
+        assert!(!world.hurt("missing", 1.0));
+        let player = world.entity("steve").unwrap();
+        assert_eq!(player.main_hand_item, "minecraft:stick");
+        assert_eq!(player.main_hand_count, 4);
+        assert!((player.health - 15.0).abs() < f32::EPSILON);
+        world.tick();
+        assert_eq!(world.game_time, 1);
+        assert_eq!(world.day_time, 1);
+    }
 }

@@ -1,7 +1,7 @@
 //! NeoForge Event Class Table, Priority Ordering, Mod Bus vs Game Bus Isolation,
 //! `ICancellableEvent`, and High-Speed Rust `EventBusEngine` (`net.neoforged.bus`).
 
-use mmga_runtime::{ExecCtx, V};
+use mmga_runtime::{ExecCtx, Rt, V};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -401,6 +401,9 @@ pub enum EventCallback {
         method_name: String,
         method_desc: String,
     },
+    /// Native listener. Mods use the Java variants; the host and tests use this
+    /// to observe or mutate the event object without a class file.
+    Native(fn(&mut Rt, V)),
 }
 
 /// Registered NeoForge event listener entry.
@@ -510,6 +513,27 @@ impl EventBusEngine {
         matched.sort_by(|a, b| a.priority.cmp(&b.priority).then_with(|| a.id.cmp(&b.id)));
         matched
     }
+
+    /// Records one completed `post` (`events_posted` / `callbacks_invoked`).
+    pub fn record_dispatch(&mut self, invoked: usize) {
+        self.events_posted = self.events_posted.saturating_add(1);
+        self.callbacks_invoked = self.callbacks_invoked.saturating_add(invoked as u64);
+    }
+
+    /// Posts `event_obj` on `bus`. The engine must not be borrowed by `ctx.host`.
+    /// Returns whether a listener set `$canceled`.
+    pub fn post(
+        &mut self,
+        ctx: &mut ExecCtx<'_>,
+        bus: &BusId,
+        event_class: &str,
+        event_obj: V,
+    ) -> bool {
+        let listeners = self.matching_listeners(bus, event_class);
+        let (ran, canceled) = dispatch_event_on_bus(ctx, &listeners, event_obj);
+        self.record_dispatch(ran);
+        canceled
+    }
 }
 
 fn event_matches(listener_event: &str, fired_event: &str) -> bool {
@@ -529,8 +553,8 @@ fn event_matches(listener_event: &str, fired_event: &str) -> bool {
     false
 }
 
-/// Dispatches `event_obj` (`$canceled` field = `0`/`1`) across all matching listeners on `bus`!
-/// Returns `true` if the event was cancelled by a listener.
+/// Dispatches `event_obj` (`$canceled` field = `0`/`1`) across `listeners`.
+/// Returns `(callbacks_invoked, canceled)`.
 pub fn dispatch_event_on_bus(
     ctx: &mut ExecCtx<'_>,
     listeners: &[EventListener],
@@ -574,8 +598,190 @@ pub fn dispatch_event_on_bus(
                     &[*instance, event_obj],
                 );
             }
+            EventCallback::Native(func) => func(ctx.rt, event_obj),
         }
     }
     let final_canceled = ctx.rt.get_field(event_obj, "$canceled").i() != 0;
     (ran, final_canceled)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mmga_runtime::{ExecCtx, LinkedSpace, NullHost, Rt};
+
+    fn hit(rt: &mut Rt, event: V) {
+        let n = rt.get_field(event, "hits").i();
+        rt.put_field(event, "hits", V::I(n + 1));
+    }
+
+    fn cancel(rt: &mut Rt, event: V) {
+        rt.put_field(event, "$canceled", V::I(1));
+        hit(rt, event);
+    }
+
+    fn fresh_event(rt: &mut Rt, class_name: &str) -> V {
+        let event = rt.new_instance(class_name, 0);
+        rt.put_field(event, "$canceled", V::I(0));
+        rt.put_field(event, "hits", V::I(0));
+        event
+    }
+
+    #[test]
+    fn rejects_abstract_listeners_and_cross_bus_events() {
+        let mut engine = EventBusEngine::new();
+        let abstract_err = engine
+            .register_listener(
+                BusId::Game,
+                "net/neoforged/neoforge/event/level/BlockEvent".into(),
+                EventPriority::Normal,
+                false,
+                V::NULL,
+                EventCallback::Native(hit),
+            )
+            .unwrap_err();
+        assert!(abstract_err.contains("abstract"));
+
+        let mod_on_game = engine
+            .register_listener(
+                BusId::Game,
+                "net/neoforged/fml/event/lifecycle/FMLCommonSetupEvent".into(),
+                EventPriority::Normal,
+                false,
+                V::NULL,
+                EventCallback::Native(hit),
+            )
+            .unwrap_err();
+        assert!(mod_on_game.contains("IModBusEvent"));
+
+        let game_on_mod = engine
+            .register_listener(
+                BusId::Mod("examplemod".into()),
+                "net/neoforged/neoforge/event/tick/ServerTickEvent$Post".into(),
+                EventPriority::Normal,
+                false,
+                V::NULL,
+                EventCallback::Native(hit),
+            )
+            .unwrap_err();
+        assert!(game_on_mod.contains("IModBusEvent"));
+        assert_eq!(engine.listener_count(), 0);
+    }
+
+    #[test]
+    fn superclass_listener_matches_only_its_descendants() {
+        assert!(event_matches(
+            "net/neoforged/neoforge/event/level/BlockEvent",
+            "net/neoforged/neoforge/event/level/BlockEvent$BreakEvent",
+        ));
+        assert!(event_matches(
+            "net/neoforged/bus/api/Event",
+            "net/neoforged/neoforge/event/server/ServerStartedEvent",
+        ));
+        assert!(!event_matches(
+            "net/neoforged/neoforge/event/level/BlockEvent$BreakEvent",
+            "net/neoforged/neoforge/event/level/BlockEvent$EntityPlaceEvent",
+        ));
+        assert!(!event_matches(
+            "net/neoforged/neoforge/event/tick/ServerTickEvent$Pre",
+            "net/neoforged/neoforge/event/tick/ServerTickEvent$Post",
+        ));
+    }
+
+    #[test]
+    fn dispatches_by_priority_and_skips_listeners_after_cancel() {
+        let mut engine = EventBusEngine::new();
+        let owner = V::I(7);
+        engine
+            .register_listener(
+                BusId::Game,
+                "net/neoforged/neoforge/event/level/BlockEvent$BreakEvent".into(),
+                EventPriority::Low,
+                true,
+                owner,
+                EventCallback::Native(hit),
+            )
+            .unwrap();
+        engine
+            .register_listener(
+                BusId::Game,
+                "net/neoforged/neoforge/event/level/BlockEvent$BreakEvent".into(),
+                EventPriority::Highest,
+                false,
+                owner,
+                EventCallback::Native(cancel),
+            )
+            .unwrap();
+        engine
+            .register_listener(
+                BusId::Game,
+                "net/neoforged/neoforge/event/level/BlockEvent$BreakEvent".into(),
+                EventPriority::Normal,
+                false,
+                owner,
+                EventCallback::Native(hit),
+            )
+            .unwrap();
+        engine
+            .register_listener(
+                BusId::Mod("examplemod".into()),
+                "net/neoforged/fml/event/lifecycle/FMLCommonSetupEvent".into(),
+                EventPriority::Normal,
+                false,
+                V::I(1),
+                EventCallback::Native(hit),
+            )
+            .unwrap();
+
+        let mut rt = Rt::new();
+        let linked = LinkedSpace::new();
+        let mut host = NullHost;
+        let break_event = fresh_event(
+            &mut rt,
+            "net/neoforged/neoforge/event/level/BlockEvent$BreakEvent",
+        );
+        let canceled = {
+            let mut ctx = ExecCtx {
+                rt: &mut rt,
+                linked: &linked,
+                host: &mut host,
+                depth: 0,
+            };
+            engine.post(
+                &mut ctx,
+                &BusId::Game,
+                "net/neoforged/neoforge/event/level/BlockEvent$BreakEvent",
+                break_event,
+            )
+        };
+        assert!(canceled);
+        // Highest cancels, Normal is skipped, Low still runs (`receiveCanceled`).
+        assert_eq!(rt.get_field(break_event, "hits").i(), 2);
+        assert_eq!(engine.events_posted, 1);
+        assert_eq!(engine.callbacks_invoked, 2);
+
+        let setup = fresh_event(
+            &mut rt,
+            "net/neoforged/fml/event/lifecycle/FMLCommonSetupEvent",
+        );
+        let setup_canceled = {
+            let mut ctx = ExecCtx {
+                rt: &mut rt,
+                linked: &linked,
+                host: &mut host,
+                depth: 0,
+            };
+            engine.post(
+                &mut ctx,
+                &BusId::Game,
+                "net/neoforged/fml/event/lifecycle/FMLCommonSetupEvent",
+                setup,
+            )
+        };
+        assert!(!setup_canceled);
+        assert_eq!(rt.get_field(setup, "hits").i(), 0);
+
+        engine.unregister(&BusId::Game, owner);
+        assert_eq!(engine.listener_count(), 1);
+    }
 }

@@ -94,8 +94,19 @@ pub struct DeferredRegisterRecord {
     pub entries: Vec<PendingDeferredItem>,
 }
 
+/// One supplier still waiting for its registry's `RegisterEvent`.
+#[derive(Debug, Clone)]
+pub struct DeferredSupplier {
+    pub dr_id: u64,
+    pub registry_key: String,
+    pub namespace: String,
+    pub name: String,
+    pub full_id: String,
+    pub supplier: V,
+}
+
 /// Central Rust store for all vanilla + NeoForge + custom mod registries.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct RegistryStore {
     next_dr_id: u64,
     next_holder_id: u64,
@@ -108,9 +119,23 @@ pub struct RegistryStore {
     pub frozen: bool,
 }
 
+impl Default for RegistryStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RegistryStore {
     pub fn new() -> Self {
-        let mut store = Self::default();
+        let mut store = Self {
+            next_dr_id: 0,
+            next_holder_id: 0,
+            deferred_registers: BTreeMap::new(),
+            holders: BTreeMap::new(),
+            entries: BTreeMap::new(),
+            custom_registries: Vec::new(),
+            frozen: false,
+        };
         store.seed_vanilla_defaults();
         store
     }
@@ -177,6 +202,55 @@ impl RegistryStore {
             },
         );
         id
+    }
+
+    /// Binds a `DeferredRegister` to the mod bus that will receive its `RegisterEvent`.
+    pub fn bind_mod_bus(&mut self, dr_id: u64, mod_id: &str) -> bool {
+        match self.deferred_registers.get_mut(&dr_id) {
+            Some(dr) => {
+                dr.bound_mod_bus = Some(mod_id.to_owned());
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Freezes registries the way `Registry#freeze` does after the register phase.
+    pub fn freeze(&mut self) {
+        self.frozen = true;
+    }
+
+    /// Suppliers in `RegisterEvent` order: `REGISTRATION_ORDER`, then any custom registry keys.
+    pub fn pending_suppliers(&self) -> Vec<DeferredSupplier> {
+        let mut by_reg: BTreeMap<String, Vec<DeferredSupplier>> = BTreeMap::new();
+        let mut dr_ids: Vec<u64> = self.deferred_registers.keys().copied().collect();
+        dr_ids.sort_unstable();
+        for dr_id in dr_ids {
+            let Some(dr) = self.deferred_registers.get(&dr_id) else {
+                continue;
+            };
+            let bucket = by_reg.entry(dr.registry_key.clone()).or_default();
+            for entry in &dr.entries {
+                bucket.push(DeferredSupplier {
+                    dr_id,
+                    registry_key: dr.registry_key.clone(),
+                    namespace: dr.namespace.clone(),
+                    name: entry.name.clone(),
+                    full_id: entry.full_id.clone(),
+                    supplier: entry.supplier,
+                });
+            }
+        }
+        let mut out = Vec::new();
+        for key in REGISTRATION_ORDER {
+            if let Some(items) = by_reg.remove(*key) {
+                out.extend(items);
+            }
+        }
+        for items in by_reg.into_values() {
+            out.extend(items);
+        }
+        out
     }
 
     pub fn enqueue_deferred_entry(
@@ -255,5 +329,87 @@ impl RegistryStore {
             .flat_map(|m| m.values())
             .filter(|e| e.mod_id != "minecraft")
             .count()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mmga_runtime::Rt;
+
+    #[test]
+    fn canonicalizes_registry_names() {
+        assert_eq!(canonical_registry_key("BLOCK"), "minecraft:block");
+        assert_eq!(canonical_registry_key("minecraft:Item"), "minecraft:item");
+        assert_eq!(
+            canonical_registry_key("ATTACHMENT_TYPES"),
+            "neoforge:attachment_types"
+        );
+        assert_eq!(canonical_registry_key("FLUID_TYPE"), "neoforge:fluid_type");
+    }
+
+    #[test]
+    fn deferred_holders_resolve_in_registration_order() {
+        let mut store = RegistryStore::new();
+        assert!(store.lookup("block", "minecraft:stone").is_some());
+        assert_eq!(
+            store.lookup("item", "minecraft:air").unwrap().mod_id,
+            "minecraft"
+        );
+
+        let mut rt = Rt::new();
+        let items = store.create_deferred_register("ITEM", "examplemod");
+        let blocks = store.create_deferred_register("BLOCK", "examplemod");
+        assert!(store.bind_mod_bus(blocks, "examplemod"));
+        let item_supplier = rt.intern_str("item-supplier");
+        let block_supplier = rt.intern_str("block-supplier");
+        let item_holder = store
+            .enqueue_deferred_entry(
+                &mut rt,
+                items,
+                "net/neoforged/neoforge/registries/DeferredItem",
+                "example_block",
+                item_supplier,
+            )
+            .unwrap();
+        let block_holder = store
+            .enqueue_deferred_entry(
+                &mut rt,
+                blocks,
+                "net/neoforged/neoforge/registries/DeferredBlock",
+                "example_block",
+                block_supplier,
+            )
+            .unwrap();
+
+        let plan = store.pending_suppliers();
+        assert_eq!(plan.len(), 2);
+        assert_eq!(plan[0].registry_key, "minecraft:block");
+        assert_eq!(plan[1].registry_key, "minecraft:item");
+        assert_eq!(plan[0].full_id, "examplemod:example_block");
+
+        let block_holder_id = rt.handle_of(block_holder).unwrap().1;
+        let item_holder_id = rt.handle_of(item_holder).unwrap().1;
+        assert!(store.holder_value(block_holder_id).is_none());
+
+        let block = rt.new_instance("net/minecraft/world/level/block/Block", 0);
+        store.register_direct(
+            &mut rt,
+            "minecraft:block",
+            "examplemod:example_block",
+            "examplemod",
+            block,
+            ContentProperties {
+                kind: "block".into(),
+                hardness: Some(2.0),
+                ..ContentProperties::default()
+            },
+        );
+        assert_eq!(store.holder_value(block_holder_id), Some(block));
+        assert!(store.holder_value(item_holder_id).is_none());
+        assert_eq!(store.total_mod_entries(), 1);
+
+        store.freeze();
+        assert!(store.frozen);
     }
 }
