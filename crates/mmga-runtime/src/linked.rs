@@ -251,6 +251,57 @@ impl LinkedSpace {
         self.superclasses.get(class_name).map(String::as_str)
     }
 
+    /// Resolves the declaring bytecode class of a field per JVMS §5.4.3.2
+    /// (searching `start_class`, direct/transitive superinterfaces, and superclasses).
+    pub fn resolve_field_owner(
+        &self,
+        start_class: &str,
+        field_name: &str,
+        is_static: bool,
+    ) -> Option<String> {
+        let mut visited = Vec::new();
+        self.resolve_field_owner_inner(start_class, field_name, is_static, &mut visited)
+    }
+
+    fn resolve_field_owner_inner(
+        &self,
+        cls: &str,
+        field_name: &str,
+        is_static: bool,
+        visited: &mut Vec<String>,
+    ) -> Option<String> {
+        if visited.iter().any(|v| v == cls) {
+            return None;
+        }
+        visited.push(cls.to_owned());
+
+        if let Some(cf) = self.bytecode_classes.get(cls) {
+            if cf
+                .fields
+                .iter()
+                .any(|f| f.name == field_name && f.is_static() == is_static)
+            {
+                return Some(cls.to_owned());
+            }
+        }
+        if let Some(ifaces) = self.interfaces.get(cls) {
+            for iface in ifaces {
+                if let Some(found) =
+                    self.resolve_field_owner_inner(iface, field_name, is_static, visited)
+                {
+                    return Some(found);
+                }
+            }
+        }
+        if let Some(sup) = self.superclasses.get(cls) {
+            if let Some(found) = self.resolve_field_owner_inner(sup, field_name, is_static, visited)
+            {
+                return Some(found);
+            }
+        }
+        None
+    }
+
     /// Checks whether `sub` is equal to or a subtype of `sup` across loaded classes, interfaces, and host APIs.
     pub fn is_subtype(&self, sub: &str, sup: &str, host: &dyn HostApi) -> bool {
         if sub == sup || sup == "java/lang/Object" {

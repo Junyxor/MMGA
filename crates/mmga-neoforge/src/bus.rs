@@ -600,6 +600,9 @@ pub fn dispatch_event_on_bus(
             }
             EventCallback::Native(func) => func(ctx.rt, event_obj),
         }
+        if ctx.rt.pending_exception.is_some() {
+            break;
+        }
     }
     let final_canceled = ctx.rt.get_field(event_obj, "$canceled").i() != 0;
     (ran, final_canceled)

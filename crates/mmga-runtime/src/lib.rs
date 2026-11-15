@@ -220,5 +220,40 @@ mod tests {
             "{summary}"
         );
         assert!(summary.contains("Level.isClientSide"), "{summary}");
+
+        // Non-Minecraft external libraries (e.g. Guava, Fastutil, unknown JDK methods) and
+        // unmapped external static fields must also fail rather than returning null/0.
+        let unmapped_guava = invoke_member(
+            &mut ctx,
+            mmga_classfile::op::INVOKESTATIC,
+            &mmga_classfile::MemberRef::new(
+                "com/google/common/collect/ImmutableList",
+                "copyOf",
+                "([Ljava/lang/Object;)Lcom/google/common/collect/ImmutableList;",
+            ),
+            &[V::NULL],
+        );
+        assert_eq!(unmapped_guava, V::NULL);
+        let exc2 = ctx
+            .rt
+            .take_exception()
+            .expect("unmapped library call must throw");
+        assert!(ctx.rt.exception_summary(exc2).contains("ImmutableList.copyOf"));
+
+        let unmapped_static = read_static_field(
+            &mut ctx,
+            "net/minecraft/core/registries/BuiltInRegistries",
+            "NON_EXISTENT_TEST_REG",
+            "Lnet/minecraft/core/Registry;",
+        );
+        assert_eq!(unmapped_static, V::NULL);
+        let exc3 = ctx
+            .rt
+            .take_exception()
+            .expect("unmapped static field must throw");
+        assert!(ctx
+            .rt
+            .exception_summary(exc3)
+            .contains("NON_EXISTENT_TEST_REG"));
     }
 }

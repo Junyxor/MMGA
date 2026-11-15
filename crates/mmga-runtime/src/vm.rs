@@ -37,6 +37,9 @@ pub fn ensure_class_init(ctx: &mut ExecCtx<'_>, class_name: &str) {
     if let Some(sup) = ctx.linked.superclass_of(class_name).map(str::to_owned) {
         if sup != "java/lang/Object" {
             ensure_class_init(ctx, &sup);
+            if ctx.rt.pending_exception.is_some() {
+                return;
+            }
         }
     }
 
@@ -71,6 +74,19 @@ pub fn ensure_class_init(ctx: &mut ExecCtx<'_>, class_name: &str) {
 /// Reads a static field (`GETSTATIC`), initializing the owner class if needed.
 pub fn read_static_field(ctx: &mut ExecCtx<'_>, owner: &str, name: &str, desc: &str) -> V {
     ensure_class_init(ctx, owner);
+    if ctx.rt.pending_exception.is_some() {
+        return V::NULL;
+    }
+    if let Some(decl_cls) = ctx.linked.resolve_field_owner(owner, name, true) {
+        ensure_class_init(ctx, &decl_cls);
+        if ctx.rt.pending_exception.is_some() {
+            return V::NULL;
+        }
+        if let Some(v) = ctx.rt.get_static(&decl_cls, name) {
+            return v;
+        }
+        return default_value_for_desc(desc);
+    }
     if let Some(v) = ctx.rt.get_static(owner, name) {
         return v;
     }
@@ -81,22 +97,41 @@ pub fn read_static_field(ctx: &mut ExecCtx<'_>, owner: &str, name: &str, desc: &
     if let Some(v) = ctx.host.get_static_field(ctx.rt, owner, name, desc) {
         return v;
     }
-    if refuses_unmapped(owner) {
-        return reject_unmapped(ctx, &format!("GETSTATIC {owner}.{name}:{desc}"));
-    }
-    default_value_for_desc(desc)
+    *ctx.rt
+        .telemetry
+        .unmapped_calls
+        .entry(format!("GETSTATIC {owner}.{name}:{desc}"))
+        .or_insert(0) += 1;
+    reject_unmapped(ctx, &format!("GETSTATIC {owner}.{name}:{desc}"))
 }
 
 /// Writes a static field (`PUTSTATIC`), initializing the owner class if needed.
 pub fn write_static_field(ctx: &mut ExecCtx<'_>, owner: &str, name: &str, desc: &str, val: V) {
     ensure_class_init(ctx, owner);
-    if !ctx.host.put_static_field(ctx.rt, owner, name, desc, val) {
-        if refuses_unmapped(owner) {
-            let _ = reject_unmapped(ctx, &format!("PUTSTATIC {owner}.{name}:{desc}"));
+    if ctx.rt.pending_exception.is_some() {
+        return;
+    }
+    if ctx.host.put_static_field(ctx.rt, owner, name, desc, val) {
+        return;
+    }
+    if let Some(decl_cls) = ctx.linked.resolve_field_owner(owner, name, true) {
+        ensure_class_init(ctx, &decl_cls);
+        if ctx.rt.pending_exception.is_some() {
             return;
         }
-        ctx.rt.put_static(owner, name, val);
+        ctx.rt.put_static(&decl_cls, name, val);
+        return;
     }
+    if ctx.linked.has_class(owner) {
+        ctx.rt.put_static(owner, name, val);
+        return;
+    }
+    *ctx.rt
+        .telemetry
+        .unmapped_calls
+        .entry(format!("PUTSTATIC {owner}.{name}:{desc}"))
+        .or_insert(0) += 1;
+    let _ = reject_unmapped(ctx, &format!("PUTSTATIC {owner}.{name}:{desc}"));
 }
 
 /// Reads an instance field (`GETFIELD`).
@@ -126,10 +161,15 @@ pub fn read_instance_field(
     {
         return v;
     }
-    if refuses_unmapped(owner) {
-        return reject_unmapped(ctx, &format!("GETFIELD {owner}.{name}:{desc}"));
+    if ctx.linked.resolve_field_owner(owner, name, false).is_some() {
+        return default_value_for_desc(desc);
     }
-    default_value_for_desc(desc)
+    *ctx.rt
+        .telemetry
+        .unmapped_calls
+        .entry(format!("GETFIELD {owner}.{name}:{desc}"))
+        .or_insert(0) += 1;
+    reject_unmapped(ctx, &format!("GETFIELD {owner}.{name}:{desc}"))
 }
 
 /// Writes an instance field (`PUTFIELD`).
@@ -158,6 +198,9 @@ pub fn default_value_for_desc(desc: &str) -> V {
 /// Allocates an uninitialized object of `class_name`, pre-seeding default primitive field values.
 pub fn alloc_new_object(ctx: &mut ExecCtx<'_>, class_name: &str) -> V {
     ensure_class_init(ctx, class_name);
+    if ctx.rt.pending_exception.is_some() {
+        return V::NULL;
+    }
     match class_name {
         "java/lang/StringBuilder" | "java/lang/StringBuffer" => {
             return ctx
@@ -225,6 +268,9 @@ pub fn invoke_member(ctx: &mut ExecCtx<'_>, opcode: u8, member: &MemberRef, args
 
     if is_static {
         ensure_class_init(ctx, &member.owner);
+        if ctx.rt.pending_exception.is_some() {
+            return V::NULL;
+        }
     } else if args.first().is_none_or(|v| v.is_null()) {
         return ctx.rt.throw_exception(
             "java/lang/NullPointerException",
@@ -270,34 +316,13 @@ pub fn invoke_member(ctx: &mut ExecCtx<'_>, opcode: u8, member: &MemberRef, args
         return v;
     }
 
-    // 4. Unknown Minecraft / NeoForge / Mojang / bundled-library calls fail.
-    // Returning 0 or null here previously looked like a successful no-op.
+    // 4. All unmapped external method calls fail explicitly instead of returning fake defaults.
     *ctx.rt
         .telemetry
         .unmapped_calls
         .entry(member.key())
         .or_insert(0) += 1;
-    if refuses_unmapped(&member.owner) {
-        return reject_unmapped(ctx, &member.key());
-    }
-    let ret_desc = member.desc.split_once(')').map_or("V", |(_, r)| r);
-    default_value_for_desc(ret_desc)
-}
-
-fn refuses_unmapped(owner: &str) -> bool {
-    let owner = owner.trim_start_matches('[');
-    const PREFIXES: &[&str] = &[
-        "net/minecraft/",
-        "net/neoforged/",
-        "net/minecraftforge/",
-        "com/mojang/",
-        "org/apache/commons/",
-        "org/apache/maven/",
-        "org/apache/logging/",
-        "java/nio/",
-        "java/io/File",
-    ];
-    PREFIXES.iter().any(|prefix| owner.starts_with(prefix))
+    reject_unmapped(ctx, &member.key())
 }
 
 fn reject_unmapped(ctx: &mut ExecCtx<'_>, detail: &str) -> V {
@@ -310,6 +335,30 @@ fn reject_unmapped(ctx: &mut ExecCtx<'_>, detail: &str) -> V {
 /// Invokes an already-resolved method (Native AOT function, Bytecode method, or Mixin SyntheticBridge).
 pub fn invoke_resolved(ctx: &mut ExecCtx<'_>, resolved: ResolvedMethod, args: &[V]) -> V {
     ctx.depth += 1;
+    let frame_pushed = match &resolved {
+        ResolvedMethod::Native { owner, .. } => {
+            ctx.rt.call_stack.push((owner.clone(), "<native>".into()));
+            true
+        }
+        ResolvedMethod::Bridge {
+            declaring_class, ..
+        } => {
+            ctx.rt
+                .call_stack
+                .push((declaring_class.clone(), "<bridge>".into()));
+            true
+        }
+        ResolvedMethod::Bytecode {
+            declaring_class,
+            method,
+            ..
+        } => {
+            ctx.rt
+                .call_stack
+                .push((declaring_class.clone(), method.name.clone()));
+            true
+        }
+    };
     let out = match resolved {
         ResolvedMethod::Native { func, .. } => func(ctx, args),
         ResolvedMethod::Bridge {
@@ -322,6 +371,9 @@ pub fn invoke_resolved(ctx: &mut ExecCtx<'_>, resolved: ResolvedMethod, args: &[
             method,
         } => execute_bytecode_method(ctx, &pool_owner, &declaring_class, &method, args),
     };
+    if frame_pushed {
+        let _ = ctx.rt.call_stack.pop();
+    }
     ctx.depth -= 1;
     out
 }
@@ -423,6 +475,9 @@ pub fn invoke_closure(ctx: &mut ExecCtx<'_>, closure_v: V, sam_args: &[V]) -> V 
             // `REF_newInvokeSpecial` (kind == 8): `Foo::new` allocates a new `Foo` and runs `<init>`!
             if *handle_kind == 8 {
                 let inst = alloc_new_object(ctx, &member.owner);
+                if ctx.rt.pending_exception.is_some() {
+                    return V::NULL;
+                }
                 let (expected_params, _) =
                     parse_method_descriptor(&member.desc).unwrap_or_default();
                 let mut call_args = Vec::with_capacity(1 + closure.captures.len() + sam_args.len());
@@ -679,7 +734,13 @@ pub fn execute_invokedynamic(
         }
     }
 
-    V::NULL
+    let detail = format!("invokedynamic {bsm_owner}.{bsm_name} for {}{}", indy.name, indy.desc);
+    *ctx.rt
+        .telemetry
+        .unmapped_calls
+        .entry(detail.clone())
+        .or_insert(0) += 1;
+    reject_unmapped(ctx, &detail)
 }
 
 /// Executes a bytecode `MethodInfo` (with full Mixin hook weaving and exception table handling).

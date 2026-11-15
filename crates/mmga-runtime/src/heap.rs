@@ -128,6 +128,8 @@ pub struct Rt {
     pub initialized_classes: FxHashSet<String>,
     /// Long-lived pinned heap handles (registered objects, event listeners, mod instances, enum constants).
     pub pinned: FxHashSet<u32>,
+    /// Active Java call frames (`"ownerClass.methodName"`), outermost first.
+    pub call_stack: Vec<(String, String)>,
     /// Pending uncaught/in-flight Java exception reference (`V::R(id)`), cleared when caught.
     pub pending_exception: Option<u32>,
     pub telemetry: RuntimeTelemetry,
@@ -151,6 +153,7 @@ impl Rt {
             statics: FxHashMap::default(),
             initialized_classes: FxHashSet::default(),
             pinned: FxHashSet::default(),
+            call_stack: Vec::new(),
             pending_exception: None,
             telemetry: RuntimeTelemetry::default(),
         }
@@ -349,7 +352,17 @@ impl Rt {
 
     /// Raises a Java exception object on this runtime thread.
     pub fn throw_exception(&mut self, exception_class: &str, message: &str) -> V {
-        let msg_v = self.new_str(message);
+        let trace_suffix = self
+            .call_stack
+            .last()
+            .map(|(cls, m)| format!(" (at {}.{})", cls.replace('/', "."), m))
+            .unwrap_or_default();
+        let full_msg = if message.contains(" (at ") {
+            message.to_owned()
+        } else {
+            format!("{message}{trace_suffix}")
+        };
+        let msg_v = self.new_str(full_msg);
         let exc = self.new_instance(exception_class, 0);
         self.put_field(exc, "detailMessage", msg_v);
         self.pending_exception = Some(exc.r());
