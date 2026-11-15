@@ -23,8 +23,9 @@ pub use jar::{
     DiscoveredSubscriber, ModJar, SubscriberBusTarget,
 };
 pub use metadata::{
-    parse_manifest_mf, resolve_mod_load_order, DependencyOrdering, DependencyType, JarJarMetadata,
-    MixinConfig, MixinDeclaration, ModDependency, ModEntry, ModLoaderKind, ModSide, ModsToml,
+    parse_manifest_mf, resolve_mod_load_order, version_in_range, DependencyOrdering,
+    DependencyType, JarJarMetadata, MixinConfig, MixinDeclaration, ModDependency, ModEntry,
+    ModLoaderKind, ModSide, ModsToml,
 };
 pub use mixin::{
     apply_mixin_structural_weave, parse_mixin_member_selector, plan_mixins, split_method_selector,

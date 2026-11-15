@@ -2,9 +2,7 @@
 //! NeoForge `@Mod` & `@EventBusSubscriber` scanner, and resource/data extractor.
 
 use crate::class::ClassFile;
-use crate::metadata::{
-    parse_manifest_mf, JarJarMetadata, MixinConfig, ModSide, ModsToml,
-};
+use crate::metadata::{parse_manifest_mf, JarJarMetadata, MixinConfig, ModSide, ModsToml};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read};
@@ -57,6 +55,9 @@ pub struct ModJar {
     pub source_name: String,
     pub manifest_headers: BTreeMap<String, String>,
     pub mods_toml: Option<ModsToml>,
+    /// `mods.toml` files from Jar-in-Jar nested archives. Their classes are merged into
+    /// [`Self::classes`]; the manifests stay separate so each embedded mod keeps its id.
+    pub nested_manifests: Vec<ModsToml>,
     /// Internal class name (`"com/example/MyMod"`) -> parsed `ClassFile`.
     pub classes: BTreeMap<String, ClassFile>,
     /// Config path (`"mymod.mixins.json"`) -> parsed `MixinConfig`.
@@ -89,6 +90,7 @@ impl ModJar {
             source_name: source_name.into(),
             manifest_headers: BTreeMap::new(),
             mods_toml: None,
+            nested_manifests: Vec::new(),
             classes: BTreeMap::new(),
             mixin_configs: BTreeMap::new(),
             services: BTreeMap::new(),
@@ -123,21 +125,24 @@ impl ModJar {
             raw_entries.insert(entry_name, buf);
         }
 
+        let manifest_headers = raw_entries
+            .get("META-INF/MANIFEST.MF")
+            .map(|bytes| parse_manifest_mf(&String::from_utf8_lossy(bytes)))
+            .unwrap_or_default();
+        let jar_version = manifest_headers.get("Implementation-Version").cloned();
         if is_root {
-            if let Some(mf_bytes) = raw_entries.get("META-INF/MANIFEST.MF") {
-                self.manifest_headers = parse_manifest_mf(&String::from_utf8_lossy(mf_bytes));
-            }
-            let jar_version = self
-                .manifest_headers
-                .get("Implementation-Version")
-                .map(String::as_str);
-
-            if let Some(toml_bytes) = raw_entries
-                .get("META-INF/neoforge.mods.toml")
-                .or_else(|| raw_entries.get("META-INF/mods.toml"))
-            {
-                let text = String::from_utf8_lossy(toml_bytes);
-                self.mods_toml = Some(ModsToml::parse(&text, jar_version)?);
+            self.manifest_headers = manifest_headers;
+        }
+        if let Some(toml_bytes) = raw_entries
+            .get("META-INF/neoforge.mods.toml")
+            .or_else(|| raw_entries.get("META-INF/mods.toml"))
+        {
+            let parsed =
+                ModsToml::parse(&String::from_utf8_lossy(toml_bytes), jar_version.as_deref())?;
+            if is_root {
+                self.mods_toml = Some(parsed);
+            } else {
+                self.nested_manifests.push(parsed);
             }
         }
 
@@ -160,8 +165,8 @@ impl ModJar {
         for path in nested_paths {
             if let Some(nested_bytes) = raw_entries.remove(&path) {
                 self.nested_jars.push(path);
-                // Nested library classes are loaded first so root jar classes take precedence
-                let _ = self.ingest_zip_bytes(&nested_bytes, false);
+                // Nested library classes are loaded first so root jar classes take precedence.
+                self.ingest_zip_bytes(&nested_bytes, false)?;
             }
         }
 
@@ -279,9 +284,7 @@ impl ModJar {
         for cf in self.classes.values() {
             let Some(ann) = cf
                 .annotation("Lnet/neoforged/fml/common/EventBusSubscriber;")
-                .or_else(|| {
-                    cf.annotation("Lnet/neoforged/fml/common/Mod$EventBusSubscriber;")
-                })
+                .or_else(|| cf.annotation("Lnet/neoforged/fml/common/Mod$EventBusSubscriber;"))
                 .or_else(|| {
                     cf.annotation("Lnet/minecraftforge/fml/common/Mod$EventBusSubscriber;")
                 })

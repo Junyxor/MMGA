@@ -112,8 +112,8 @@ pub struct ModsToml {
 impl ModsToml {
     /// Parses `neoforge.mods.toml` or `mods.toml`, substituting `${file.jarVersion}` from `jar_version`.
     pub fn parse(toml_str: &str, jar_version: Option<&str>) -> Result<Self, String> {
-        let doc: toml::Value = toml::from_str(toml_str)
-            .map_err(|e| format!("failed to parse mods.toml: {e}"))?;
+        let doc: toml::Value =
+            toml::from_str(toml_str).map_err(|e| format!("failed to parse mods.toml: {e}"))?;
         let table = doc
             .as_table()
             .ok_or_else(|| "mods.toml root must be a table".to_owned())?;
@@ -230,24 +230,25 @@ impl ModsToml {
                     if dep_mod_id.is_empty() {
                         continue;
                     }
-                    let dep_type = if let Some(ty_str) = dt.get("type").and_then(toml::Value::as_str)
-                    {
-                        match ty_str.trim().to_ascii_lowercase().as_str() {
-                            "optional" => DependencyType::Optional,
-                            "incompatible" => DependencyType::Incompatible,
-                            "discouraged" => DependencyType::Discouraged,
-                            _ => DependencyType::Required,
-                        }
-                    } else if let Some(mandatory) = dt.get("mandatory").and_then(toml::Value::as_bool)
-                    {
-                        if mandatory {
-                            DependencyType::Required
+                    let dep_type =
+                        if let Some(ty_str) = dt.get("type").and_then(toml::Value::as_str) {
+                            match ty_str.trim().to_ascii_lowercase().as_str() {
+                                "optional" => DependencyType::Optional,
+                                "incompatible" => DependencyType::Incompatible,
+                                "discouraged" => DependencyType::Discouraged,
+                                _ => DependencyType::Required,
+                            }
+                        } else if let Some(mandatory) =
+                            dt.get("mandatory").and_then(toml::Value::as_bool)
+                        {
+                            if mandatory {
+                                DependencyType::Required
+                            } else {
+                                DependencyType::Optional
+                            }
                         } else {
-                            DependencyType::Optional
-                        }
-                    } else {
-                        DependencyType::Required
-                    };
+                            DependencyType::Required
+                        };
 
                     let ordering = match get_str(dt, "ordering").to_ascii_uppercase().as_str() {
                         "BEFORE" => DependencyOrdering::Before,
@@ -367,6 +368,116 @@ pub struct JarJarIdentifier {
     pub group: String,
     #[serde(default)]
     pub artifact: String,
+}
+
+/// Whether `version` satisfies a NeoForge `versionRange` (Maven range syntax).
+///
+/// `+build` metadata is ignored. A hyphen starts a qualifier and is not compared, so
+/// `1.0.82+mc1.21.1` matches `[1.0.82,)`. An empty range or `*` matches any version.
+pub fn version_in_range(version: &str, range: &str) -> bool {
+    let range = range.trim();
+    if range.is_empty() || range == "*" || range == "[,)" || range == "(,)" {
+        return true;
+    }
+    split_maven_ranges(range)
+        .iter()
+        .any(|piece| maven_piece_matches(version, piece))
+}
+
+fn split_maven_ranges(range: &str) -> Vec<&str> {
+    let bytes = range.as_bytes();
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut i = 0usize;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b',' && (bytes[i + 1] == b'[' || bytes[i + 1] == b'(') {
+            out.push(&range[start..i]);
+            start = i + 1;
+        }
+        i += 1;
+    }
+    out.push(&range[start..]);
+    out
+}
+
+fn maven_piece_matches(version: &str, piece: &str) -> bool {
+    let piece = piece.trim();
+    if piece.is_empty() {
+        return false;
+    }
+    let (inclusive_lo, rest) = if let Some(rest) = piece.strip_prefix('[') {
+        (true, rest)
+    } else if let Some(rest) = piece.strip_prefix('(') {
+        (false, rest)
+    } else {
+        return version_cmp(version, piece) == std::cmp::Ordering::Equal;
+    };
+    let (inclusive_hi, body) = if let Some(body) = rest.strip_suffix(']') {
+        (true, body)
+    } else if let Some(body) = rest.strip_suffix(')') {
+        (false, body)
+    } else {
+        return false;
+    };
+    if !body.contains(',') {
+        return version_cmp(version, body.trim()) == std::cmp::Ordering::Equal;
+    }
+    let (lo, hi) = body.split_once(',').unwrap_or((body, ""));
+    let lo_ok = lo.trim().is_empty() || {
+        let ord = version_cmp(version, lo.trim());
+        if inclusive_lo {
+            ord != std::cmp::Ordering::Less
+        } else {
+            ord == std::cmp::Ordering::Greater
+        }
+    };
+    let hi_ok = hi.trim().is_empty() || {
+        let ord = version_cmp(version, hi.trim());
+        if inclusive_hi {
+            ord != std::cmp::Ordering::Greater
+        } else {
+            ord == std::cmp::Ordering::Less
+        }
+    };
+    lo_ok && hi_ok
+}
+
+fn version_cmp(left: &str, right: &str) -> std::cmp::Ordering {
+    let lt = version_numbers(left);
+    let rt = version_numbers(right);
+    let len = lt.len().max(rt.len());
+    for i in 0..len {
+        let a = lt.get(i).copied().unwrap_or(0);
+        let b = rt.get(i).copied().unwrap_or(0);
+        match a.cmp(&b) {
+            std::cmp::Ordering::Equal => {}
+            other => return other,
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+fn version_numbers(raw: &str) -> Vec<i64> {
+    let raw = raw.split('+').next().unwrap_or(raw);
+    let mut nums = Vec::new();
+    let mut cur = String::new();
+    for ch in raw.chars() {
+        if ch.is_ascii_digit() {
+            cur.push(ch);
+        } else if !cur.is_empty() {
+            nums.push(cur.parse().unwrap_or(0));
+            cur.clear();
+            if ch == '-' {
+                break;
+            }
+        } else if ch == '-' {
+            break;
+        }
+    }
+    if !cur.is_empty() {
+        nums.push(cur.parse().unwrap_or(0));
+    }
+    nums
 }
 
 /// Resolves mod load order across multiple `ModsToml` descriptors, checking required & incompatible
@@ -529,5 +640,21 @@ side = "BOTH"
         // Even if addon is passed first, topological sort puts `kinetic_core` first!
         let order = resolve_mod_load_order(&[&addon, &core], false).unwrap();
         assert_eq!(order, vec!["kinetic_core", "kinetic_addon"]);
+    }
+
+    #[test]
+    fn maven_ranges_match_neoforge_and_embedded_mod_versions() {
+        assert!(version_in_range("21.1.266", "[21.1.219,)"));
+        assert!(!version_in_range("21.1.100", "[21.1.219,)"));
+        assert!(version_in_range("21.1.266", "[21.0,21.2)"));
+        assert!(!version_in_range("21.2.0", "[21.0,21.2)"));
+        assert!(version_in_range("1.21.1", "[1.21.1]"));
+        assert!(!version_in_range("1.21.2", "[1.21.1]"));
+        assert!(version_in_range("1.21.1", "[1.21,1.21.2)"));
+        assert!(version_in_range("1.0.82+mc1.21.1", "[1.0.82,)"));
+        assert!(version_in_range("1.0.6", "[1.0.0,2.0)"));
+        assert!(!version_in_range("2.0.0", "[1.0.0,2.0)"));
+        assert!(version_in_range("6.0.10", "*"));
+        assert!(version_in_range("6.0.10", ""));
     }
 }

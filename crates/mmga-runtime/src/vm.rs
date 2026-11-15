@@ -60,7 +60,10 @@ pub fn ensure_class_init(ctx: &mut ExecCtx<'_>, class_name: &str) {
         }
     }
 
-    if let Some(clinit) = ctx.linked.find_declared_method(class_name, "<clinit>", "()V") {
+    if let Some(clinit) = ctx
+        .linked
+        .find_declared_method(class_name, "<clinit>", "()V")
+    {
         let _ = invoke_resolved(ctx, clinit, &[]);
     }
 }
@@ -78,6 +81,9 @@ pub fn read_static_field(ctx: &mut ExecCtx<'_>, owner: &str, name: &str, desc: &
     if let Some(v) = ctx.host.get_static_field(ctx.rt, owner, name, desc) {
         return v;
     }
+    if refuses_unmapped(owner) {
+        return reject_unmapped(ctx, &format!("GETSTATIC {owner}.{name}:{desc}"));
+    }
     default_value_for_desc(desc)
 }
 
@@ -85,6 +91,10 @@ pub fn read_static_field(ctx: &mut ExecCtx<'_>, owner: &str, name: &str, desc: &
 pub fn write_static_field(ctx: &mut ExecCtx<'_>, owner: &str, name: &str, desc: &str, val: V) {
     ensure_class_init(ctx, owner);
     if !ctx.host.put_static_field(ctx.rt, owner, name, desc, val) {
+        if refuses_unmapped(owner) {
+            let _ = reject_unmapped(ctx, &format!("PUTSTATIC {owner}.{name}:{desc}"));
+            return;
+        }
         ctx.rt.put_static(owner, name, val);
     }
 }
@@ -98,9 +108,10 @@ pub fn read_instance_field(
     desc: &str,
 ) -> V {
     if receiver.is_null() {
-        return ctx
-            .rt
-            .throw_exception("java/lang/NullPointerException", &format!("read field `{name}` on null"));
+        return ctx.rt.throw_exception(
+            "java/lang/NullPointerException",
+            &format!("read field `{name}` on null"),
+        );
     }
     if let Some(obj) = ctx.rt.get_obj(receiver) {
         if let Data::Fields(map) = &obj.data {
@@ -109,8 +120,14 @@ pub fn read_instance_field(
             }
         }
     }
-    if let Some(v) = ctx.host.get_instance_field(ctx.rt, receiver, owner, name, desc) {
+    if let Some(v) = ctx
+        .host
+        .get_instance_field(ctx.rt, receiver, owner, name, desc)
+    {
         return v;
+    }
+    if refuses_unmapped(owner) {
+        return reject_unmapped(ctx, &format!("GETFIELD {owner}.{name}:{desc}"));
     }
     default_value_for_desc(desc)
 }
@@ -143,7 +160,9 @@ pub fn alloc_new_object(ctx: &mut ExecCtx<'_>, class_name: &str) -> V {
     ensure_class_init(ctx, class_name);
     match class_name {
         "java/lang/StringBuilder" | "java/lang/StringBuffer" => {
-            return ctx.rt.alloc(class_name, 0, Data::StringBuilder(String::new()));
+            return ctx
+                .rt
+                .alloc(class_name, 0, Data::StringBuilder(String::new()));
         }
         "java/util/ArrayList"
         | "java/util/LinkedList"
@@ -194,16 +213,12 @@ pub fn alloc_new_object(ctx: &mut ExecCtx<'_>, class_name: &str) -> V {
 /// Unified method invocation entry point for `invokestatic`, `invokespecial`,
 /// `invokevirtual`, and `invokeinterface`.
 /// For non-static calls, `args[0]` is `receiver`.
-pub fn invoke_member(
-    ctx: &mut ExecCtx<'_>,
-    opcode: u8,
-    member: &MemberRef,
-    args: &[V],
-) -> V {
+pub fn invoke_member(ctx: &mut ExecCtx<'_>, opcode: u8, member: &MemberRef, args: &[V]) -> V {
     if ctx.depth >= MAX_CALL_DEPTH {
-        return ctx
-            .rt
-            .throw_exception("java/lang/StackOverflowError", "maximum call depth exceeded");
+        return ctx.rt.throw_exception(
+            "java/lang/StackOverflowError",
+            "maximum call depth exceeded",
+        );
     }
     ctx.rt.telemetry.total_calls += 1;
     let is_static = opcode == op::INVOKESTATIC;
@@ -255,14 +270,41 @@ pub fn invoke_member(
         return v;
     }
 
-    // 4. Record unmapped host call transparently and return neutral value for return descriptor
+    // 4. Unknown Minecraft / NeoForge / Mojang / bundled-library calls fail.
+    // Returning 0 or null here previously looked like a successful no-op.
     *ctx.rt
         .telemetry
         .unmapped_calls
         .entry(member.key())
         .or_insert(0) += 1;
+    if refuses_unmapped(&member.owner) {
+        return reject_unmapped(ctx, &member.key());
+    }
     let ret_desc = member.desc.split_once(')').map_or("V", |(_, r)| r);
     default_value_for_desc(ret_desc)
+}
+
+fn refuses_unmapped(owner: &str) -> bool {
+    let owner = owner.trim_start_matches('[');
+    const PREFIXES: &[&str] = &[
+        "net/minecraft/",
+        "net/neoforged/",
+        "net/minecraftforge/",
+        "com/mojang/",
+        "org/apache/commons/",
+        "org/apache/maven/",
+        "org/apache/logging/",
+        "java/nio/",
+        "java/io/File",
+    ];
+    PREFIXES.iter().any(|prefix| owner.starts_with(prefix))
+}
+
+fn reject_unmapped(ctx: &mut ExecCtx<'_>, detail: &str) -> V {
+    ctx.rt.throw_exception(
+        "java/lang/UnsupportedOperationException",
+        &format!("MMGA does not implement `{detail}`"),
+    )
 }
 
 /// Invokes an already-resolved method (Native AOT function, Bytecode method, or Mixin SyntheticBridge).
@@ -431,7 +473,10 @@ pub fn invoke_closure(ctx: &mut ExecCtx<'_>, closure_v: V, sam_args: &[V]) -> V 
                     (DescriptorType::Boolean, V::I(v)) => {
                         return box_primitive(ctx.rt, "java/lang/Boolean", V::I(v));
                     }
-                    (DescriptorType::Int | DescriptorType::Short | DescriptorType::Byte, V::I(v)) => {
+                    (
+                        DescriptorType::Int | DescriptorType::Short | DescriptorType::Byte,
+                        V::I(v),
+                    ) => {
                         return box_primitive(ctx.rt, "java/lang/Integer", V::I(v));
                     }
                     (DescriptorType::Long, V::J(v)) => {
@@ -529,9 +574,7 @@ pub fn execute_invokedynamic(
                 member: impl_handle.1,
             },
         };
-        return ctx
-            .rt
-            .alloc(iface_cls, 0, Data::Closure(Box::new(closure)));
+        return ctx.rt.alloc(iface_cls, 0, Data::Closure(Box::new(closure)));
     }
 
     // 2. `java/lang/invoke/StringConcatFactory`
@@ -590,10 +633,7 @@ pub fn execute_invokedynamic(
         let self_v = dyn_args.first().copied().unwrap_or(V::NULL);
         match indy.name.as_str() {
             "toString" => {
-                let simple = owner_class
-                    .rsplit(['/', '$'])
-                    .next()
-                    .unwrap_or(owner_class);
+                let simple = owner_class.rsplit(['/', '$']).next().unwrap_or(owner_class);
                 let parts: Vec<String> = field_names
                     .iter()
                     .map(|fname| {
@@ -608,8 +648,9 @@ pub fn execute_invokedynamic(
                 for fname in &field_names {
                     let fv = ctx.rt.get_field(self_v, fname);
                     let fh = if let Some(s) = ctx.rt.str_of(fv) {
-                        s.encode_utf16()
-                            .fold(0i32, |acc, u| acc.wrapping_mul(31).wrapping_add(i32::from(u)))
+                        s.encode_utf16().fold(0i32, |acc, u| {
+                            acc.wrapping_mul(31).wrapping_add(i32::from(u))
+                        })
                     } else {
                         fv.i() ^ (fv.j() as i32) ^ (fv.r() as i32)
                     };
@@ -696,9 +737,16 @@ fn execute_bytecode_method(
     for hook in &applicable_hooks {
         if hook.point == InjectionPoint::Head {
             if let InjectorKind::Inject { cancellable } = hook.kind {
-                if let Some(early_ret) =
-                    run_mixin_inject_hook(ctx, declaring_class, method, &ret_type, hook, args, None, cancellable)
-                {
+                if let Some(early_ret) = run_mixin_inject_hook(
+                    ctx,
+                    declaring_class,
+                    method,
+                    &ret_type,
+                    hook,
+                    args,
+                    None,
+                    cancellable,
+                ) {
                     return early_ret;
                 }
             }
@@ -825,9 +873,7 @@ fn execute_bytecode_method(
                 stack.push(exc_v);
                 next_idx = pc_to_idx[handler_pc];
             } else {
-                return default_value_for_desc(
-                    method.desc.split_once(')').map_or("V", |(_, r)| r),
-                );
+                return default_value_for_desc(method.desc.split_once(')').map_or("V", |(_, r)| r));
             }
         }
 
@@ -1292,7 +1338,9 @@ fn step_instruction(
         op::IDIV => {
             let (b, a) = (pop(stack).i(), pop(stack).i());
             if b == 0 {
-                let _ = ctx.rt.throw_exception("java/lang/ArithmeticException", "/ by zero");
+                let _ = ctx
+                    .rt
+                    .throw_exception("java/lang/ArithmeticException", "/ by zero");
             } else {
                 stack.push(V::I(a.wrapping_div(b)));
             }
@@ -1300,7 +1348,9 @@ fn step_instruction(
         op::LDIV => {
             let (b, a) = (pop(stack).j(), pop(stack).j());
             if b == 0 {
-                let _ = ctx.rt.throw_exception("java/lang/ArithmeticException", "/ by zero");
+                let _ = ctx
+                    .rt
+                    .throw_exception("java/lang/ArithmeticException", "/ by zero");
             } else {
                 stack.push(V::J(a.wrapping_div(b)));
             }
@@ -1316,7 +1366,9 @@ fn step_instruction(
         op::IREM => {
             let (b, a) = (pop(stack).i(), pop(stack).i());
             if b == 0 {
-                let _ = ctx.rt.throw_exception("java/lang/ArithmeticException", "/ by zero");
+                let _ = ctx
+                    .rt
+                    .throw_exception("java/lang/ArithmeticException", "/ by zero");
             } else {
                 stack.push(V::I(a.wrapping_rem(b)));
             }
@@ -1324,7 +1376,9 @@ fn step_instruction(
         op::LREM => {
             let (b, a) = (pop(stack).j(), pop(stack).j());
             if b == 0 {
-                let _ = ctx.rt.throw_exception("java/lang/ArithmeticException", "/ by zero");
+                let _ = ctx
+                    .rt
+                    .throw_exception("java/lang/ArithmeticException", "/ by zero");
             } else {
                 stack.push(V::J(a.wrapping_rem(b)));
             }
@@ -1871,7 +1925,8 @@ fn step_instruction(
             let obj = pop(stack);
             if obj.is_null() {
                 stack.push(V::FALSE);
-            } else if let Some(target_cls) = insn.cp_index().and_then(|cp| cf.cp_class_name(cp).ok())
+            } else if let Some(target_cls) =
+                insn.cp_index().and_then(|cp| cf.cp_class_name(cp).ok())
             {
                 let clean_target = target_cls
                     .strip_prefix('L')

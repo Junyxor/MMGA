@@ -11,8 +11,9 @@ use crate::{
     EventCallback, EventPriority, NeoForgeState, REGISTRATION_ORDER,
 };
 use mmga_classfile::{
-    op, resolve_mod_load_order, ClassFile, DiscoveredModEntrypoint, DiscoveredSubscriber,
-    MemberRef, ModEntry, ModJar, ModLoaderKind, ModsToml, SubscriberBusTarget,
+    op, parse_method_descriptor, resolve_mod_load_order, version_in_range, ClassFile,
+    DescriptorType, DiscoveredModEntrypoint, DiscoveredSubscriber, MemberRef, ModEntry, ModJar,
+    ModLoaderKind, ModsToml, SubscriberBusTarget,
 };
 use mmga_runtime::{
     alloc_new_object, invoke_closure, invoke_member, Data, ExecCtx, HostApi, LinkedSpace, Rt, V,
@@ -21,12 +22,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const REGISTER_EVENT: &str = "net/neoforged/neoforge/registries/RegisterEvent";
 
-const CTOR_PREFERENCE: &[&str] = &[
-    "(Lnet/neoforged/bus/api/IEventBus;Lnet/neoforged/fml/ModContainer;)V",
-    "(Lnet/neoforged/bus/api/IEventBus;)V",
-    "(Lnet/neoforged/fml/ModContainer;)V",
-    "()V",
-];
+/// Minecraft and NeoForge versions this host claims when checking `versionRange`.
+///
+/// Chosen from published compatibility, not a guess: YSM 2.6.5 accepts NeoForge
+/// `[21.0,21.2)` and Minecraft `[1.21,1.21.2)`; Create 6.0.10 requires NeoForge
+/// `[21.1.219,)` and Minecraft `[1.21.1]`; Mekanism 10.7.19 requires NeoForge
+/// `[21.1.194,)` and Minecraft `[1.21.1]`. `21.1.266` is the newest stable
+/// NeoForge 21.1 release on maven.neoforged.net that sits in all three ranges.
+pub const TARGET_MINECRAFT: &str = "1.21.1";
+pub const TARGET_NEOFORGE: &str = "21.1.266";
 
 /// Where a loaded mod set sits in the FML state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,7 +71,8 @@ pub struct LoadedMod {
     pub source_name: String,
     pub entry_class: Option<String>,
     pub instance: Option<V>,
-    constructor_descriptors: Vec<String>,
+    /// Side-matching `@Mod` classes, each with its constructor descriptors.
+    entrypoints: Vec<(String, Vec<String>)>,
     subscribers: Vec<DiscoveredSubscriber>,
 }
 
@@ -98,24 +103,34 @@ pub struct FmlLoader {
     game_bus: Option<V>,
     mod_buses: BTreeMap<String, V>,
     mod_containers: BTreeMap<String, V>,
+    /// Mod id whose constructor is on the stack, for `ModLoadingContext`.
+    constructing: Option<String>,
+    config_dir: std::path::PathBuf,
+    /// `(mod id, config type)` recorded by `ModContainer.registerConfig`.
+    pub registered_configs: Vec<(String, String)>,
 }
 
 impl PreparedLoad {
     /// Parses mods, rejects missing / incompatible / cyclic dependencies, and links classes.
     pub fn from_jars(jars: Vec<ModJar>, dedicated_server: bool) -> Result<Self, String> {
-        let manifests = jars
-            .iter()
-            .map(manifest_for)
-            .collect::<Result<Vec<_>, _>>()?;
-        let refs: Vec<&ModsToml> = manifests.iter().collect();
+        let mut located: Vec<(usize, ModsToml)> = Vec::new();
+        for (idx, jar) in jars.iter().enumerate() {
+            for manifest in manifests_in(jar)? {
+                located.push((idx, manifest));
+            }
+        }
+        let refs: Vec<&ModsToml> = located.iter().map(|(_, manifest)| manifest).collect();
         let order = resolve_mod_load_order(&refs, dedicated_server)?;
+        check_version_ranges(&refs, dedicated_server)?;
 
         let mut jar_of: BTreeMap<String, usize> = BTreeMap::new();
-        for (idx, manifest) in manifests.iter().enumerate() {
+        let mut manifest_of: BTreeMap<String, usize> = BTreeMap::new();
+        for (loc_idx, (jar_idx, manifest)) in located.iter().enumerate() {
             for entry in &manifest.mods {
-                if jar_of.insert(entry.mod_id.clone(), idx).is_some() {
+                if jar_of.insert(entry.mod_id.clone(), *jar_idx).is_some() {
                     return Err(format!("duplicate mod id `{}`", entry.mod_id));
                 }
+                manifest_of.insert(entry.mod_id.clone(), loc_idx);
             }
         }
 
@@ -136,21 +151,28 @@ impl PreparedLoad {
         for mod_id in &order {
             let jar_idx = jar_of[mod_id];
             let jar = &jars[jar_idx];
-            let manifest = &manifests[jar_idx];
+            let manifest = &located[manifest_of[mod_id]].1;
             let entry = manifest
                 .mods
                 .iter()
                 .find(|m| &m.mod_id == mod_id)
                 .ok_or_else(|| format!("mod `{mod_id}` vanished during ordering"))?;
-            let entrypoints = jar.discover_entrypoints();
-            let entrypoint = entrypoints.into_iter().find(|ep| &ep.mod_id == mod_id);
-            if let Some(ep) = &entrypoint {
-                if !ep.dist_restriction.matches_server(dedicated_server) {
-                    continue;
-                }
+            let discovered = jar.discover_entrypoints();
+            let for_mod: Vec<_> = discovered
+                .iter()
+                .filter(|ep| &ep.mod_id == mod_id)
+                .cloned()
+                .collect();
+            let matching: Vec<_> = for_mod
+                .iter()
+                .filter(|ep| ep.dist_restriction.matches_server(dedicated_server))
+                .cloned()
+                .collect();
+            if !for_mod.is_empty() && matching.is_empty() {
+                continue;
             }
             let sole = manifest.mods.len() == 1;
-            mods.push(loaded_mod(entry, jar, entrypoint, sole));
+            mods.push(loaded_mod(entry, jar, matching, sole));
         }
 
         let mut linked = LinkedSpace::new();
@@ -164,6 +186,9 @@ impl PreparedLoad {
             game_bus: None,
             mod_buses: BTreeMap::new(),
             mod_containers: BTreeMap::new(),
+            constructing: None,
+            config_dir: std::env::temp_dir().join("mmga-config"),
+            registered_configs: Vec::new(),
         };
         loader.enter(LoadPhase::Discovered);
         Ok(Self { linked, loader })
@@ -295,41 +320,46 @@ impl FmlLoader {
         linked: &LinkedSpace,
         index: usize,
     ) -> Result<(), String> {
-        let Some(class_name) = self.mods[index].entry_class.clone() else {
+        let entrypoints = self.mods[index].entrypoints.clone();
+        if entrypoints.is_empty() {
             return Ok(());
-        };
-        let desc = pick_constructor(&self.mods[index].constructor_descriptors)?;
+        }
         let mod_id = self.mods[index].mod_id.clone();
         let bus = self.mod_bus_handle(rt, &mod_id);
         let container = self.mod_container_handle(rt, &mod_id);
-        let instance = {
-            let mut ctx = ExecCtx {
-                rt,
-                linked,
-                host: self,
-                depth: 0,
+        let dist = self.dist_handle(rt);
+        let mut first = None;
+        for (class_name, descriptors) in entrypoints {
+            let (desc, params) = pick_constructor(&descriptors)?;
+            self.constructing = Some(mod_id.clone());
+            let instance = {
+                let mut ctx = ExecCtx {
+                    rt,
+                    linked,
+                    host: self,
+                    depth: 0,
+                };
+                let obj = alloc_new_object(&mut ctx, &class_name);
+                let mut args = vec![obj];
+                for param in params {
+                    args.push(match param {
+                        CtorParam::Bus => bus,
+                        CtorParam::Container => container,
+                        CtorParam::Dist => dist,
+                    });
+                }
+                let member = MemberRef::new(&class_name, "<init>", &desc);
+                let _ = invoke_member(&mut ctx, op::INVOKESPECIAL, &member, &args);
+                obj
             };
-            let obj = alloc_new_object(&mut ctx, &class_name);
-            let mut args = vec![obj];
-            match desc {
-                "()V" => {}
-                "(Lnet/neoforged/bus/api/IEventBus;)V" => args.push(bus),
-                "(Lnet/neoforged/fml/ModContainer;)V" => args.push(container),
-                "(Lnet/neoforged/bus/api/IEventBus;Lnet/neoforged/fml/ModContainer;)V" => {
-                    args.push(bus);
-                    args.push(container);
-                }
-                other => {
-                    return Err(format!("internal: unhandled constructor `{other}`"));
-                }
+            self.constructing = None;
+            raise_if_pending(rt, &format!("constructing mod `{mod_id}` ({class_name})"))?;
+            rt.pin(instance);
+            if first.is_none() {
+                first = Some(instance);
             }
-            let member = MemberRef::new(&class_name, "<init>", desc);
-            let _ = invoke_member(&mut ctx, op::INVOKESPECIAL, &member, &args);
-            obj
-        };
-        raise_if_pending(rt, &format!("constructing mod `{mod_id}`"))?;
-        rt.pin(instance);
-        self.mods[index].instance = Some(instance);
+        }
+        self.mods[index].instance = first;
         Ok(())
     }
 
@@ -523,6 +553,15 @@ impl FmlLoader {
         handle
     }
 
+    fn dist_handle(&mut self, rt: &mut Rt) -> V {
+        let name = if self.dedicated_server {
+            "DEDICATED_SERVER"
+        } else {
+            "CLIENT"
+        };
+        rt.new_pinned_handle("net/neoforged/api/distmarker/Dist", "dist", 0, name)
+    }
+
     fn mod_container_handle(&mut self, rt: &mut Rt, mod_id: &str) -> V {
         if let Some(handle) = self.mod_containers.get(mod_id) {
             return *handle;
@@ -531,6 +570,199 @@ impl FmlLoader {
             rt.new_pinned_handle("net/neoforged/fml/ModContainer", "mod_container", 0, mod_id);
         self.mod_containers.insert(mod_id.to_owned(), handle);
         handle
+    }
+
+    fn version_of(&self, mod_id: &str) -> Option<String> {
+        self.mods
+            .iter()
+            .find(|loaded| loaded.mod_id == mod_id)
+            .map(|loaded| loaded.version.clone())
+    }
+
+    /// Real mod-identity and config-path calls. Unknown methods return `None`
+    /// so the VM reports them as unsupported instead of inventing a result.
+    fn fml_identity(
+        &mut self,
+        rt: &mut Rt,
+        member: &MemberRef,
+        is_static: bool,
+        args: &[V],
+    ) -> Option<V> {
+        let owner = member.owner.as_str();
+        let name = member.name.as_str();
+        if is_static && owner == "net/neoforged/fml/ModList" && name == "get" {
+            return Some(rt.new_pinned_handle(owner, "mod_list", 0, ""));
+        }
+        if owner == "net/neoforged/fml/ModList" && name == "isLoaded" {
+            let id_value = if is_static {
+                args.first().copied()
+            } else {
+                args.get(1).copied()
+            }?;
+            let id = rt.str_of(id_value).unwrap_or("").to_owned();
+            let loaded = self.version_of(&id).is_some()
+                || matches!(id.as_str(), "minecraft" | "neoforge" | "forge" | "fml");
+            return Some(V::bool(loaded));
+        }
+        if is_static && owner == "net/neoforged/fml/ModLoadingContext" && name == "get" {
+            return Some(rt.new_pinned_handle(owner, "mod_loading_context", 0, ""));
+        }
+        if is_static && owner == "java/nio/file/Files" {
+            return self.nio_files(rt, name, args);
+        }
+        if !is_static {
+            match (owner, name) {
+                ("net/neoforged/fml/ModList", "getModFileById") => {
+                    let id = rt.str_of(*args.get(1)?)?.to_owned();
+                    return Some(if self.version_of(&id).is_some() {
+                        rt.new_pinned_handle(
+                            "net/neoforged/neoforgespi/language/IModFileInfo",
+                            "mod_file_info",
+                            0,
+                            id,
+                        )
+                    } else {
+                        V::NULL
+                    });
+                }
+                ("net/neoforged/neoforgespi/language/IModFileInfo", "getFile")
+                | ("net/neoforged/fml/ModFileInfo", "getFile") => {
+                    let id = handle_tag(rt, args[0])?;
+                    return Some(rt.new_pinned_handle(
+                        "net/neoforged/neoforgespi/locating/IModFile",
+                        "mod_file",
+                        0,
+                        id,
+                    ));
+                }
+                ("net/neoforged/neoforgespi/locating/IModFile", "getModInfos") => {
+                    let id = handle_tag(rt, args[0])?;
+                    let info = rt.new_pinned_handle(
+                        "net/neoforged/neoforgespi/language/IModInfo",
+                        "mod_info",
+                        0,
+                        id,
+                    );
+                    return Some(rt.alloc("java/util/ArrayList", 0, Data::List(vec![info])));
+                }
+                ("net/neoforged/neoforgespi/language/IModInfo", "getVersion")
+                | ("net/neoforged/fml/ModInfo", "getVersion") => {
+                    let id = handle_tag(rt, args[0])?;
+                    let version = self.version_of(&id)?;
+                    return Some(rt.new_pinned_handle(
+                        "org/apache/maven/artifact/versioning/DefaultArtifactVersion",
+                        "artifact_version",
+                        0,
+                        version,
+                    ));
+                }
+                ("net/neoforged/neoforgespi/language/IModInfo", "getModId") => {
+                    let id = handle_tag(rt, args[0])?;
+                    return Some(rt.intern_str(&id));
+                }
+                ("org/apache/maven/artifact/versioning/ArtifactVersion", "toString")
+                | ("org/apache/maven/artifact/versioning/DefaultArtifactVersion", "toString") => {
+                    let version = handle_tag(rt, args[0])?;
+                    return Some(rt.new_str(version));
+                }
+                ("net/neoforged/fml/ModContainer", "getModInfo") => {
+                    let id = handle_tag(rt, args[0])?;
+                    return Some(rt.new_pinned_handle(
+                        "net/neoforged/neoforgespi/language/IModInfo",
+                        "mod_info",
+                        0,
+                        id,
+                    ));
+                }
+                ("net/neoforged/fml/ModContainer", "registerConfig") => {
+                    let id = handle_tag(rt, args[0])?;
+                    let kind = args
+                        .get(1)
+                        .and_then(|value| handle_tag(rt, *value))
+                        .unwrap_or_else(|| "COMMON".into());
+                    self.registered_configs.push((id, kind));
+                    return Some(V::Void);
+                }
+                ("net/neoforged/fml/ModLoadingContext", "getActiveContainer") => {
+                    let id = self.constructing.clone()?;
+                    return Some(self.mod_container_handle(rt, &id));
+                }
+                ("net/neoforged/fml/loading/FMLPaths", "get") => {
+                    let which = handle_tag(rt, args[0])?;
+                    if which != "config" {
+                        return None;
+                    }
+                    let dir = self.config_dir.clone();
+                    let _ = std::fs::create_dir_all(&dir);
+                    return Some(rt.new_pinned_handle(
+                        "java/nio/file/Path",
+                        "nio_path",
+                        0,
+                        dir.display().to_string(),
+                    ));
+                }
+                ("java/nio/file/Path", "resolve") => {
+                    let base = path_text(rt, args[0])?;
+                    let child = rt.str_of(*args.get(1)?)?;
+                    let joined = std::path::Path::new(&base).join(child);
+                    return Some(rt.new_pinned_handle(
+                        "java/nio/file/Path",
+                        "nio_path",
+                        0,
+                        joined.display().to_string(),
+                    ));
+                }
+                ("java/nio/file/Path", "toFile") => {
+                    let path = path_text(rt, args[0])?;
+                    return Some(rt.new_pinned_handle("java/io/File", "io_file", 0, path));
+                }
+                ("java/io/File", "<init>") => {
+                    let path = rt.str_of(*args.get(1)?)?.to_owned();
+                    let stored = rt.intern_str(&path);
+                    rt.put_field(args[0], "path", stored);
+                    return Some(V::Void);
+                }
+                ("java/io/File", "isFile" | "exists") => {
+                    let path = path_text(rt, args[0])?;
+                    let exists = std::path::Path::new(&path).exists();
+                    let ok = if name == "isFile" {
+                        std::path::Path::new(&path).is_file()
+                    } else {
+                        exists
+                    };
+                    return Some(V::bool(ok));
+                }
+                ("java/io/File", "delete") => {
+                    let path = path_text(rt, args[0])?;
+                    return Some(V::bool(std::fs::remove_file(path).is_ok()));
+                }
+                ("java/io/File", "renameTo") => {
+                    let from = path_text(rt, args[0])?;
+                    let to = path_text(rt, *args.get(1)?)?;
+                    return Some(V::bool(std::fs::rename(from, to).is_ok()));
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn nio_files(&mut self, rt: &mut Rt, name: &str, args: &[V]) -> Option<V> {
+        match name {
+            "isDirectory" => {
+                let path = path_text(rt, *args.first()?)?;
+                Some(V::bool(std::path::Path::new(&path).is_dir()))
+            }
+            "createDirectories" => {
+                let path = path_text(rt, *args.first()?)?;
+                if std::fs::create_dir_all(&path).is_err() {
+                    rt.throw_exception("java/io/IOException", &format!("createDirectories {path}"));
+                    return Some(V::NULL);
+                }
+                Some(rt.new_pinned_handle("java/nio/file/Path", "nio_path", 0, path))
+            }
+            _ => None,
+        }
     }
 
     fn bus_id_of(&self, rt: &Rt, bus: V) -> Option<BusId> {
@@ -659,6 +891,79 @@ impl FmlLoader {
         None
     }
 
+    /// Pure Minecraft value types whose behavior is fully defined and does not
+    /// pretend a world, registry, or renderer exists.
+    fn minecraft_value(
+        &mut self,
+        rt: &mut Rt,
+        member: &MemberRef,
+        is_static: bool,
+        args: &[V],
+    ) -> Option<V> {
+        let owner = member.owner.as_str();
+        let name = member.name.as_str();
+        if owner == "net/minecraft/util/StringUtil" && is_static && name == "isNullOrEmpty" {
+            let text = args.first().and_then(|value| rt.str_of(*value));
+            return Some(V::bool(text.is_none_or(|text| text.is_empty())));
+        }
+        if owner == "net/minecraft/resources/ResourceLocation" {
+            if is_static && name == "fromNamespaceAndPath" {
+                let namespace = rt.str_of(*args.first()?)?.to_owned();
+                let path = rt.str_of(*args.get(1)?)?.to_owned();
+                return Some(resource_location(rt, &namespace, &path));
+            }
+            if is_static && (name == "parse" || name == "tryParse" || name == "bySeparator") {
+                let raw = rt.str_of(*args.first()?)?.to_owned();
+                let (namespace, path) = match raw.split_once(':') {
+                    Some((namespace, path)) => (namespace.to_owned(), path.to_owned()),
+                    None => ("minecraft".to_owned(), raw),
+                };
+                return Some(resource_location(rt, &namespace, &path));
+            }
+            if !is_static && name == "<init>" {
+                let (namespace, path) = if args.len() >= 3 {
+                    (
+                        rt.str_of(*args.get(1)?)?.to_owned(),
+                        rt.str_of(*args.get(2)?)?.to_owned(),
+                    )
+                } else {
+                    let raw = rt.str_of(*args.get(1)?)?;
+                    let (namespace, path) = raw.split_once(':').unwrap_or(("minecraft", raw));
+                    (namespace.to_owned(), path.to_owned())
+                };
+                let tag = format!("{namespace}:{path}");
+                let stored = rt.intern_str(&tag);
+                rt.put_field(args[0], "id", stored);
+                return Some(V::Void);
+            }
+            if !is_static && name == "toString" {
+                return Some(rt.new_str(resource_id(rt, args[0])?));
+            }
+            if !is_static && name == "getNamespace" {
+                let id = resource_id(rt, args[0])?;
+                let namespace = id.split_once(':').map(|(ns, _)| ns).unwrap_or("minecraft");
+                return Some(rt.intern_str(namespace));
+            }
+            if !is_static && name == "getPath" {
+                let id = resource_id(rt, args[0])?;
+                let path = id
+                    .split_once(':')
+                    .map(|(_, path)| path)
+                    .unwrap_or(id.as_str());
+                return Some(rt.intern_str(path));
+            }
+            if !is_static && name == "equals" {
+                let left = resource_id(rt, args[0])?;
+                let right = args
+                    .get(1)
+                    .and_then(|value| resource_id(rt, *value))
+                    .unwrap_or_default();
+                return Some(V::bool(left == right));
+            }
+        }
+        None
+    }
+
     fn content_init(&mut self, rt: &mut Rt, member: &MemberRef, args: &[V]) -> Option<V> {
         let owner = member.owner.as_str();
         let name = member.name.as_str();
@@ -736,6 +1041,35 @@ impl HostApi for FmlLoader {
             let priority = EventPriority::parse(name);
             return Some(rt.new_pinned_handle(owner, "event_priority", priority as u64, name));
         }
+        if owner == "net/neoforged/fml/loading/FMLEnvironment" && name == "dist" {
+            return Some(self.dist_handle(rt));
+        }
+        if owner == "net/neoforged/api/distmarker/Dist"
+            && matches!(name, "CLIENT" | "DEDICATED_SERVER")
+        {
+            return Some(rt.new_pinned_handle(owner, "dist", 0, name));
+        }
+        if owner == "net/neoforged/fml/loading/FMLPaths" && name == "CONFIGDIR" {
+            return Some(rt.new_pinned_handle(owner, "fml_path", 0, "config"));
+        }
+        if owner == "net/neoforged/fml/config/ModConfig$Type"
+            && matches!(name, "COMMON" | "CLIENT" | "SERVER" | "STARTUP")
+        {
+            return Some(rt.new_pinned_handle(owner, "config_type", 0, name));
+        }
+        if owner == "org/apache/commons/lang3/SystemUtils" {
+            let arch = std::env::consts::ARCH;
+            let os = std::env::consts::OS;
+            return match name {
+                "OS_ARCH" => Some(rt.intern_str(arch)),
+                "OS_NAME" => Some(rt.intern_str(os)),
+                "OS_VERSION" => Some(rt.intern_str("")),
+                "IS_OS_LINUX" => Some(V::bool(os == "linux")),
+                "IS_OS_WINDOWS" => Some(V::bool(os == "windows")),
+                "IS_OS_MAC" | "IS_OS_MAC_OSX" => Some(V::bool(os == "macos")),
+                _ => None,
+            };
+        }
         None
     }
 
@@ -747,6 +1081,9 @@ impl HostApi for FmlLoader {
         is_static: bool,
         args: &[V],
     ) -> Option<V> {
+        if let Some(value) = self.fml_identity(rt, member, is_static, args) {
+            return Some(value);
+        }
         let owner = member.owner.as_str();
         if owner.starts_with("net/neoforged/neoforge/registries/DeferredRegister")
             && is_static
@@ -773,6 +1110,9 @@ impl HostApi for FmlLoader {
             return self.holder_get(rt, args);
         }
         if owner.starts_with("net/minecraft/") {
+            if let Some(value) = self.minecraft_value(rt, member, is_static, args) {
+                return Some(value);
+            }
             return self.content_init(rt, member, args);
         }
         None
@@ -811,7 +1151,7 @@ impl HostApi for FmlLoader {
 fn loaded_mod(
     entry: &ModEntry,
     jar: &ModJar,
-    entrypoint: Option<DiscoveredModEntrypoint>,
+    entrypoints: Vec<DiscoveredModEntrypoint>,
     sole_mod_in_jar: bool,
 ) -> LoadedMod {
     let subscribers = jar
@@ -822,18 +1162,81 @@ fn loaded_mod(
             None => sole_mod_in_jar,
         })
         .collect();
+    let inits = entrypoints
+        .iter()
+        .map(|ep| (ep.class_name.clone(), ep.constructor_descriptors.clone()))
+        .collect::<Vec<_>>();
     LoadedMod {
         mod_id: entry.mod_id.clone(),
         version: entry.version.clone(),
         display_name: entry.display_name.clone(),
         source_name: jar.source_name.clone(),
-        entry_class: entrypoint.as_ref().map(|ep| ep.class_name.clone()),
+        entry_class: inits.first().map(|(class, _)| class.clone()),
         instance: None,
-        constructor_descriptors: entrypoint
-            .map(|ep| ep.constructor_descriptors)
-            .unwrap_or_default(),
+        entrypoints: inits,
         subscribers,
     }
+}
+
+fn manifests_in(jar: &ModJar) -> Result<Vec<ModsToml>, String> {
+    let mut out = Vec::new();
+    if let Some(root) = &jar.mods_toml {
+        out.push(root.clone());
+    }
+    out.extend(jar.nested_manifests.iter().cloned());
+    if out.is_empty() {
+        out.push(manifest_for(jar)?);
+    }
+    Ok(out)
+}
+
+fn check_version_ranges(manifests: &[&ModsToml], dedicated_server: bool) -> Result<(), String> {
+    let mut versions = BTreeMap::from([
+        ("minecraft".to_owned(), TARGET_MINECRAFT.to_owned()),
+        ("neoforge".to_owned(), TARGET_NEOFORGE.to_owned()),
+        ("forge".to_owned(), TARGET_NEOFORGE.to_owned()),
+        ("fml".to_owned(), TARGET_NEOFORGE.to_owned()),
+    ]);
+    for manifest in manifests {
+        for entry in &manifest.mods {
+            versions.insert(entry.mod_id.clone(), entry.version.clone());
+        }
+    }
+    for manifest in manifests {
+        for (owner, deps) in &manifest.dependencies {
+            for dep in deps {
+                if !dep.side.matches_server(dedicated_server) {
+                    continue;
+                }
+                let Some(actual) = versions.get(&dep.mod_id) else {
+                    continue;
+                };
+                let in_range =
+                    dep.version_range.is_empty() || version_in_range(actual, &dep.version_range);
+                match dep.dep_type {
+                    mmga_classfile::DependencyType::Required
+                    | mmga_classfile::DependencyType::Optional
+                        if !in_range =>
+                    {
+                        return Err(format!(
+                            "mod `{owner}` requires `{}` {}, but {} is loaded",
+                            dep.mod_id, dep.version_range, actual
+                        ));
+                    }
+                    mmga_classfile::DependencyType::Incompatible
+                        if dep.version_range.is_empty() || in_range =>
+                    {
+                        return Err(format!(
+                            "mod `{owner}` is incompatible with `{}` {} (loaded {actual})",
+                            dep.mod_id, dep.version_range
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn manifest_for(jar: &ModJar) -> Result<ModsToml, String> {
@@ -869,16 +1272,51 @@ fn manifest_for(jar: &ModJar) -> Result<ModsToml, String> {
     })
 }
 
-fn pick_constructor(descriptors: &[String]) -> Result<&'static str, String> {
-    for preferred in CTOR_PREFERENCE {
-        if descriptors.iter().any(|desc| desc == preferred) {
-            return Ok(*preferred);
+#[derive(Clone, Copy)]
+enum CtorParam {
+    Bus,
+    Container,
+    Dist,
+}
+
+fn pick_constructor(descriptors: &[String]) -> Result<(String, Vec<CtorParam>), String> {
+    let mut best: Option<(String, Vec<CtorParam>)> = None;
+    for desc in descriptors {
+        let Ok(params) = injectable_params(desc) else {
+            continue;
+        };
+        let replace = best
+            .as_ref()
+            .is_none_or(|(_, have)| params.len() > have.len());
+        if replace {
+            best = Some((desc.clone(), params));
         }
     }
-    Err(format!(
-        "no supported mod constructor among [{}]",
-        descriptors.join(", ")
-    ))
+    best.ok_or_else(|| {
+        format!(
+            "no supported mod constructor among [{}]",
+            descriptors.join(", ")
+        )
+    })
+}
+
+fn injectable_params(desc: &str) -> Result<Vec<CtorParam>, ()> {
+    let (params, _) = parse_method_descriptor(desc).map_err(|_| ())?;
+    params
+        .into_iter()
+        .map(|param| match param {
+            DescriptorType::Object(name) if name == "net/neoforged/bus/api/IEventBus" => {
+                Ok(CtorParam::Bus)
+            }
+            DescriptorType::Object(name) if name == "net/neoforged/fml/ModContainer" => {
+                Ok(CtorParam::Container)
+            }
+            DescriptorType::Object(name) if name == "net/neoforged/api/distmarker/Dist" => {
+                Ok(CtorParam::Dist)
+            }
+            _ => Err(()),
+        })
+        .collect()
 }
 
 fn holder_class_for(registry_key: &str) -> &'static str {
@@ -931,6 +1369,37 @@ fn content_properties(rt: &Rt, registry: &str, value: V) -> ContentProperties {
     }
 }
 
+fn resource_location(rt: &mut Rt, namespace: &str, path: &str) -> V {
+    rt.new_pinned_handle(
+        "net/minecraft/resources/ResourceLocation",
+        "resource_location",
+        0,
+        format!("{namespace}:{path}"),
+    )
+}
+
+fn resource_id(rt: &Rt, value: V) -> Option<String> {
+    if let Some(("resource_location", _, tag, _)) = rt.handle_of(value) {
+        return Some(tag.to_owned());
+    }
+    rt.str_of(rt.get_field(value, "id")).map(str::to_owned)
+}
+
+fn handle_tag(rt: &Rt, value: V) -> Option<String> {
+    rt.handle_of(value).map(|(_, _, tag, _)| tag.to_owned())
+}
+
+fn path_text(rt: &Rt, value: V) -> Option<String> {
+    if let Some((kind, _, tag, _)) = rt.handle_of(value) {
+        if kind == "nio_path" || kind == "io_file" || kind == "fml_path" {
+            return Some(tag.to_owned());
+        }
+    }
+    rt.str_of(rt.get_field(value, "path"))
+        .map(str::to_owned)
+        .or_else(|| rt.str_of(value).map(str::to_owned))
+}
+
 fn raise_if_pending(rt: &mut Rt, context: &str) -> Result<(), String> {
     match rt.take_exception() {
         Some(exc) => Err(format!("{context}: {}", rt.exception_summary(exc))),
@@ -942,6 +1411,7 @@ fn raise_if_pending(rt: &mut Rt, context: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::BlockCoord;
+    use std::io::{Cursor, Write};
     use std::process::Command;
 
     fn empty_jar(name: &str, toml: &str) -> ModJar {
@@ -954,6 +1424,7 @@ mod tests {
             services: BTreeMap::new(),
             resources: BTreeMap::new(),
             nested_jars: Vec::new(),
+            nested_manifests: Vec::new(),
         }
     }
 
@@ -1009,6 +1480,158 @@ mod tests {
         );
         let err = PreparedLoad::from_jars(vec![left, right], true).unwrap_err();
         assert!(err.contains("incompatibil"), "{err}");
+    }
+
+    #[test]
+    fn resource_location_round_trips_and_empty_string_is_detected() {
+        let mut prepared = PreparedLoad::from_jars(Vec::new(), true).unwrap();
+        let mut rt = Rt::new();
+        let namespace = rt.intern_str("mekanism");
+        let path = rt.intern_str("energy");
+        let empty = rt.intern_str("");
+        let linked = &prepared.linked;
+        let id = {
+            let mut ctx = ExecCtx {
+                rt: &mut rt,
+                linked,
+                host: &mut prepared.loader,
+                depth: 0,
+            };
+            let loc = invoke_member(
+                &mut ctx,
+                op::INVOKESTATIC,
+                &MemberRef::new(
+                    "net/minecraft/resources/ResourceLocation",
+                    "fromNamespaceAndPath",
+                    "(Ljava/lang/String;Ljava/lang/String;)Lnet/minecraft/resources/ResourceLocation;",
+                ),
+                &[namespace, path],
+            );
+            let text = invoke_member(
+                &mut ctx,
+                op::INVOKEVIRTUAL,
+                &MemberRef::new(
+                    "net/minecraft/resources/ResourceLocation",
+                    "toString",
+                    "()Ljava/lang/String;",
+                ),
+                &[loc],
+            );
+            assert!(
+                invoke_member(
+                    &mut ctx,
+                    op::INVOKESTATIC,
+                    &MemberRef::new(
+                        "net/minecraft/util/StringUtil",
+                        "isNullOrEmpty",
+                        "(Ljava/lang/String;)Z",
+                    ),
+                    &[empty],
+                )
+                .i() != 0
+            );
+            ctx.rt.str_of(text).unwrap().to_owned()
+        };
+        assert_eq!(id, "mekanism:energy");
+        assert!(rt.take_exception().is_none());
+    }
+
+    #[test]
+    fn constructor_parameter_order_follows_the_descriptor() {
+        let (desc, params) = pick_constructor(&[
+            ("(Lnet/neoforged/fml/ModContainer;Lnet/neoforged/bus/api/IEventBus;)V".into()),
+        ])
+        .unwrap();
+        assert!(desc.contains("ModContainer"));
+        assert!(matches!(params[0], CtorParam::Container));
+        assert!(matches!(params[1], CtorParam::Bus));
+    }
+
+    #[test]
+    fn embedded_jar_in_jar_mod_satisfies_a_required_dependency() {
+        let mut nested = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut nested);
+            let opts = zip::write::SimpleFileOptions::default();
+            zip.start_file("META-INF/neoforge.mods.toml", opts).unwrap();
+            zip.write_all(
+                br#"
+modLoader = "javafml"
+loaderVersion = "[0,)"
+license = "MIT"
+[[mods]]
+modId = "ponder"
+version = "1.0.82+mc1.21.1"
+[[dependencies.ponder]]
+modId = "neoforge"
+type = "required"
+versionRange = "[21.1.206,)"
+side = "BOTH"
+[[dependencies.ponder]]
+modId = "minecraft"
+type = "required"
+versionRange = "[1.21.1]"
+side = "BOTH"
+"#,
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+        let mut outer = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut outer);
+            let opts = zip::write::SimpleFileOptions::default();
+            zip.start_file("META-INF/jarjar/ponder.jar", opts).unwrap();
+            zip.write_all(nested.get_ref()).unwrap();
+            zip.start_file("META-INF/neoforge.mods.toml", opts).unwrap();
+            zip.write_all(
+                br#"
+modLoader = "javafml"
+loaderVersion = "[0,)"
+license = "MIT"
+[[mods]]
+modId = "create"
+version = "6.0.10"
+[[dependencies.create]]
+modId = "neoforge"
+type = "required"
+versionRange = "[21.1.219,)"
+side = "BOTH"
+[[dependencies.create]]
+modId = "minecraft"
+type = "required"
+versionRange = "[1.21.1]"
+side = "BOTH"
+[[dependencies.create]]
+modId = "ponder"
+type = "required"
+versionRange = "[1.0.82,)"
+ordering = "AFTER"
+side = "BOTH"
+[[dependencies.create]]
+modId = "flywheel"
+type = "required"
+versionRange = "[1.0.0,2.0)"
+ordering = "AFTER"
+side = "CLIENT"
+"#,
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+        let jar = ModJar::from_bytes("create-fixture.jar", outer.get_ref()).unwrap();
+        assert!(jar
+            .nested_manifests
+            .iter()
+            .any(|manifest| manifest.mods.iter().any(|entry| entry.mod_id == "ponder")));
+        let prepared = PreparedLoad::from_jars(vec![jar], true).unwrap();
+        let ids: Vec<_> = prepared
+            .loader
+            .mods
+            .iter()
+            .map(|loaded| loaded.mod_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["ponder", "create"]);
     }
 
     #[test]

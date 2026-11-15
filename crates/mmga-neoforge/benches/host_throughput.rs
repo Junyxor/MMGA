@@ -136,6 +136,7 @@ fn bench_server_ticks() {
         services: BTreeMap::new(),
         resources: BTreeMap::new(),
         nested_jars: Vec::new(),
+        nested_manifests: Vec::new(),
     };
     let mut prepared = PreparedLoad::from_jars(vec![jar], true).unwrap();
     let mut rt = Rt::new();

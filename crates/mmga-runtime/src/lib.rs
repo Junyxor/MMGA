@@ -182,16 +182,43 @@ mod tests {
         let desc_v = invoke_member(
             &mut ctx,
             mmga_classfile::op::INVOKEVIRTUAL,
-            &mmga_classfile::MemberRef::new(
-                "demo/Machine",
-                "describe",
-                "(I)Ljava/lang/String;",
-            ),
+            &mmga_classfile::MemberRef::new("demo/Machine", "describe", "(I)Ljava/lang/String;"),
             &[machine, rpm],
         );
         assert_eq!(
             ctx.rt.str_of(desc_v),
             Some("Status:Gear[id=shaft, teeth=174]")
         );
+    }
+
+    #[test]
+    fn unmapped_minecraft_call_fails_instead_of_returning_zero() {
+        let mut rt = Rt::new();
+        let linked = LinkedSpace::new();
+        let mut host = NullHost;
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        let value = invoke_member(
+            &mut ctx,
+            mmga_classfile::op::INVOKESTATIC,
+            &mmga_classfile::MemberRef::new(
+                "net/minecraft/world/level/Level",
+                "isClientSide",
+                "()Z",
+            ),
+            &[],
+        );
+        assert_eq!(value, V::NULL);
+        let exc = ctx.rt.take_exception().expect("missing API must throw");
+        let summary = ctx.rt.exception_summary(exc);
+        assert!(
+            summary.contains("UnsupportedOperationException"),
+            "{summary}"
+        );
+        assert!(summary.contains("Level.isClientSide"), "{summary}");
     }
 }

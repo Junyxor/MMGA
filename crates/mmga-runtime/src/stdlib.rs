@@ -282,6 +282,16 @@ pub fn stdlib_call(
 
     // 7. `java/lang/System` & `java/io/PrintStream` & SLF4J / Log4j Loggers
     if owner == "java/lang/System" {
+        if name == "load" || name == "loadLibrary" {
+            let lib = args
+                .first()
+                .map(|&v| ctx.rt.value_to_string(v))
+                .unwrap_or_default();
+            return Some(ctx.rt.throw_exception(
+                "java/lang/UnsatisfiedLinkError",
+                &format!("MMGA does not run JNI libraries ({lib})"),
+            ));
+        }
         return match name {
             "currentTimeMillis" => Some(V::J(1_763_138_880_000)),
             "nanoTime" => Some(V::J(1_000_000_000)),
@@ -322,7 +332,10 @@ pub fn stdlib_call(
         return Some(V::Void);
     }
 
-    if owner == "org/slf4j/LoggerFactory" || owner == "com/mojang/logging/LogUtils" {
+    if owner == "org/slf4j/LoggerFactory"
+        || owner == "com/mojang/logging/LogUtils"
+        || owner == "org/apache/logging/log4j/LogManager"
+    {
         if name == "getLogger" {
             let tag = args
                 .first()
