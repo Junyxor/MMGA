@@ -1,0 +1,14 @@
+[package]
+name = "mmga-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Zero-JVM object model, write-barrier generational GC, linked class space, JDK stdlib, and bytecode VM"
+
+[dependencies]
+mmga-classfile = { path = "../mmga-classfile" }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
