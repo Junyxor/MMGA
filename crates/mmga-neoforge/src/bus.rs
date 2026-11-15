@@ -376,11 +376,29 @@ pub fn is_mod_bus_event_class(class_name: &str) -> bool {
     if let Some(spec) = find_builtin_event(class_name) {
         return spec.is_mod_bus;
     }
+    if class_name == "net/neoforged/neoforge/event/RegisterCommandsEvent"
+        || class_name == "net/neoforged/neoforge/client/event/RegisterClientCommandsEvent"
+    {
+        return false;
+    }
     class_name.starts_with("net/neoforged/fml/event/")
         || class_name.starts_with("net/neoforged/neoforge/registries/")
-        || class_name.ends_with("RegisterCapabilitiesEvent")
-        || class_name.ends_with("RegisterPayloadHandlersEvent")
-        || class_name.ends_with("BuildCreativeModeTabContentsEvent")
+        || class_name.starts_with("net/neoforged/neoforge/data/event/")
+        || class_name.starts_with("net/neoforged/neoforge/client/event/Register")
+        || class_name.starts_with("net/neoforged/neoforge/client/event/EntityRenderersEvent$")
+        || class_name.starts_with("net/neoforged/neoforge/client/event/ModelEvent$")
+        || class_name.starts_with("net/neoforged/neoforge/client/extensions/common/RegisterClientExtensionsEvent")
+        || matches!(
+            class_name,
+            "net/neoforged/neoforge/capabilities/RegisterCapabilitiesEvent"
+                | "net/neoforged/neoforge/network/event/RegisterPayloadHandlersEvent"
+                | "net/neoforged/neoforge/event/BuildCreativeModeTabContentsEvent"
+                | "net/neoforged/neoforge/event/ModifyDefaultComponentsEvent"
+                | "net/neoforged/neoforge/event/AddPackFindersEvent"
+                | "net/neoforged/neoforge/event/entity/EntityAttributeCreationEvent"
+                | "net/neoforged/neoforge/event/entity/EntityAttributeModificationEvent"
+                | "net/neoforged/neoforge/event/entity/RegisterSpawnPlacementsEvent"
+        )
 }
 
 /// Target callback of a registered event listener.

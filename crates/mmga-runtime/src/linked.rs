@@ -329,6 +329,9 @@ impl LinkedSpace {
                     queue.push_back(iface.clone());
                 }
             }
+            for &jdk_sup in jdk_supertypes(&cur) {
+                queue.push_back(jdk_sup.to_owned());
+            }
         }
         false
     }
@@ -483,4 +486,80 @@ pub struct ExecCtx<'a> {
     pub linked: &'a LinkedSpace,
     pub host: &'a mut dyn HostApi,
     pub depth: usize,
+}
+
+fn jdk_supertypes(cls: &str) -> &'static [&'static str] {
+    match cls {
+        "java/lang/Throwable" => &["java/io/Serializable"],
+        "java/lang/Error" | "java/lang/Exception" => &["java/lang/Throwable"],
+        "java/lang/LinkageError" | "java/lang/AssertionError" | "java/lang/VirtualMachineError" => {
+            &["java/lang/Error"]
+        }
+        "java/lang/UnsatisfiedLinkError"
+        | "java/lang/NoClassDefFoundError"
+        | "java/lang/ExceptionInInitializerError"
+        | "java/lang/IncompatibleClassChangeError" => &["java/lang/LinkageError"],
+        "java/lang/StackOverflowError" | "java/lang/OutOfMemoryError" => {
+            &["java/lang/VirtualMachineError"]
+        }
+        "java/lang/RuntimeException"
+        | "java/io/IOException"
+        | "java/lang/ReflectiveOperationException" => &["java/lang/Exception"],
+        "java/io/EOFException" | "java/io/FileNotFoundException" => &["java/io/IOException"],
+        "java/io/UncheckedIOException"
+        | "java/lang/NullPointerException"
+        | "java/lang/IllegalArgumentException"
+        | "java/lang/IllegalStateException"
+        | "java/lang/UnsupportedOperationException"
+        | "java/lang/IndexOutOfBoundsException"
+        | "java/lang/ClassCastException"
+        | "java/lang/ArithmeticException"
+        | "java/lang/IllegalCallerException"
+        | "java/util/NoSuchElementException"
+        | "java/util/ConcurrentModificationException" => &["java/lang/RuntimeException"],
+        "java/lang/NumberFormatException" => &["java/lang/IllegalArgumentException"],
+        "java/lang/ArrayIndexOutOfBoundsException" | "java/lang/StringIndexOutOfBoundsException" => {
+            &["java/lang/IndexOutOfBoundsException"]
+        }
+        "java/lang/String" | "java/lang/StringBuilder" | "java/lang/StringBuffer" => &[
+            "java/lang/CharSequence",
+            "java/lang/Comparable",
+            "java/io/Serializable",
+        ],
+        "java/lang/Integer"
+        | "java/lang/Long"
+        | "java/lang/Float"
+        | "java/lang/Double"
+        | "java/lang/Byte"
+        | "java/lang/Short" => &["java/lang/Number", "java/lang/Comparable"],
+        "java/lang/Boolean" | "java/lang/Character" | "java/lang/Enum" => {
+            &["java/lang/Comparable", "java/io/Serializable"]
+        }
+        "java/util/Collection" => &["java/lang/Iterable"],
+        "java/util/SequencedCollection" => &["java/util/Collection"],
+        "java/util/List" | "java/util/Set" | "java/util/Queue" => {
+            &["java/util/SequencedCollection", "java/util/Collection"]
+        }
+        "java/util/Deque" => &["java/util/Queue"],
+        "java/util/ArrayList"
+        | "java/util/LinkedList"
+        | "java/util/concurrent/CopyOnWriteArrayList" => &["java/util/List"],
+        "java/util/ArrayDeque" => &["java/util/Deque"],
+        "java/util/HashSet" | "java/util/LinkedHashSet" | "java/util/TreeSet" => &["java/util/Set"],
+        "java/util/HashMap"
+        | "java/util/LinkedHashMap"
+        | "java/util/TreeMap"
+        | "java/util/EnumMap"
+        | "java/util/IdentityHashMap"
+        | "java/util/concurrent/ConcurrentHashMap" => &["java/util/Map"],
+        "java/util/AbstractMap$SimpleEntry" | "java/util/AbstractMap$SimpleImmutableEntry" => {
+            &["java/util/Map$Entry"]
+        }
+        "org/apache/commons/lang3/tuple/ImmutablePair" => &["org/apache/commons/lang3/tuple/Pair"],
+        "org/apache/commons/lang3/tuple/Pair" => &["java/util/Map$Entry"],
+        "java/io/ByteArrayInputStream" => &["java/io/InputStream"],
+        "java/io/InputStream" => &["java/io/Closeable"],
+        "java/io/Closeable" => &["java/lang/AutoCloseable"],
+        _ => &[],
+    }
 }

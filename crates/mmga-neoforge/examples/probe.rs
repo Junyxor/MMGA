@@ -112,14 +112,34 @@ fn main() {
             match prepared.bootstrap(&mut rt) {
                 Ok(()) => {
                     println!(
-                        "bootstrap returned Ok phase={:?} trace={:?} mod_entries={} events_posted={} callbacks={} unmapped={}",
+                        "bootstrap returned Ok phase={:?} trace={:?} mod_entries={} configs={} commands={} listeners={} loading_issues={} events_posted={} callbacks={} unmapped={}",
                         prepared.loader.phase,
                         prepared.loader.trace,
                         prepared.loader.state.registries.total_mod_entries(),
+                        prepared.loader.registered_configs.len(),
+                        prepared.loader.state.commands.roots.len(),
+                        prepared.loader.state.bus.listener_count(),
+                        prepared.loader.loading_issues.len(),
                         prepared.loader.state.bus.events_posted,
                         prepared.loader.state.bus.callbacks_invoked,
                         rt.telemetry.unmapped_calls.len()
                     );
+                    for issue in &prepared.loader.loading_issues {
+                        println!(
+                            "  loading_issue [{}] mod={:?} key={}: {}",
+                            issue.severity, issue.mod_id, issue.translation_key, issue.message
+                        );
+                    }
+                    for log in rt.telemetry.logs.iter().take(15) {
+                        println!("  log: {log}");
+                    }
+                    match prepared.loader.tick_server(&mut rt, &prepared.linked, 1) {
+                        Ok(()) => println!(
+                            "tick_server(1) returned Ok game_time={}",
+                            prepared.loader.state.world.game_time
+                        ),
+                        Err(err) => println!("TICK FAILED: {err}"),
+                    }
                     let mut keys: Vec<_> = rt.telemetry.unmapped_calls.keys().cloned().collect();
                     keys.sort();
                     for key in keys.iter().take(30) {
@@ -129,7 +149,19 @@ fn main() {
                         "NOTE: Ok only means the loader finished its phase list. It is not gameplay, world simulation, or rendering."
                     );
                 }
-                Err(err) => println!("BOOTSTRAP FAILED at {:?}: {err}", prepared.loader.phase),
+                Err(err) => {
+                    println!(
+                        "BOOTSTRAP FAILED at {:?} (trace={:?}, mod_entries={}, configs={}, listeners={}): {err}",
+                        prepared.loader.phase,
+                        prepared.loader.trace,
+                        prepared.loader.state.registries.total_mod_entries(),
+                        prepared.loader.registered_configs.len(),
+                        prepared.loader.state.bus.listener_count(),
+                    );
+                    for log in rt.telemetry.logs.iter().take(15) {
+                        println!("  log: {log}");
+                    }
+                }
             }
         }
     }

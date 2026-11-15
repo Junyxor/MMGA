@@ -16,7 +16,8 @@ use mmga_classfile::{
     ModLoaderKind, ModsToml, SubscriberBusTarget,
 };
 use mmga_runtime::{
-    alloc_new_object, invoke_closure, invoke_member, Data, ExecCtx, HostApi, LinkedSpace, Rt, V,
+    alloc_new_object, box_primitive, invoke_closure, invoke_member, Data, ExecCtx, HostApi,
+    LinkedSpace, Rt, V,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -91,6 +92,24 @@ impl std::fmt::Debug for PreparedLoad {
     }
 }
 
+/// Recorded `ModLoadingIssue` reported through `ModLoader.addLoadingIssue`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedLoadingIssue {
+    pub severity: String,
+    pub mod_id: Option<String>,
+    pub translation_key: String,
+    pub message: String,
+}
+
+/// Queued `InterModComms.IMCMessage` entry.
+#[derive(Debug, Clone)]
+pub struct ImcEntry {
+    pub sender_mod_id: String,
+    pub mod_id: String,
+    pub method: String,
+    pub supplier: V,
+}
+
 /// NeoForge `FML` / `ModLoader` host. Owns [`NeoForgeState`] and the bus handles mods see.
 #[derive(Debug)]
 pub struct FmlLoader {
@@ -103,11 +122,21 @@ pub struct FmlLoader {
     game_bus: Option<V>,
     mod_buses: BTreeMap<String, V>,
     mod_containers: BTreeMap<String, V>,
-    /// Mod id whose constructor is on the stack, for `ModLoadingContext`.
+    /// Mod id currently constructing or receiving a mod-bus event (`ModLoadingContext`).
     constructing: Option<String>,
     config_dir: std::path::PathBuf,
     /// `(mod id, config type)` recorded by `ModContainer.registerConfig`.
     pub registered_configs: Vec<(String, String)>,
+    /// Issues submitted via `ModLoader.addLoadingIssue`.
+    pub loading_issues: Vec<RecordedLoadingIssue>,
+    /// Messages queued via `InterModComms.sendTo`.
+    pub imc_messages: Vec<ImcEntry>,
+    /// Deferred main-thread tasks queued via `ParallelDispatchEvent.enqueueWork`: `(mod_id, closure, future)`.
+    queued_work: Vec<(Option<String>, V, V)>,
+    /// Non-class resource bytes merged from loaded jars (`Class#getResource`).
+    pub jar_resources: BTreeMap<String, Vec<u8>>,
+    /// Language keys loaded from `assets/*/lang/en_us.json` in loaded jars.
+    pub translations: BTreeMap<String, String>,
 }
 
 impl PreparedLoad {
@@ -135,7 +164,15 @@ impl PreparedLoad {
         }
 
         let mut classes: BTreeMap<String, ClassFile> = BTreeMap::new();
+        let mut jar_resources: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        let mut translations: BTreeMap<String, String> = BTreeMap::new();
         for jar in &jars {
+            crate::minecraft::extract_lang_entries(&jar.resources, &mut translations);
+            for (rpath, rbytes) in &jar.resources {
+                jar_resources
+                    .entry(rpath.clone())
+                    .or_insert_with(|| rbytes.clone());
+            }
             for (name, cf) in &jar.classes {
                 if classes.contains_key(name) {
                     return Err(format!(
@@ -189,6 +226,11 @@ impl PreparedLoad {
             constructing: None,
             config_dir: std::env::temp_dir().join("mmga-config"),
             registered_configs: Vec::new(),
+            loading_issues: Vec::new(),
+            imc_messages: Vec::new(),
+            queued_work: Vec::new(),
+            jar_resources,
+            translations,
         };
         loader.enter(LoadPhase::Discovered);
         Ok(Self { linked, loader })
@@ -314,6 +356,56 @@ impl FmlLoader {
         Ok(())
     }
 
+    /// Dispatches a slash command against registered Brigadier roots, returning `(exit_code, messages)`.
+    pub fn execute_command(
+        &mut self,
+        rt: &mut Rt,
+        linked: &LinkedSpace,
+        command_line: &str,
+        is_player: bool,
+    ) -> Result<(i32, Vec<String>), String> {
+        let Some((cmd_closure, parsed_args)) = self.state.commands.match_command(command_line)
+        else {
+            return Err(format!("unknown or incomplete command `{command_line}`"));
+        };
+        let source = rt.new_instance("net/minecraft/commands/CommandSourceStack", 0);
+        let msg_list = rt.alloc("java/util/ArrayList", 0, Data::List(Vec::new()));
+        rt.put_field(source, "$is_player", V::bool(is_player));
+        rt.put_field(source, "$messages", msg_list);
+
+        let cmd_ctx = rt.new_instance("com/mojang/brigadier/context/CommandContext", 0);
+        rt.put_field(cmd_ctx, "$source", source);
+        for (k, val) in parsed_args {
+            let v = match val {
+                crate::ConfigPrimitive::Bool(b) => box_primitive(rt, "java/lang/Boolean", V::bool(b)),
+                crate::ConfigPrimitive::Int(i) => box_primitive(rt, "java/lang/Integer", V::I(i)),
+                crate::ConfigPrimitive::Long(l) => box_primitive(rt, "java/lang/Long", V::J(l)),
+                crate::ConfigPrimitive::Double(d) => box_primitive(rt, "java/lang/Double", V::D(d)),
+                crate::ConfigPrimitive::Text(s) => rt.new_str(s),
+            };
+            rt.put_field(cmd_ctx, format!("$arg:{k}"), v);
+        }
+
+        let code = {
+            let mut ctx = ExecCtx {
+                rt,
+                linked,
+                host: self,
+                depth: 0,
+            };
+            invoke_closure(&mut ctx, cmd_closure, &[cmd_ctx]).i()
+        };
+        raise_if_pending(rt, &format!("executing command `{command_line}`"))?;
+        let messages = match rt.get_obj(msg_list).map(|o| &o.data) {
+            Some(Data::List(items)) => items
+                .iter()
+                .filter_map(|&v| rt.str_of(v).map(str::to_owned))
+                .collect(),
+            _ => Vec::new(),
+        };
+        Ok((code, messages))
+    }
+
     fn construct_one(
         &mut self,
         rt: &mut Rt,
@@ -418,7 +510,8 @@ impl FmlLoader {
             self.flush_registry(rt, linked, key)?;
             for mod_id in &mod_ids {
                 let registry_key = key.clone();
-                self.post(
+                let prev = self.constructing.replace(mod_id.clone());
+                let res = self.post(
                     rt,
                     linked,
                     &BusId::Mod(mod_id.clone()),
@@ -427,7 +520,9 @@ impl FmlLoader {
                         let label = rt.intern_str(&registry_key);
                         rt.put_field(event, "registryKey", label);
                     },
-                )?;
+                );
+                self.constructing = prev;
+                res?;
             }
             self.flush_registry(rt, linked, key)?;
         }
@@ -486,9 +581,79 @@ impl FmlLoader {
     ) -> Result<(), String> {
         let ids: Vec<String> = self.mods.iter().map(|m| m.mod_id.clone()).collect();
         for id in ids {
-            self.post(rt, linked, &BusId::Mod(id), event_class, |_, _| {})?;
+            let prev = self.constructing.replace(id.clone());
+            let res = self.post(rt, linked, &BusId::Mod(id), event_class, |_, _| {});
+            self.constructing = prev;
+            res?;
+        }
+        self.drain_queued_work(rt, linked, event_class)?;
+        self.fail_on_error_issues()?;
+        Ok(())
+    }
+
+    fn drain_queued_work(
+        &mut self,
+        rt: &mut Rt,
+        linked: &LinkedSpace,
+        phase_event: &str,
+    ) -> Result<(), String> {
+        while !self.queued_work.is_empty() {
+            let batch = std::mem::take(&mut self.queued_work);
+            for (mod_id, task, future) in batch {
+                let prev = self.constructing.clone();
+                self.constructing = mod_id;
+                let out = {
+                    let mut ctx = ExecCtx {
+                        rt,
+                        linked,
+                        host: self,
+                        depth: 0,
+                    };
+                    invoke_closure(&mut ctx, task, &[])
+                };
+                self.constructing = prev;
+                raise_if_pending(rt, &format!("running enqueueWork for `{phase_event}`"))?;
+                rt.put_field(future, "$done", V::I(1));
+                rt.put_field(
+                    future,
+                    "$value",
+                    if matches!(out, V::Void) { V::NULL } else { out },
+                );
+            }
         }
         Ok(())
+    }
+
+    fn fail_on_error_issues(&self) -> Result<(), String> {
+        if let Some(issue) = self.loading_issues.iter().find(|i| i.severity == "ERROR") {
+            return Err(format!(
+                "ModLoadingIssue(ERROR, mod={:?}): {}",
+                issue.mod_id, issue.message
+            ));
+        }
+        Ok(())
+    }
+
+    fn drain_imc_stream(&mut self, rt: &mut Rt, target_mod_id: &str) -> V {
+        let mut delivered = Vec::new();
+        let mut kept = Vec::new();
+        for msg in std::mem::take(&mut self.imc_messages) {
+            if msg.mod_id == target_mod_id {
+                let obj = rt.new_instance("net/neoforged/fml/InterModComms$IMCMessage", 0);
+                let s_v = rt.new_str(msg.sender_mod_id);
+                let m_v = rt.new_str(msg.mod_id);
+                let meth_v = rt.new_str(msg.method);
+                rt.put_field(obj, "senderModId", s_v);
+                rt.put_field(obj, "modId", m_v);
+                rt.put_field(obj, "method", meth_v);
+                rt.put_field(obj, "messageSupplier", msg.supplier);
+                delivered.push(obj);
+            } else {
+                kept.push(msg);
+            }
+        }
+        self.imc_messages = kept;
+        rt.alloc("java/util/stream/Stream", 0, Data::Stream(delivered))
     }
 
     fn post_game(
@@ -607,6 +772,93 @@ impl FmlLoader {
         if is_static && owner == "net/neoforged/fml/ModLoadingContext" && name == "get" {
             return Some(rt.new_pinned_handle(owner, "mod_loading_context", 0, ""));
         }
+        if is_static && owner == "net/neoforged/fml/ModLoadingIssue" && matches!(name, "warning" | "error") {
+            let key = args
+                .first()
+                .and_then(|&v| rt.str_of(v))
+                .unwrap_or("")
+                .to_owned();
+            let fmt_args: Vec<String> = match args.get(1).and_then(|&v| rt.get_obj(v)).map(|o| &o.data) {
+                Some(Data::Array(xs) | Data::List(xs)) => {
+                    xs.iter().map(|&v| rt.value_to_string(v)).collect()
+                }
+                _ => Vec::new(),
+            };
+            let template = self
+                .translations
+                .get(&key)
+                .map(String::as_str)
+                .unwrap_or(&key);
+            let msg = crate::minecraft::format_translation_template(template, &fmt_args);
+            let issue = rt.new_instance("net/neoforged/fml/ModLoadingIssue", 0);
+            let sev_v = rt.intern_str(if name == "error" { "ERROR" } else { "WARNING" });
+            let key_v = rt.new_str(key);
+            let msg_v = rt.new_str(msg);
+            rt.put_field(issue, "$severity", sev_v);
+            rt.put_field(issue, "$key", key_v);
+            rt.put_field(issue, "$message", msg_v);
+            return Some(issue);
+        }
+        if is_static && owner == "net/neoforged/fml/ModLoader" && name == "addLoadingIssue" {
+            let issue = *args.first()?;
+            let severity = rt
+                .str_of(rt.get_field(issue, "$severity"))
+                .unwrap_or("WARNING")
+                .to_owned();
+            let translation_key = rt
+                .str_of(rt.get_field(issue, "$key"))
+                .unwrap_or("")
+                .to_owned();
+            let message = rt
+                .str_of(rt.get_field(issue, "$message"))
+                .unwrap_or("")
+                .to_owned();
+            let mod_id = rt
+                .str_of(rt.get_field(issue, "$mod_id"))
+                .map(str::to_owned)
+                .or_else(|| self.constructing.clone());
+            self.loading_issues.push(RecordedLoadingIssue {
+                severity,
+                mod_id,
+                translation_key,
+                message,
+            });
+            return Some(V::Void);
+        }
+        if is_static && owner == "net/neoforged/fml/InterModComms" && name == "sendTo" {
+            let (sender, target_id, method_name, supplier) = if args.len() == 4 {
+                (
+                    rt.str_of(args[0])?.to_owned(),
+                    rt.str_of(args[1])?.to_owned(),
+                    rt.str_of(args[2])?.to_owned(),
+                    args[3],
+                )
+            } else {
+                (
+                    self.constructing.clone().unwrap_or_default(),
+                    rt.str_of(*args.first()?)?.to_owned(),
+                    rt.str_of(*args.get(1)?)?.to_owned(),
+                    *args.get(2)?,
+                )
+            };
+            let is_loaded = self.version_of(&target_id).is_some()
+                || matches!(target_id.as_str(), "minecraft" | "neoforge" | "forge" | "fml");
+            if !is_loaded {
+                return Some(V::FALSE);
+            }
+            rt.pin(supplier);
+            self.imc_messages.push(ImcEntry {
+                sender_mod_id: sender,
+                mod_id: target_id,
+                method: method_name,
+                supplier,
+            });
+            return Some(V::TRUE);
+        }
+        if is_static && owner == "net/neoforged/fml/InterModComms" && name == "getMessages" {
+            let target_id = rt.str_of(*args.first()?)?.to_owned();
+            return Some(self.drain_imc_stream(rt, &target_id));
+        }
         if is_static && owner == "java/nio/file/Files" {
             return self.nio_files(rt, name, args);
         }
@@ -674,18 +926,85 @@ impl FmlLoader {
                         id,
                     ));
                 }
+                ("net/neoforged/fml/ModContainer", "getModId") => {
+                    let id = handle_tag(rt, args[0])?;
+                    return Some(rt.intern_str(&id));
+                }
+                ("net/neoforged/fml/ModContainer", "getEventBus") => {
+                    let id = handle_tag(rt, args[0])?;
+                    return Some(self.mod_bus_handle(rt, &id));
+                }
                 ("net/neoforged/fml/ModContainer", "registerConfig") => {
                     let id = handle_tag(rt, args[0])?;
                     let kind = args
                         .get(1)
                         .and_then(|value| handle_tag(rt, *value))
                         .unwrap_or_else(|| "COMMON".into());
+                    let file_name = args.get(3).and_then(|v| rt.str_of(*v)).map(str::to_owned);
+                    if let Some(("config_spec", spec_id, _, _)) =
+                        args.get(2).and_then(|v| rt.handle_of(*v))
+                    {
+                        self.state.config.assign_mod(spec_id, &id, &kind, file_name);
+                    }
                     self.registered_configs.push((id, kind));
                     return Some(V::Void);
                 }
                 ("net/neoforged/fml/ModLoadingContext", "getActiveContainer") => {
                     let id = self.constructing.clone()?;
                     return Some(self.mod_container_handle(rt, &id));
+                }
+                ("net/neoforged/fml/ModLoadingIssue", "withAffectedMod") => {
+                    if let Some(info) = args.get(1).copied() {
+                        if let Some(id) = handle_tag(rt, info) {
+                            let id_v = rt.intern_str(&id);
+                            rt.put_field(args[0], "$mod_id", id_v);
+                        }
+                    }
+                    return Some(args[0]);
+                }
+                ("net/neoforged/fml/ModLoadingIssue", "withCause") => {
+                    if let Some(&cause) = args.get(1) {
+                        rt.put_field(args[0], "$cause", cause);
+                    }
+                    return Some(args[0]);
+                }
+                ("net/neoforged/fml/event/lifecycle/InterModProcessEvent", "getIMCStream")
+                    if args.len() == 1 =>
+                {
+                    let target = self.constructing.clone().unwrap_or_default();
+                    return Some(self.drain_imc_stream(rt, &target));
+                }
+                ("net/neoforged/fml/InterModComms$IMCMessage", "senderModId") => {
+                    return Some(rt.get_field(args[0], "senderModId"));
+                }
+                ("net/neoforged/fml/InterModComms$IMCMessage", "modId") => {
+                    return Some(rt.get_field(args[0], "modId"));
+                }
+                ("net/neoforged/fml/InterModComms$IMCMessage", "method") => {
+                    return Some(rt.get_field(args[0], "method"));
+                }
+                ("net/neoforged/fml/InterModComms$IMCMessage", "messageSupplier") => {
+                    return Some(rt.get_field(args[0], "messageSupplier"));
+                }
+                (
+                    "net/neoforged/fml/event/lifecycle/ParallelDispatchEvent"
+                    | "net/neoforged/fml/event/lifecycle/FMLCommonSetupEvent"
+                    | "net/neoforged/fml/event/lifecycle/FMLClientSetupEvent"
+                    | "net/neoforged/fml/event/lifecycle/FMLDedicatedServerSetupEvent"
+                    | "net/neoforged/fml/event/lifecycle/InterModEnqueueEvent"
+                    | "net/neoforged/fml/event/lifecycle/InterModProcessEvent"
+                    | "net/neoforged/fml/event/lifecycle/FMLLoadCompleteEvent",
+                    "enqueueWork",
+                ) => {
+                    let task = *args.get(1)?;
+                    rt.pin(task);
+                    let fut = rt.new_instance("java/util/concurrent/CompletableFuture", 0);
+                    rt.put_field(fut, "$done", V::I(0));
+                    rt.pin(fut);
+                    self.state.bus.deferred_work.push(task);
+                    self.queued_work
+                        .push((self.constructing.clone(), task, fut));
+                    return Some(fut);
                 }
                 ("net/neoforged/fml/loading/FMLPaths", "get") => {
                     let which = handle_tag(rt, args[0])?;
@@ -1070,18 +1389,56 @@ impl HostApi for FmlLoader {
                 _ => None,
             };
         }
+        if let Some(value) = crate::minecraft::get_static_field(rt, owner, name) {
+            return Some(value);
+        }
         None
     }
 
     fn call_method(
         &mut self,
         rt: &mut Rt,
-        _linked: &LinkedSpace,
+        linked: &LinkedSpace,
         member: &MemberRef,
         is_static: bool,
         args: &[V],
     ) -> Option<V> {
         if let Some(value) = self.fml_identity(rt, member, is_static, args) {
+            return Some(value);
+        }
+        if let Some(value) =
+            crate::minecraft::call_resources_and_io(rt, &self.jar_resources, member, is_static, args)
+        {
+            return Some(value);
+        }
+        if let Some(value) =
+            crate::minecraft::call_chat(rt, &self.translations, member, is_static, args)
+        {
+            return Some(value);
+        }
+        if let Some(value) = crate::minecraft::call_brigadier(
+            rt,
+            &mut self.state.commands,
+            &self.translations,
+            member,
+            is_static,
+            args,
+        ) {
+            return Some(value);
+        }
+        if let Some(value) = crate::minecraft::call_mod_config_spec(
+            rt,
+            linked,
+            self,
+            member,
+            is_static,
+            args,
+            |host| {
+                // SAFETY: `self` is `FmlLoader` passed as `&mut dyn HostApi` above.
+                let ptr = host as *mut dyn HostApi as *mut FmlLoader;
+                unsafe { &mut (*ptr).state.config }
+            },
+        ) {
             return Some(value);
         }
         let owner = member.owner.as_str();
@@ -1120,6 +1477,9 @@ impl HostApi for FmlLoader {
 
     fn is_api_subtype(&self, sub_class: &str, super_class: &str) -> bool {
         if sub_class == super_class {
+            return true;
+        }
+        if crate::minecraft::is_subtype(sub_class, super_class) {
             return true;
         }
         if super_class == "net/neoforged/neoforge/registries/DeferredRegister"

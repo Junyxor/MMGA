@@ -6,6 +6,7 @@
 
 pub mod bus;
 pub mod loader;
+pub mod minecraft;
 pub mod registries;
 pub mod subsystems;
 pub mod world;

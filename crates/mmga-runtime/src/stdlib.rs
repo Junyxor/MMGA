@@ -29,9 +29,20 @@ pub fn stdlib_get_static(rt: &mut Rt, owner: &str, name: &str, _desc: &str) -> O
         ("java/util/Locale", "ROOT" | "US" | "ENGLISH") => {
             Some(rt.new_pinned_handle("java/util/Locale", "locale", 0, name))
         }
-        ("java/nio/charset/StandardCharsets", "UTF_8") => {
-            Some(rt.new_pinned_handle("java/nio/charset/Charset", "charset", 0, "UTF-8"))
+        ("java/nio/charset/StandardCharsets", "UTF_8" | "US_ASCII" | "ISO_8859_1") => {
+            Some(rt.new_pinned_handle("java/nio/charset/Charset", "charset", 0, name))
         }
+        ("java/lang/StackWalker$Option", "RETAIN_CLASS_REFERENCE" | "SHOW_REFLECT_FRAMES" | "SHOW_HIDDEN_FRAMES") => {
+            Some(rt.new_pinned_handle("java/lang/StackWalker$Option", "stack_walker_option", 0, name))
+        }
+        ("java/lang/Integer", "MAX_VALUE") => Some(V::I(i32::MAX)),
+        ("java/lang/Integer", "MIN_VALUE") => Some(V::I(i32::MIN)),
+        ("java/lang/Long", "MAX_VALUE") => Some(V::J(i64::MAX)),
+        ("java/lang/Long", "MIN_VALUE") => Some(V::J(i64::MIN)),
+        ("java/lang/Float", "MAX_VALUE") => Some(V::F(f32::MAX)),
+        ("java/lang/Float", "MIN_VALUE") => Some(V::F(f32::MIN_POSITIVE)),
+        ("java/lang/Double", "MAX_VALUE") => Some(V::D(f64::MAX)),
+        ("java/lang/Double", "MIN_VALUE") => Some(V::D(f64::MIN_POSITIVE)),
         _ => None,
     }
 }
@@ -169,28 +180,52 @@ pub fn stdlib_call(
             | "java/lang/UnsupportedOperationException"
             | "java/lang/IndexOutOfBoundsException"
             | "java/lang/AssertionError"
-            | "java/lang/Error",
+            | "java/lang/Error"
+            | "java/io/IOException",
             "<init>",
             _,
         ) => {
             if let Some(&this) = args.first() {
-                if let Some(&msg) = args.get(1) {
-                    if ctx.rt.str_of(msg).is_some() {
-                        ctx.rt.put_field(this, "detailMessage", msg);
+                if let Some(&arg1) = args.get(1) {
+                    if ctx.rt.str_of(arg1).is_some() {
+                        ctx.rt.put_field(this, "detailMessage", arg1);
+                        if let Some(&cause) = args.get(2) {
+                            ctx.rt.put_field(this, "cause", cause);
+                        }
+                    } else if !arg1.is_null() {
+                        ctx.rt.put_field(this, "cause", arg1);
                     }
                 }
             }
             return Some(V::Void);
         }
-        (_, "getMessage", "()Ljava/lang/String;") if !is_static => {
+        (_, "getMessage" | "getLocalizedMessage", "()Ljava/lang/String;") if !is_static => {
             let msg = ctx.rt.get_field(args[0], "detailMessage");
             return Some(msg);
+        }
+        (_, "getCause", "()Ljava/lang/Throwable;") if !is_static => {
+            return Some(ctx.rt.get_field(args[0], "cause"));
+        }
+        (_, "initCause", "(Ljava/lang/Throwable;)Ljava/lang/Throwable;") if !is_static => {
+            if let Some(&cause) = args.get(1) {
+                ctx.rt.put_field(args[0], "cause", cause);
+            }
+            return Some(args[0]);
+        }
+        (_, "addSuppressed", "(Ljava/lang/Throwable;)V") if !is_static => {
+            return Some(V::Void);
         }
         ("java/lang/Enum", "name", "()Ljava/lang/String;") => {
             return Some(ctx.rt.get_field(args[0], "$name"));
         }
         ("java/lang/Enum", "ordinal", "()I") => {
             return Some(ctx.rt.get_field(args[0], "$ordinal"));
+        }
+        ("java/lang/Enum", "compareTo", "(Ljava/lang/Enum;)I")
+        | ("java/lang/Enum", "compareTo", "(Ljava/lang/Object;)I") => {
+            let a = ctx.rt.get_field(args[0], "$ordinal").i();
+            let b = ctx.rt.get_field(args[1], "$ordinal").i();
+            return Some(V::I(a.cmp(&b) as i32));
         }
         (_, "getClass", "()Ljava/lang/Class;") if !is_static => {
             let cls = ctx
@@ -200,7 +235,7 @@ pub fn stdlib_call(
                 .to_owned();
             return Some(ctx.rt.new_pinned_handle("java/lang/Class", "class", 0, cls));
         }
-        ("java/lang/Class", "getName", "()Ljava/lang/String;") => {
+        ("java/lang/Class", "getName" | "getCanonicalName" | "getTypeName", "()Ljava/lang/String;") => {
             let tag = ctx
                 .rt
                 .handle_of(args[0])
@@ -220,6 +255,59 @@ pub fn stdlib_call(
                 })
                 .unwrap_or_else(|| "Object".into());
             return Some(ctx.rt.new_str(simple));
+        }
+        ("java/lang/Class", "getPackageName", "()Ljava/lang/String;") => {
+            let pkg = ctx
+                .rt
+                .handle_of(args[0])
+                .and_then(|(_, _, t, _)| {
+                    let clean = t.trim_start_matches('[').strip_prefix('L').and_then(|s| s.strip_suffix(';')).unwrap_or(t);
+                    clean.rsplit_once('/').map(|(p, _)| p.replace('/', "."))
+                })
+                .unwrap_or_default();
+            return Some(ctx.rt.new_str(pkg));
+        }
+        ("java/lang/Class", "desiredAssertionStatus", "()Z") => {
+            return Some(V::FALSE);
+        }
+        ("java/lang/Class", "isInstance", "(Ljava/lang/Object;)Z") => {
+            let candidate = args.get(1).copied().unwrap_or(V::NULL);
+            if candidate.is_null() {
+                return Some(V::FALSE);
+            }
+            let target = ctx
+                .rt
+                .handle_of(args[0])
+                .map(|(_, _, t, _)| t.to_owned())
+                .unwrap_or_else(|| "java/lang/Object".into());
+            let actual = ctx.rt.class_of(candidate).unwrap_or("java/lang/Object");
+            return Some(V::bool(ctx.linked.is_subtype(actual, &target, ctx.host)));
+        }
+        ("java/lang/Class", "isAssignableFrom", "(Ljava/lang/Class;)Z") => {
+            let other = args.get(1).copied().unwrap_or(V::NULL);
+            if other.is_null() {
+                return Some(ctx.rt.throw_exception("java/lang/NullPointerException", "Class.isAssignableFrom(null)"));
+            }
+            let sup = ctx.rt.handle_of(args[0]).map(|(_, _, t, _)| t.to_owned()).unwrap_or_default();
+            let sub = ctx.rt.handle_of(other).map(|(_, _, t, _)| t.to_owned()).unwrap_or_default();
+            return Some(V::bool(ctx.linked.is_subtype(&sub, &sup, ctx.host)));
+        }
+        ("java/lang/Class", "cast", "(Ljava/lang/Object;)Ljava/lang/Object;") => {
+            return Some(args.get(1).copied().unwrap_or(V::NULL));
+        }
+        ("java/lang/StackWalker", "getInstance", _) if is_static => {
+            return Some(ctx.rt.new_pinned_handle("java/lang/StackWalker", "stack_walker", 0, ""));
+        }
+        ("java/lang/StackWalker", "getCallerClass", "()Ljava/lang/Class;") if !is_static => {
+            let n = ctx.rt.call_stack.len();
+            if n < 2 {
+                return Some(ctx.rt.throw_exception(
+                    "java/lang/IllegalCallerException",
+                    "StackWalker.getCallerClass called with fewer than 2 stack frames",
+                ));
+            }
+            let caller = ctx.rt.call_stack[n - 2].0.clone();
+            return Some(ctx.rt.new_pinned_handle("java/lang/Class", "class", 0, caller));
         }
         _ => {}
     }
@@ -296,6 +384,41 @@ pub fn stdlib_call(
             "currentTimeMillis" => Some(V::J(1_763_138_880_000)),
             "nanoTime" => Some(V::J(1_000_000_000)),
             "identityHashCode" => Some(V::I(args.first().map_or(0, |v| v.r() as i32))),
+            "lineSeparator" => Some(ctx.rt.intern_str("\n")),
+            "getenv" if desc == "(Ljava/lang/String;)Ljava/lang/String;" => {
+                let Some(key) = args.first().and_then(|&v| ctx.rt.str_of(v)) else {
+                    return Some(ctx.rt.throw_exception("java/lang/NullPointerException", "System.getenv(null)"));
+                };
+                match std::env::var(key) {
+                    Ok(val) => Some(ctx.rt.new_str(val)),
+                    Err(_) => Some(V::NULL),
+                }
+            }
+            "getProperty" => {
+                let Some(key) = args.first().and_then(|&v| ctx.rt.str_of(v)).map(str::to_owned) else {
+                    return Some(ctx.rt.throw_exception("java/lang/NullPointerException", "System.getProperty(null)"));
+                };
+                let found: Option<String> = match key.as_str() {
+                    "java.io.tmpdir" => Some(std::env::temp_dir().display().to_string()),
+                    "user.home" => std::env::var("HOME")
+                        .ok()
+                        .or_else(|| Some(std::env::temp_dir().display().to_string())),
+                    "user.dir" => std::env::current_dir()
+                        .ok()
+                        .map(|p| p.display().to_string()),
+                    "os.name" => Some(std::env::consts::OS.to_owned()),
+                    "os.arch" => Some(std::env::consts::ARCH.to_owned()),
+                    "file.separator" => Some(std::path::MAIN_SEPARATOR.to_string()),
+                    "path.separator" => Some(if cfg!(windows) { ";".into() } else { ":".into() }),
+                    "line.separator" => Some("\n".into()),
+                    "java.version" => Some("21.0.4".into()),
+                    _ => None,
+                };
+                match found {
+                    Some(val) => Some(ctx.rt.new_str(val)),
+                    None => Some(args.get(1).copied().unwrap_or(V::NULL)),
+                }
+            }
             "arraycopy" if args.len() == 5 => {
                 let (src, src_pos, dst, dst_pos, len) = (
                     args[0],
@@ -340,9 +463,13 @@ pub fn stdlib_call(
             let tag = args
                 .first()
                 .map(|&v| ctx.rt.value_to_string(v))
+                .or_else(|| ctx.rt.call_stack.last().map(|(cls, _)| cls.replace('/', ".")))
                 .unwrap_or_else(|| "mod".into());
             return Some(ctx.rt.new_pinned_handle("org/slf4j/Logger", "logger", 0, tag));
         }
+    }
+    if (owner == "java/io/InputStream" || owner == "java/io/ByteArrayInputStream") && !is_static {
+        return dispatch_input_stream(ctx.rt, args[0], name, desc, &args[1..]);
     }
     if owner == "org/slf4j/Logger" || owner == "org/apache/logging/log4j/Logger" {
         match name {
@@ -677,6 +804,12 @@ fn dispatch_string(rt: &mut Rt, name: &str, desc: &str, is_static: bool, args: &
             V::I(h)
         }
         ("toString" | "intern", "()Ljava/lang/String;") => args[0],
+        ("getBytes", "()[B")
+        | ("getBytes", "(Ljava/nio/charset/Charset;)[B")
+        | ("getBytes", "(Ljava/lang/String;)[B") => {
+            let arr: Vec<V> = s.as_bytes().iter().map(|&b| V::I(i32::from(b as i8))).collect();
+            rt.alloc("[B", 0, Data::Array(arr))
+        }
         _ => return None,
     })
 }
@@ -781,6 +914,54 @@ fn dispatch_java_util(
     is_static: bool,
     args: &[V],
 ) -> Option<V> {
+    // `java/util/concurrent/CompletableFuture`
+    if owner == "java/util/concurrent/CompletableFuture" {
+        if is_static && name == "completedFuture" {
+            let fut = ctx
+                .rt
+                .new_instance("java/util/concurrent/CompletableFuture", 0);
+            ctx.rt.put_field(fut, "$done", V::I(1));
+            ctx.rt
+                .put_field(fut, "$value", args.first().copied().unwrap_or(V::NULL));
+            return Some(fut);
+        }
+        if !is_static {
+            let recv = args[0];
+            return match name {
+                "isDone" => Some(V::bool(ctx.rt.get_field(recv, "$done").i() != 0)),
+                "join" | "get" => Some(ctx.rt.get_field(recv, "$value")),
+                "thenRun" => {
+                    let _ = crate::vm::invoke_closure(ctx, args[1], &[]);
+                    let fut = ctx
+                        .rt
+                        .new_instance("java/util/concurrent/CompletableFuture", 0);
+                    ctx.rt.put_field(fut, "$done", V::I(1));
+                    Some(fut)
+                }
+                "thenAccept" => {
+                    let val = ctx.rt.get_field(recv, "$value");
+                    let _ = crate::vm::invoke_closure(ctx, args[1], &[val]);
+                    let fut = ctx
+                        .rt
+                        .new_instance("java/util/concurrent/CompletableFuture", 0);
+                    ctx.rt.put_field(fut, "$done", V::I(1));
+                    Some(fut)
+                }
+                "thenApply" => {
+                    let val = ctx.rt.get_field(recv, "$value");
+                    let next = crate::vm::invoke_closure(ctx, args[1], &[val]);
+                    let fut = ctx
+                        .rt
+                        .new_instance("java/util/concurrent/CompletableFuture", 0);
+                    ctx.rt.put_field(fut, "$done", V::I(1));
+                    ctx.rt.put_field(fut, "$value", next);
+                    Some(fut)
+                }
+                _ => None,
+            };
+        }
+    }
+
     // `java/util/Optional`
     if owner == "java/util/Optional" {
         if is_static {
@@ -839,44 +1020,48 @@ fn dispatch_java_util(
 
     // `java/util/UUID`
     if owner == "java/util/UUID" {
-        return match (name, is_static) {
-            ("fromString", true) => {
-                let text = ctx.rt.str_of(args[0]).unwrap_or("00000000-0000-0000-0000-000000000000").to_owned();
-                Some(ctx.rt.new_handle("java/util/UUID", "uuid", 0, text))
-            }
-            ("randomUUID", true) => Some(ctx.rt.new_handle(
-                "java/util/UUID",
-                "uuid",
-                1,
-                "550e8400-e29b-41d4-a716-446655440000",
-            )),
-            ("<init>", false) if args.len() == 3 => {
-                let tag = format!("{:016x}-{:016x}", args[1].j() as u64, args[2].j() as u64);
-                if let Some(o) = ctx.rt.get_obj_mut(args[0]) {
-                    o.data = Data::NativeHandle {
-                        kind: "uuid",
-                        id: 0,
-                        tag,
-                        payload: [args[1].j(), args[2].j()],
-                    };
-                }
+        return dispatch_uuid(ctx.rt, name, is_static, args);
+    }
+
+    // `java/util/Random`
+    if owner == "java/util/Random" && !is_static {
+        return dispatch_random(ctx.rt, args[0], name, desc, &args[1..]);
+    }
+
+    // `java/util/Arrays` & `java/util/Collections`
+    if owner == "java/util/Arrays" && is_static {
+        return dispatch_arrays(ctx.rt, name, desc, args);
+    }
+    if (owner == "java/util/Map$Entry"
+        || owner == "java/util/AbstractMap$SimpleEntry"
+        || owner == "java/util/AbstractMap$SimpleImmutableEntry")
+        && !is_static
+    {
+        return match name {
+            "<init>" if args.len() >= 3 => {
+                ctx.rt.put_field(args[0], "key", args[1]);
+                ctx.rt.put_field(args[0], "value", args[2]);
                 Some(V::Void)
             }
-            ("toString", false) => {
-                let s = ctx.rt.value_to_string(args[0]);
-                Some(ctx.rt.new_str(s))
+            "getKey" => Some(ctx.rt.get_field(args[0], "key")),
+            "getValue" => Some(ctx.rt.get_field(args[0], "value")),
+            "setValue" if owner != "java/util/AbstractMap$SimpleImmutableEntry" => {
+                let prev = ctx.rt.get_field(args[0], "value");
+                if let Some(&v) = args.get(1) {
+                    ctx.rt.put_field(args[0], "value", v);
+                }
+                Some(prev)
             }
             _ => None,
         };
     }
-
-    // `java/util/Arrays` & `java/util/Collections`
-    if owner == "java/util/Arrays" && name == "asList" {
-        let items = match ctx.rt.get_obj(args[0]).map(|o| &o.data) {
-            Some(Data::Array(v)) => v.clone(),
-            _ => Vec::new(),
-        };
-        return Some(ctx.rt.alloc("java/util/ArrayList", 0, Data::List(items)));
+    if owner == "java/util/Map" && is_static && name == "entry" && args.len() == 2 {
+        let entry = ctx
+            .rt
+            .new_instance("java/util/AbstractMap$SimpleImmutableEntry", 0);
+        ctx.rt.put_field(entry, "key", args[0]);
+        ctx.rt.put_field(entry, "value", args[1]);
+        return Some(entry);
     }
     if owner == "java/util/Collections" {
         return match name {
@@ -1384,6 +1569,18 @@ fn dispatch_map_instance(ctx: &mut ExecCtx<'_>, recv: V, name: &str, args: &[V])
             let vals: Vec<V> = snapshot().into_iter().map(|(_, v)| v).collect();
             ctx.rt.alloc("java/util/List", 0, Data::List(vals))
         }
+        "entrySet" => {
+            let entries: Vec<V> = snapshot()
+                .into_iter()
+                .map(|(k, v)| {
+                    let e = ctx.rt.new_instance("java/util/AbstractMap$SimpleEntry", 0);
+                    ctx.rt.put_field(e, "key", k);
+                    ctx.rt.put_field(e, "value", v);
+                    e
+                })
+                .collect();
+            ctx.rt.alloc("java/util/Set", 0, Data::Set(entries))
+        }
         "forEach" => {
             for (k, v) in snapshot() {
                 let _ = crate::vm::invoke_closure(ctx, args[0], &[k, v]);
@@ -1513,4 +1710,465 @@ fn dispatch_stream_instance(
         }
         _ => return None,
     })
+}
+
+fn dispatch_input_stream(rt: &mut Rt, recv: V, name: &str, desc: &str, args: &[V]) -> Option<V> {
+    match (name, desc) {
+        ("<init>", "([B)V") => {
+            let bytes = args
+                .first()
+                .and_then(|&arr| match rt.get_obj(arr).map(|o| &o.data) {
+                    Some(Data::Array(items)) => {
+                        Some(items.iter().map(|v| v.i() as u8).collect::<Vec<u8>>())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_default();
+            if let Some(obj) = rt.get_obj_mut(recv) {
+                obj.data = Data::ByteBuf {
+                    bytes,
+                    reader_idx: 0,
+                };
+            }
+            Some(V::Void)
+        }
+        ("available", "()I") => {
+            let rem = match rt.get_obj(recv).map(|o| &o.data) {
+                Some(Data::ByteBuf { bytes, reader_idx }) => {
+                    bytes.len().saturating_sub(*reader_idx) as i32
+                }
+                _ => 0,
+            };
+            Some(V::I(rem))
+        }
+        ("read", "()I") => {
+            let mut out = -1i32;
+            if let Some(Data::ByteBuf { bytes, reader_idx }) =
+                rt.get_obj_mut(recv).map(|o| &mut o.data)
+            {
+                if *reader_idx < bytes.len() {
+                    out = i32::from(bytes[*reader_idx]);
+                    *reader_idx += 1;
+                }
+            }
+            Some(V::I(out))
+        }
+        ("read", "([B)I") | ("read", "([BII)I") => {
+            let dst = args.first().copied().unwrap_or(V::NULL);
+            if dst.is_null() {
+                return Some(
+                    rt.throw_exception("java/lang/NullPointerException", "InputStream.read(null)"),
+                );
+            }
+            let dst_len = match rt.get_obj(dst).map(|o| &o.data) {
+                Some(Data::Array(items)) => items.len(),
+                _ => 0,
+            };
+            let (off, req_len) = if desc == "([BII)I" {
+                let o = args.get(1).map_or(0, |v| v.i().max(0) as usize);
+                let l = args.get(2).map_or(0, |v| v.i().max(0) as usize);
+                (o, l)
+            } else {
+                (0, dst_len)
+            };
+            if req_len == 0 {
+                return Some(V::I(0));
+            }
+            let chunk: Option<Vec<u8>> = match rt.get_obj_mut(recv).map(|o| &mut o.data) {
+                Some(Data::ByteBuf { bytes, reader_idx }) => {
+                    if *reader_idx >= bytes.len() {
+                        None
+                    } else {
+                        let n = req_len
+                            .min(bytes.len() - *reader_idx)
+                            .min(dst_len.saturating_sub(off));
+                        let slice = bytes[*reader_idx..*reader_idx + n].to_vec();
+                        *reader_idx += n;
+                        Some(slice)
+                    }
+                }
+                _ => None,
+            };
+            match chunk {
+                None => Some(V::I(-1)),
+                Some(slice) => {
+                    let n = slice.len() as i32;
+                    if let Some(Data::Array(items)) = rt.get_obj_mut(dst).map(|o| &mut o.data) {
+                        for (i, b) in slice.into_iter().enumerate() {
+                            if off + i < items.len() {
+                                items[off + i] = V::I(i32::from(b as i8));
+                            }
+                        }
+                    }
+                    Some(V::I(n))
+                }
+            }
+        }
+        ("readAllBytes", "()[B") => {
+            let chunk: Vec<V> = match rt.get_obj_mut(recv).map(|o| &mut o.data) {
+                Some(Data::ByteBuf { bytes, reader_idx }) => {
+                    let out = bytes[*reader_idx..]
+                        .iter()
+                        .map(|&b| V::I(i32::from(b as i8)))
+                        .collect();
+                    *reader_idx = bytes.len();
+                    out
+                }
+                _ => Vec::new(),
+            };
+            Some(rt.alloc("[B", 0, Data::Array(chunk)))
+        }
+        ("close", "()V") => Some(V::Void),
+        _ => None,
+    }
+}
+
+fn format_uuid_bits(msb: u64, lsb: u64) -> String {
+    format!(
+        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+        (msb >> 32) as u32,
+        ((msb >> 16) & 0xFFFF) as u16,
+        (msb & 0xFFFF) as u16,
+        ((lsb >> 48) & 0xFFFF) as u16,
+        lsb & 0xFFFF_FFFF_FFFF
+    )
+}
+
+fn parse_uuid_bits(text: &str) -> Result<(i64, i64), ()> {
+    let parts: Vec<&str> = text.split('-').collect();
+    if parts.len() != 5 {
+        return Err(());
+    }
+    let p0 = u64::from_str_radix(parts[0], 16).map_err(|_| ())?;
+    let p1 = u64::from_str_radix(parts[1], 16).map_err(|_| ())?;
+    let p2 = u64::from_str_radix(parts[2], 16).map_err(|_| ())?;
+    let p3 = u64::from_str_radix(parts[3], 16).map_err(|_| ())?;
+    let p4 = u64::from_str_radix(parts[4], 16).map_err(|_| ())?;
+    if p0 > 0xFFFF_FFFF
+        || p1 > 0xFFFF
+        || p2 > 0xFFFF
+        || p3 > 0xFFFF
+        || p4 > 0xFFFF_FFFF_FFFF
+    {
+        return Err(());
+    }
+    let msb = (p0 << 32) | (p1 << 16) | p2;
+    let lsb = (p3 << 48) | p4;
+    Ok((msb as i64, lsb as i64))
+}
+
+fn dispatch_uuid(rt: &mut Rt, name: &str, is_static: bool, args: &[V]) -> Option<V> {
+    match (name, is_static) {
+        ("fromString", true) => {
+            let Some(text) = args.first().and_then(|&v| rt.str_of(v)).map(str::to_owned) else {
+                return Some(rt.throw_exception("java/lang/NullPointerException", "UUID.fromString(null)"));
+            };
+            let Ok((msb, lsb)) = parse_uuid_bits(&text) else {
+                return Some(rt.throw_exception(
+                    "java/lang/IllegalArgumentException",
+                    &format!("Invalid UUID string: {text}"),
+                ));
+            };
+            let tag = format_uuid_bits(msb as u64, lsb as u64);
+            Some(rt.alloc(
+                "java/util/UUID",
+                0,
+                Data::NativeHandle {
+                    kind: "uuid",
+                    id: 0,
+                    tag,
+                    payload: [msb, lsb],
+                },
+            ))
+        }
+        ("randomUUID", true) => {
+            let counter = rt.live_object_count() as u64 + 1;
+            let msb = 0x550e_8400_e29b_41d4u64 ^ counter.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let msb_v4 = (msb & !0xF000) | 0x4000;
+            let lsb = (0xa716_4466_5544_0000u64 ^ counter) & !(3u64 << 62) | (2u64 << 62);
+            let tag = format_uuid_bits(msb_v4, lsb);
+            Some(rt.alloc(
+                "java/util/UUID",
+                0,
+                Data::NativeHandle {
+                    kind: "uuid",
+                    id: 0,
+                    tag,
+                    payload: [msb_v4 as i64, lsb as i64],
+                },
+            ))
+        }
+        ("nameUUIDFromBytes", true) => {
+            let bytes: Vec<u8> = match args.first().and_then(|&v| rt.get_obj(v)).map(|o| &o.data) {
+                Some(Data::Array(items)) => items.iter().map(|x| x.i() as u8).collect(),
+                _ => return Some(rt.throw_exception("java/lang/NullPointerException", "UUID.nameUUIDFromBytes(null)")),
+            };
+            let mut digest = md5_digest(&bytes);
+            digest[6] = (digest[6] & 0x0f) | 0x30; // version 3
+            digest[8] = (digest[8] & 0x3f) | 0x80; // IETF variant
+            let msb = u64::from_be_bytes(digest[0..8].try_into().unwrap());
+            let lsb = u64::from_be_bytes(digest[8..16].try_into().unwrap());
+            let tag = format_uuid_bits(msb, lsb);
+            Some(rt.alloc(
+                "java/util/UUID",
+                0,
+                Data::NativeHandle {
+                    kind: "uuid",
+                    id: 0,
+                    tag,
+                    payload: [msb as i64, lsb as i64],
+                },
+            ))
+        }
+        ("<init>", false) if args.len() == 3 => {
+            let (msb, lsb) = (args[1].j(), args[2].j());
+            let tag = format_uuid_bits(msb as u64, lsb as u64);
+            if let Some(o) = rt.get_obj_mut(args[0]) {
+                o.data = Data::NativeHandle {
+                    kind: "uuid",
+                    id: 0,
+                    tag,
+                    payload: [msb, lsb],
+                };
+            }
+            Some(V::Void)
+        }
+        ("getMostSignificantBits", false) => {
+            let msb = rt.handle_of(args[0]).map_or(0, |(_, _, _, p)| p[0]);
+            Some(V::J(msb))
+        }
+        ("getLeastSignificantBits", false) => {
+            let lsb = rt.handle_of(args[0]).map_or(0, |(_, _, _, p)| p[1]);
+            Some(V::J(lsb))
+        }
+        ("hashCode", false) => {
+            let (msb, lsb) = rt.handle_of(args[0]).map_or((0, 0), |(_, _, _, p)| (p[0], p[1]));
+            let hilo = (msb ^ lsb) as u64;
+            Some(V::I(((hilo >> 32) as i32) ^ (hilo as i32)))
+        }
+        ("equals", false) => {
+            let other = args.get(1).copied().unwrap_or(V::NULL);
+            let eq = match (rt.handle_of(args[0]), rt.handle_of(other)) {
+                (Some(("uuid", _, _, a)), Some(("uuid", _, _, b))) => a == b,
+                _ => false,
+            };
+            Some(V::bool(eq))
+        }
+        ("compareTo", false) => {
+            let other = args.get(1).copied().unwrap_or(V::NULL);
+            let (Some(("uuid", _, _, a)), Some(("uuid", _, _, b))) =
+                (rt.handle_of(args[0]), rt.handle_of(other))
+            else {
+                return Some(rt.throw_exception("java/lang/NullPointerException", "UUID.compareTo"));
+            };
+            let cmp = a[0].cmp(&b[0]).then_with(|| a[1].cmp(&b[1])) as i32;
+            Some(V::I(cmp))
+        }
+        ("toString", false) => {
+            let s = rt.value_to_string(args[0]);
+            Some(rt.new_str(s))
+        }
+        _ => None,
+    }
+}
+
+fn dispatch_random(rt: &mut Rt, recv: V, name: &str, desc: &str, args: &[V]) -> Option<V> {
+    const MULT: i64 = 0x5DEECE66D;
+    const ADD: i64 = 0xB;
+    const MASK: i64 = (1i64 << 48) - 1;
+
+    let step_bits = |rt: &mut Rt, bits: u32| -> i32 {
+        let cur = rt.get_field(recv, "$seed").j();
+        let next = (cur.wrapping_mul(MULT).wrapping_add(ADD)) & MASK;
+        rt.put_field(recv, "$seed", V::J(next));
+        ((next as u64) >> (48 - bits)) as i32
+    };
+
+    match (name, desc) {
+        ("<init>", "()V") => {
+            let init = ((0x8682_5228_0714_8012u64 as i64) ^ MULT) & MASK;
+            rt.put_field(recv, "$seed", V::J(init));
+            Some(V::Void)
+        }
+        ("<init>", "(J)V") | ("setSeed", "(J)V") => {
+            let seed = (args[0].j() ^ MULT) & MASK;
+            rt.put_field(recv, "$seed", V::J(seed));
+            Some(V::Void)
+        }
+        ("nextInt", "()I") => Some(V::I(step_bits(rt, 32))),
+        ("nextInt", "(I)I") => {
+            let bound = args[0].i();
+            if bound <= 0 {
+                return Some(rt.throw_exception("java/lang/IllegalArgumentException", "bound must be positive"));
+            }
+            let r = (step_bits(rt, 31) as u32 % bound as u32) as i32;
+            Some(V::I(r))
+        }
+        ("nextLong", "()J") => {
+            let hi = i64::from(step_bits(rt, 32));
+            let lo = i64::from(step_bits(rt, 32));
+            Some(V::J((hi << 32).wrapping_add(lo)))
+        }
+        ("nextBoolean", "()Z") => Some(V::bool(step_bits(rt, 1) != 0)),
+        ("nextFloat", "()F") => Some(V::F(step_bits(rt, 24) as f32 / (1u32 << 24) as f32)),
+        ("nextDouble", "()D") => {
+            let hi = (step_bits(rt, 26) as i64) << 27;
+            let lo = step_bits(rt, 27) as i64;
+            Some(V::D((hi + lo) as f64 / (1u64 << 53) as f64))
+        }
+        _ => None,
+    }
+}
+
+fn dispatch_arrays(rt: &mut Rt, name: &str, desc: &str, args: &[V]) -> Option<V> {
+    match name {
+        "asList" => {
+            let items = match rt.get_obj(args[0]).map(|o| &o.data) {
+                Some(Data::Array(v)) => v.clone(),
+                _ => Vec::new(),
+            };
+            Some(rt.alloc("java/util/ArrayList", 0, Data::List(items)))
+        }
+        "equals" if args.len() == 2 => {
+            if args[0] == args[1] {
+                return Some(V::TRUE);
+            }
+            let (Some(Data::Array(a)), Some(Data::Array(b))) = (
+                rt.get_obj(args[0]).map(|o| &o.data),
+                rt.get_obj(args[1]).map(|o| &o.data),
+            ) else {
+                return Some(V::FALSE);
+            };
+            if a.len() != b.len() {
+                return Some(V::FALSE);
+            }
+            let a_copy = a.clone();
+            let b_copy = b.clone();
+            let eq = a_copy
+                .into_iter()
+                .zip(b_copy)
+                .all(|(x, y)| rt.val_eq(x, y));
+            Some(V::bool(eq))
+        }
+        "copyOf" if args.len() >= 2 => {
+            let new_len = args[1].i().max(0) as usize;
+            let (cls, mut items) = match rt.get_obj(args[0]) {
+                Some(o) => match &o.data {
+                    Data::Array(v) => (o.class.clone(), v.clone()),
+                    _ => return None,
+                },
+                None => return Some(rt.throw_exception("java/lang/NullPointerException", "Arrays.copyOf(null)")),
+            };
+            let fill = if cls.starts_with("[L") || cls.starts_with("[[") {
+                V::NULL
+            } else if cls == "[J" {
+                V::J(0)
+            } else if cls == "[F" {
+                V::F(0.0)
+            } else if cls == "[D" {
+                V::D(0.0)
+            } else {
+                V::I(0)
+            };
+            items.resize(new_len, fill);
+            Some(rt.alloc(cls, 0, Data::Array(items)))
+        }
+        "stream" if !args.is_empty() => {
+            let items = match rt.get_obj(args[0]).map(|o| &o.data) {
+                Some(Data::Array(v)) => v.clone(),
+                _ => Vec::new(),
+            };
+            if desc.starts_with("([Ljava/lang/Object;II)") && args.len() >= 3 {
+                let from = (args[1].i().max(0) as usize).min(items.len());
+                let to = (args[2].i().max(0) as usize).clamp(from, items.len());
+                Some(rt.alloc("java/util/stream/Stream", 0, Data::Stream(items[from..to].to_vec())))
+            } else {
+                Some(rt.alloc("java/util/stream/Stream", 0, Data::Stream(items)))
+            }
+        }
+        "fill" if args.len() == 2 => {
+            let val = args[1];
+            if let Some(Data::Array(items)) = rt.get_obj_mut(args[0]).map(|o| &mut o.data) {
+                for slot in items.iter_mut() {
+                    *slot = val;
+                }
+            }
+            Some(V::Void)
+        }
+        "toString" if args.len() == 1 => {
+            if args[0].is_null() {
+                return Some(rt.intern_str("null"));
+            }
+            let s = rt.value_to_string(args[0]);
+            Some(rt.new_str(s))
+        }
+        _ => None,
+    }
+}
+
+/// RFC 1321 MD5 digest used exclusively for `java.util.UUID.nameUUIDFromBytes` (RFC 4122 v3).
+fn md5_digest(input: &[u8]) -> [u8; 16] {
+    const S: [u32; 64] = [
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5,
+        9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10,
+        15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+    ];
+    const K: [u32; 64] = [
+        0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613,
+        0xfd469501, 0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193,
+        0xa679438e, 0x49b40821, 0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d,
+        0x02441453, 0xd8a1e681, 0xe7d3fbc8, 0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
+        0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a, 0xfffa3942, 0x8771f681, 0x6d9d6122,
+        0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70, 0x289b7ec6, 0xeaa127fa,
+        0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665, 0xf4292244,
+        0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+        0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb,
+        0xeb86d391,
+    ];
+    let mut msg = input.to_vec();
+    let bit_len = (input.len() as u64).wrapping_mul(8);
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&bit_len.to_le_bytes());
+
+    let (mut a0, mut b0, mut c0, mut d0) =
+        (0x67452301u32, 0xefcdab89u32, 0x98badcfeu32, 0x10325476u32);
+    for chunk in msg.chunks_exact(64) {
+        let mut m = [0u32; 16];
+        for (i, w) in m.iter_mut().enumerate() {
+            *w = u32::from_le_bytes(chunk[i * 4..i * 4 + 4].try_into().unwrap());
+        }
+        let (mut a, mut b, mut c, mut d) = (a0, b0, c0, d0);
+        for i in 0..64 {
+            let (f, g) = if i < 16 {
+                ((b & c) | ((!b) & d), i)
+            } else if i < 32 {
+                ((d & b) | ((!d) & c), (5 * i + 1) % 16)
+            } else if i < 48 {
+                (b ^ c ^ d, (3 * i + 5) % 16)
+            } else {
+                (c ^ (b | (!d)), (7 * i) % 16)
+            };
+            let tmp = f
+                .wrapping_add(a)
+                .wrapping_add(K[i])
+                .wrapping_add(m[g]);
+            a = d;
+            d = c;
+            c = b;
+            b = b.wrapping_add(tmp.rotate_left(S[i]));
+        }
+        a0 = a0.wrapping_add(a);
+        b0 = b0.wrapping_add(b);
+        c0 = c0.wrapping_add(c);
+        d0 = d0.wrapping_add(d);
+    }
+    let mut out = [0u8; 16];
+    out[0..4].copy_from_slice(&a0.to_le_bytes());
+    out[4..8].copy_from_slice(&b0.to_le_bytes());
+    out[8..12].copy_from_slice(&c0.to_le_bytes());
+    out[12..16].copy_from_slice(&d0.to_le_bytes());
+    out
 }

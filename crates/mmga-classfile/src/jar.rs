@@ -213,9 +213,7 @@ impl ModJar {
                 }
             }
 
-            if is_root {
-                self.resources.insert(entry_path, data);
-            }
+            self.resources.entry(entry_path).or_insert(data);
         }
 
         Ok(())

@@ -255,5 +255,22 @@ mod tests {
             .rt
             .exception_summary(exc3)
             .contains("NON_EXISTENT_TEST_REG"));
+
+        // JDK exception and collection hierarchies resolve properly in `is_subtype`.
+        assert!(linked.is_subtype(
+            "java/lang/UnsatisfiedLinkError",
+            "java/lang/Throwable",
+            &NullHost
+        ));
+        assert!(linked.is_subtype(
+            "java/io/EOFException",
+            "java/lang/Exception",
+            &NullHost
+        ));
+        assert!(linked.is_subtype(
+            "java/util/ArrayList",
+            "java/util/Collection",
+            &NullHost
+        ));
     }
 }
