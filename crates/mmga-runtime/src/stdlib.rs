@@ -215,17 +215,63 @@ pub fn stdlib_call(
         (_, "addSuppressed", "(Ljava/lang/Throwable;)V") if !is_static => {
             return Some(V::Void);
         }
-        ("java/lang/Enum", "name", "()Ljava/lang/String;") => {
+        (_, "name", "()Ljava/lang/String;")
+            if !is_static && !ctx.rt.get_field(args[0], "$name").is_null() =>
+        {
             return Some(ctx.rt.get_field(args[0], "$name"));
         }
-        ("java/lang/Enum", "ordinal", "()I") => {
+        (_, "ordinal", "()I")
+            if !is_static && !ctx.rt.get_field(args[0], "$name").is_null() =>
+        {
             return Some(ctx.rt.get_field(args[0], "$ordinal"));
         }
-        ("java/lang/Enum", "compareTo", "(Ljava/lang/Enum;)I")
-        | ("java/lang/Enum", "compareTo", "(Ljava/lang/Object;)I") => {
+        (_, "compareTo", _)
+            if !is_static
+                && args.len() == 2
+                && !ctx.rt.get_field(args[0], "$name").is_null()
+                && !ctx.rt.get_field(args[1], "$name").is_null() =>
+        {
             let a = ctx.rt.get_field(args[0], "$ordinal").i();
             let b = ctx.rt.get_field(args[1], "$ordinal").i();
             return Some(V::I(a.cmp(&b) as i32));
+        }
+        ("java/text/NumberFormat" | "java/text/DecimalFormat", _, _) => {
+            return dispatch_number_format(ctx.rt, name, desc, is_static, args);
+        }
+        ("java/lang/Enum", "valueOf", "(Ljava/lang/Class;Ljava/lang/String;)Ljava/lang/Enum;")
+            if is_static =>
+        {
+            let cls_tag = ctx
+                .rt
+                .handle_of(args[0])
+                .map(|(_, _, t, _)| t.to_owned())
+                .unwrap_or_default();
+            let const_name = ctx
+                .rt
+                .str_of(args[1])
+                .map(str::to_owned)
+                .ok_or(())
+                .ok()?;
+            crate::vm::ensure_class_init(ctx, &cls_tag);
+            if let Some(val) = ctx.rt.get_static(&cls_tag, &const_name) {
+                return Some(val);
+            }
+            return Some(ctx.rt.throw_exception(
+                "java/lang/IllegalArgumentException",
+                &format!("No enum constant {cls_tag}.{const_name}"),
+            ));
+        }
+        (_, "clone", "()Ljava/lang/Object;") if !is_static && owner.starts_with('[') => {
+            let cloned = match ctx.rt.get_obj(args[0]) {
+                Some(o) => match &o.data {
+                    Data::Array(xs) => Some((o.class.clone(), xs.clone())),
+                    _ => None,
+                },
+                None => None,
+            };
+            if let Some((cls, items)) = cloned {
+                return Some(ctx.rt.alloc(cls, 0, Data::Array(items)));
+            }
         }
         (_, "getClass", "()Ljava/lang/Class;") if !is_static => {
             let cls = ctx
@@ -312,8 +358,8 @@ pub fn stdlib_call(
         _ => {}
     }
 
-    // 3. `java/lang/Objects`
-    if owner == "java/lang/Objects" {
+    // 3. `java/lang/Objects` / `java/util/Objects`
+    if owner == "java/lang/Objects" || owner == "java/util/Objects" {
         return match name {
             "requireNonNull" => {
                 let v = args.first().copied().unwrap_or(V::NULL);
@@ -326,6 +372,41 @@ pub fn stdlib_call(
                     Some(ctx.rt.throw_exception("java/lang/NullPointerException", &msg))
                 } else {
                     Some(v)
+                }
+            }
+            "requireNonNullElse" => {
+                let v = args.first().copied().unwrap_or(V::NULL);
+                if !v.is_null() {
+                    Some(v)
+                } else {
+                    let def = args.get(1).copied().unwrap_or(V::NULL);
+                    if def.is_null() {
+                        Some(ctx.rt.throw_exception("java/lang/NullPointerException", "Objects.requireNonNullElse defaultObj"))
+                    } else {
+                        Some(def)
+                    }
+                }
+            }
+            "requireNonNullElseGet" => {
+                let v = args.first().copied().unwrap_or(V::NULL);
+                if !v.is_null() {
+                    Some(v)
+                } else {
+                    let sup = args.get(1).copied().unwrap_or(V::NULL);
+                    let got = crate::vm::invoke_closure(ctx, sup, &[]);
+                    if got.is_null() {
+                        Some(ctx.rt.throw_exception("java/lang/NullPointerException", "Objects.requireNonNullElseGet"))
+                    } else {
+                        Some(got)
+                    }
+                }
+            }
+            "checkIndex" => {
+                let (idx, len) = (args[0].i(), args[1].i());
+                if idx < 0 || idx >= len {
+                    Some(ctx.rt.throw_exception("java/lang/IndexOutOfBoundsException", &format!("Index {idx} out of bounds for length {len}")))
+                } else {
+                    Some(V::I(idx))
                 }
             }
             "equals" => Some(V::bool(ctx.rt.val_eq(args[0], args[1]))),
@@ -491,8 +572,12 @@ pub fn stdlib_call(
         }
     }
 
-    // 8. Collections, Optional, Arrays, Streams, Iterators (`java/util/*`)
-    if owner.starts_with("java/util/") {
+    // 8. Collections, Optional, Arrays, Streams, Iterators (`java/util/*`, `Iterable`, Fastutil, Guava Map/List/Set views)
+    if owner.starts_with("java/util/")
+        || owner == "java/lang/Iterable"
+        || owner.starts_with("it/unimi/dsi/fastutil/")
+        || (!is_static && owner.starts_with("com/google/common/collect/"))
+    {
         if let Some(res) = dispatch_java_util(ctx, owner, name, desc, is_static, args) {
             return Some(res);
         }
@@ -567,6 +652,26 @@ fn dispatch_boxed_primitives(
         ("java/lang/Integer", "toString", "(I)Ljava/lang/String;") if is_static => {
             Some(rt.new_str(args[0].i().to_string()))
         }
+        ("java/lang/Long", "toString", "(J)Ljava/lang/String;") if is_static => {
+            Some(rt.new_str(args[0].j().to_string()))
+        }
+        ("java/lang/Float", "toString", "(F)Ljava/lang/String;") if is_static => {
+            Some(rt.new_str(rt.value_to_string(V::F(args[0].f()))))
+        }
+        ("java/lang/Double", "toString", "(D)Ljava/lang/String;") if is_static => {
+            Some(rt.new_str(rt.value_to_string(V::D(args[0].d()))))
+        }
+        ("java/lang/Boolean", "toString", "(Z)Ljava/lang/String;") if is_static => {
+            Some(rt.intern_str(if args[0].i() != 0 { "true" } else { "false" }))
+        }
+        ("java/lang/Double", "parseDouble", "(Ljava/lang/String;)D") if is_static => {
+            let s = rt.str_of(args[0]).unwrap_or("0").trim();
+            Some(V::D(s.parse::<f64>().unwrap_or(0.0)))
+        }
+        ("java/lang/Float", "parseFloat", "(Ljava/lang/String;)F") if is_static => {
+            let s = rt.str_of(args[0]).unwrap_or("0").trim();
+            Some(V::F(s.parse::<f32>().unwrap_or(0.0)))
+        }
         ("java/lang/Integer", "compare", "(II)I") => Some(V::I(args[0].i().cmp(&args[1].i()) as i32)),
         ("java/lang/Integer", "sum", "(II)I") => Some(V::I(args[0].i().wrapping_add(args[1].i()))),
         ("java/lang/Integer", "max", "(II)I") => Some(V::I(args[0].i().max(args[1].i()))),
@@ -633,6 +738,46 @@ fn dispatch_boxed_primitives(
             Some(box_primitive(rt, owner, V::I(args[0].i() & 0xFFFF)))
         }
         ("java/lang/Character", "charValue", "()C") => Some(V::I(unbox_primitive(rt, args[0]).i())),
+        ("java/lang/Character", "toUpperCase", "(C)C") => {
+            let c = char::from_u32(args[0].i() as u32)
+                .and_then(|ch| ch.to_uppercase().next())
+                .map_or(args[0].i(), |u| u as i32);
+            Some(V::I(c))
+        }
+        ("java/lang/Character", "toLowerCase", "(C)C") => {
+            let c = char::from_u32(args[0].i() as u32)
+                .and_then(|ch| ch.to_lowercase().next())
+                .map_or(args[0].i(), |l| l as i32);
+            Some(V::I(c))
+        }
+        ("java/lang/Character", "isWhitespace", "(C)Z") | ("java/lang/Character", "isWhitespace", "(I)Z") => {
+            let ws = char::from_u32(args[0].i() as u32).is_some_and(char::is_whitespace);
+            Some(V::bool(ws))
+        }
+        ("java/lang/Character", "isDigit", "(C)Z") | ("java/lang/Character", "isDigit", "(I)Z") => {
+            let d = char::from_u32(args[0].i() as u32).is_some_and(|c| c.is_ascii_digit());
+            Some(V::bool(d))
+        }
+        ("java/lang/Character", "isLetter", "(C)Z") | ("java/lang/Character", "isLetter", "(I)Z") => {
+            let l = char::from_u32(args[0].i() as u32).is_some_and(char::is_alphabetic);
+            Some(V::bool(l))
+        }
+        ("java/lang/Character", "isLetterOrDigit", "(C)Z") | ("java/lang/Character", "isLetterOrDigit", "(I)Z") => {
+            let ld = char::from_u32(args[0].i() as u32).is_some_and(char::is_alphanumeric);
+            Some(V::bool(ld))
+        }
+        ("java/lang/Character", "isUpperCase", "(C)Z") => {
+            let u = char::from_u32(args[0].i() as u32).is_some_and(char::is_uppercase);
+            Some(V::bool(u))
+        }
+        ("java/lang/Character", "isLowerCase", "(C)Z") => {
+            let l = char::from_u32(args[0].i() as u32).is_some_and(char::is_lowercase);
+            Some(V::bool(l))
+        }
+        ("java/lang/Character", "toString", "(C)Ljava/lang/String;") if is_static => {
+            let ch = char::from_u32(args[0].i() as u32).unwrap_or('\u{FFFD}');
+            Some(rt.new_str(ch.to_string()))
+        }
         ("java/lang/Number", "intValue", "()I") => {
             let u = unbox_primitive(rt, args[0]);
             Some(V::I(match u {
@@ -695,8 +840,31 @@ fn dispatch_string(rt: &mut Rt, name: &str, desc: &str, is_static: bool, args: &
     if is_static {
         return match name {
             "valueOf" => {
-                let s = rt.value_to_string(args[0]);
-                Some(rt.new_str(s))
+                if desc == "([C)Ljava/lang/String;" {
+                    let u16s: Vec<u16> = match rt.get_obj(args[0]).map(|o| &o.data) {
+                        Some(Data::Array(xs)) => xs.iter().map(|v| v.i() as u16).collect(),
+                        _ => Vec::new(),
+                    };
+                    Some(rt.new_str(String::from_utf16_lossy(&u16s)))
+                } else if desc == "([CII)Ljava/lang/String;" {
+                    let (off, count) = (args[1].i().max(0) as usize, args[2].i().max(0) as usize);
+                    let u16s: Vec<u16> = match rt.get_obj(args[0]).map(|o| &o.data) {
+                        Some(Data::Array(xs)) => xs
+                            .iter()
+                            .skip(off)
+                            .take(count)
+                            .map(|v| v.i() as u16)
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    Some(rt.new_str(String::from_utf16_lossy(&u16s)))
+                } else if desc == "(C)Ljava/lang/String;" {
+                    let ch = char::from_u32(args[0].i() as u32).unwrap_or('\u{FFFD}');
+                    Some(rt.new_str(ch.to_string()))
+                } else {
+                    let s = rt.value_to_string(args[0]);
+                    Some(rt.new_str(s))
+                }
             }
             "format" => {
                 let fmt = rt.str_of(args[0]).unwrap_or("").to_owned();
@@ -723,7 +891,11 @@ fn dispatch_string(rt: &mut Rt, name: &str, desc: &str, is_static: bool, args: &
         };
     }
 
-    let s = rt.str_of(args[0])?.to_owned();
+    let s = if name == "<init>" {
+        String::new()
+    } else {
+        rt.str_of(args[0])?.to_owned()
+    };
     let utf16: Vec<u16> = s.encode_utf16().collect();
     Some(match (name, desc) {
         ("length", "()I") => V::I(utf16.len() as i32),
@@ -732,6 +904,20 @@ fn dispatch_string(rt: &mut Rt, name: &str, desc: &str, is_static: bool, args: &
         ("charAt", "(I)C") => {
             let idx = args[1].i() as usize;
             V::I(utf16.get(idx).copied().unwrap_or(0) as i32)
+        }
+        ("toCharArray", "()[C") => {
+            let chars: Vec<V> = utf16.iter().map(|&u| V::I(i32::from(u))).collect();
+            rt.alloc("[C", 0, Data::Array(chars))
+        }
+        ("<init>", "([C)V") => {
+            let u16s: Vec<u16> = match rt.get_obj(args[1]).map(|o| &o.data) {
+                Some(Data::Array(xs)) => xs.iter().map(|v| v.i() as u16).collect(),
+                _ => Vec::new(),
+            };
+            if let Some(o) = rt.get_obj_mut(args[0]) {
+                o.data = Data::Str(String::from_utf16_lossy(&u16s));
+            }
+            V::Void
         }
         ("toLowerCase", _) => rt.new_str(s.to_lowercase()),
         ("toUpperCase", _) => rt.new_str(s.to_uppercase()),
@@ -914,6 +1100,68 @@ fn dispatch_java_util(
     is_static: bool,
     args: &[V],
 ) -> Option<V> {
+    // `java/util/concurrent/atomic/*`
+    if matches!(
+        owner,
+        "java/util/concurrent/atomic/AtomicInteger"
+            | "java/util/concurrent/atomic/AtomicLong"
+            | "java/util/concurrent/atomic/AtomicBoolean"
+            | "java/util/concurrent/atomic/AtomicReference"
+    ) && !is_static
+    {
+        return dispatch_atomic(ctx.rt, owner, args[0], name, &args[1..]);
+    }
+
+    // `java/util/Comparator`
+    if owner == "java/util/Comparator" {
+        return dispatch_comparator(ctx, name, desc, is_static, args);
+    }
+
+    // `java/util/concurrent/Executors` & `ExecutorService`
+    if owner == "java/util/concurrent/Executors" && is_static {
+        return match name {
+            "newSingleThreadExecutor"
+            | "newCachedThreadPool"
+            | "newFixedThreadPool"
+            | "newSingleThreadScheduledExecutor"
+            | "newScheduledThreadPool" => Some(ctx.rt.new_pinned_handle(
+                "java/util/concurrent/ExecutorService",
+                "executor",
+                0,
+                name,
+            )),
+            _ => None,
+        };
+    }
+    if (owner == "java/util/concurrent/ExecutorService"
+        || owner == "java/util/concurrent/Executor")
+        && !is_static
+    {
+        return match name {
+            "execute" => {
+                let _ = crate::vm::invoke_closure(ctx, args[1], &[]);
+                Some(V::Void)
+            }
+            "submit" => {
+                let res = crate::vm::invoke_closure(ctx, args[1], &[]);
+                let fut = ctx
+                    .rt
+                    .new_instance("java/util/concurrent/CompletableFuture", 0);
+                ctx.rt.put_field(fut, "$done", V::I(1));
+                ctx.rt.put_field(
+                    fut,
+                    "$value",
+                    if matches!(res, V::Void) { V::NULL } else { res },
+                );
+                Some(fut)
+            }
+            "shutdown" => Some(V::Void),
+            "shutdownNow" => Some(ctx.rt.alloc("java/util/List", 0, Data::List(Vec::new()))),
+            "isShutdown" | "isTerminated" => Some(V::FALSE),
+            _ => None,
+        };
+    }
+
     // `java/util/concurrent/CompletableFuture`
     if owner == "java/util/concurrent/CompletableFuture" {
         if is_static && name == "completedFuture" {
@@ -962,6 +1210,79 @@ fn dispatch_java_util(
         }
     }
 
+    // `java/util/ServiceLoader`
+    if owner == "java/util/ServiceLoader" {
+        if is_static && name == "load" {
+            let spi_cls = ctx
+                .rt
+                .handle_of(*args.first()?)
+                .map(|(_, _, t, _)| t.to_owned())
+                .unwrap_or_default();
+            let impl_names = ctx
+                .linked
+                .services
+                .get(&spi_cls)
+                .cloned()
+                .unwrap_or_default();
+            let mut instances = Vec::new();
+            for impl_cls in impl_names {
+                let obj = crate::vm::alloc_new_object(ctx, &impl_cls);
+                if ctx.rt.pending_exception.is_some() {
+                    return Some(V::NULL);
+                }
+                let mref = MemberRef::new(&impl_cls, "<init>", "()V");
+                let _ = crate::vm::invoke_member(ctx, mmga_classfile::op::INVOKESPECIAL, &mref, &[obj]);
+                if ctx.rt.pending_exception.is_some() {
+                    return Some(V::NULL);
+                }
+                instances.push(obj);
+            }
+            let loader = ctx.rt.new_instance("java/util/ServiceLoader", 0);
+            let list = ctx.rt.alloc("java/util/ArrayList", 0, Data::List(instances));
+            ctx.rt.put_field(loader, "$providers", list);
+            return Some(loader);
+        }
+        if !is_static {
+            let list = ctx.rt.get_field(args[0], "$providers");
+            let items: Vec<V> = match ctx.rt.get_obj(list).map(|o| &o.data) {
+                Some(Data::List(xs)) => xs.clone(),
+                _ => Vec::new(),
+            };
+            return match name {
+                "findFirst" => {
+                    let first = items.into_iter().next();
+                    Some(ctx.rt.alloc("java/util/Optional", 0, Data::Optional(first)))
+                }
+                "iterator" => {
+                    Some(ctx.rt.alloc("java/util/Iterator", 0, Data::Iter { items, pos: 0 }))
+                }
+                "stream" => {
+                    let providers: Vec<V> = items
+                        .into_iter()
+                        .map(|inst| {
+                            let p = ctx.rt.new_instance("java/util/ServiceLoader$Provider", 0);
+                            ctx.rt.put_field(p, "$inst", inst);
+                            p
+                        })
+                        .collect();
+                    Some(ctx.rt.alloc("java/util/stream/Stream", 0, Data::Stream(providers)))
+                }
+                _ => None,
+            };
+        }
+    }
+    if owner == "java/util/ServiceLoader$Provider" && !is_static {
+        let inst = ctx.rt.get_field(args[0], "$inst");
+        return match name {
+            "get" => Some(inst),
+            "type" => {
+                let cls = ctx.rt.class_of(inst).unwrap_or("java/lang/Object").to_owned();
+                Some(ctx.rt.new_pinned_handle("java/lang/Class", "class", 0, cls))
+            }
+            _ => None,
+        };
+    }
+
     // `java/util/Optional`
     if owner == "java/util/Optional" {
         if is_static {
@@ -988,13 +1309,30 @@ fn dispatch_java_util(
         return match name {
             "isPresent" => Some(V::bool(inner.is_some())),
             "isEmpty" => Some(V::bool(inner.is_none())),
-            "get" | "orElseThrow" => match inner {
-                Some(v) => Some(v),
-                None => Some(
-                    ctx.rt
-                        .throw_exception("java/util/NoSuchElementException", "No value present"),
-                ),
-            },
+            "orElseThrow" => match inner {
+            Some(v) => Some(v),
+            None => {
+                if let Some(&exc_supplier) = args.get(1) {
+                    let exc = crate::vm::invoke_closure(ctx, exc_supplier, &[]);
+                    if !exc.is_null() {
+                        ctx.rt.pending_exception = Some(exc.r());
+                    }
+                    Some(V::NULL)
+                } else {
+                    Some(
+                        ctx.rt
+                            .throw_exception("java/util/NoSuchElementException", "No value present"),
+                    )
+                }
+            }
+        },
+        "get" => match inner {
+            Some(v) => Some(v),
+            None => Some(
+                ctx.rt
+                    .throw_exception("java/util/NoSuchElementException", "No value present"),
+            ),
+        },
             "orElse" => Some(inner.unwrap_or(args[1])),
             "orElseGet" => match inner {
                 Some(v) => Some(v),
@@ -1071,16 +1409,33 @@ fn dispatch_java_util(
             "singletonList" => Some(ctx.rt.alloc("java/util/List", 0, Data::List(vec![args[0]]))),
             "singleton" => Some(ctx.rt.alloc("java/util/Set", 0, Data::Set(vec![args[0]]))),
             "unmodifiableList" | "unmodifiableSet" | "unmodifiableMap" | "unmodifiableCollection"
-            | "synchronizedList" | "synchronizedMap" | "synchronizedSet" => Some(args[0]),
+            | "synchronizedList" | "synchronizedMap" | "synchronizedSet" | "synchronizedCollection" => Some(args[0]),
+            "newSetFromMap" => {
+                let map_v = *args.first()?;
+                if map_v.is_null() {
+                    return Some(ctx.rt.throw_exception("java/lang/NullPointerException", "Collections.newSetFromMap(null)"));
+                }
+                let not_empty = match ctx.rt.get_obj(map_v).map(|o| &o.data) {
+                    Some(Data::Map(m)) => !m.is_empty(),
+                    _ => false,
+                };
+                if not_empty {
+                    return Some(ctx.rt.throw_exception("java/lang/IllegalArgumentException", "Map is non-empty"));
+                }
+                Some(ctx.rt.alloc("java/util/Set", 0, Data::Set(Vec::new())))
+            }
             _ => None,
         };
     }
 
-    // `List.of(...)` / `Set.of(...)` / `Map.of(...)`
-    if is_static && name == "of" {
+    // `List.of(...)` / `Set.of(...)` / `Map.of(...)` & Fastutil `.of(...)` / `.wrap(...)`
+    if is_static && (name == "of" || name == "wrap") {
         match owner {
-            "java/util/List" => {
-                let items = if desc == "([Ljava/lang/Object;)Ljava/util/List;" {
+            "java/util/List"
+            | "it/unimi/dsi/fastutil/objects/ObjectArrayList"
+            | "it/unimi/dsi/fastutil/objects/ObjectList"
+            | "it/unimi/dsi/fastutil/ints/IntArrayList" => {
+                let items = if desc.starts_with("([") {
                     match ctx.rt.get_obj(args[0]).map(|o| &o.data) {
                         Some(Data::Array(v)) => v.clone(),
                         _ => Vec::new(),
@@ -1088,10 +1443,15 @@ fn dispatch_java_util(
                 } else {
                     args.to_vec()
                 };
-                return Some(ctx.rt.alloc("java/util/List", 0, Data::List(items)));
+                return Some(ctx.rt.alloc(owner, 0, Data::List(items)));
             }
-            "java/util/Set" => {
-                let items = if desc == "([Ljava/lang/Object;)Ljava/util/Set;" {
+            "java/util/Set"
+            | "it/unimi/dsi/fastutil/objects/ObjectOpenHashSet"
+            | "it/unimi/dsi/fastutil/objects/ObjectLinkedOpenHashSet"
+            | "it/unimi/dsi/fastutil/objects/ReferenceOpenHashSet"
+            | "it/unimi/dsi/fastutil/objects/ObjectArraySet"
+            | "it/unimi/dsi/fastutil/objects/ObjectSet" => {
+                let items = if desc.starts_with("([") {
                     match ctx.rt.get_obj(args[0]).map(|o| &o.data) {
                         Some(Data::Array(v)) => v.clone(),
                         _ => Vec::new(),
@@ -1099,7 +1459,7 @@ fn dispatch_java_util(
                 } else {
                     args.to_vec()
                 };
-                return Some(ctx.rt.alloc("java/util/Set", 0, Data::Set(items)));
+                return Some(ctx.rt.alloc(owner, 0, Data::Set(items)));
             }
             "java/util/Map" => {
                 let mut pairs = Vec::new();
@@ -1111,13 +1471,27 @@ fn dispatch_java_util(
             _ => {}
         }
     }
+    if is_static && owner == "it/unimi/dsi/fastutil/objects/ObjectLists" && name == "emptyList" {
+        return Some(ctx.rt.alloc("java/util/List", 0, Data::List(Vec::new())));
+    }
+    if is_static && owner == "it/unimi/dsi/fastutil/objects/ObjectSets" && name == "emptySet" {
+        return Some(ctx.rt.alloc("java/util/Set", 0, Data::Set(Vec::new())));
+    }
+    if is_static && owner == "it/unimi/dsi/fastutil/objects/Object2ObjectMaps" && name == "emptyMap" {
+        return Some(ctx.rt.alloc("java/util/Map", 0, Data::Map(Vec::new())));
+    }
 
     // Constructors for List / Set / Map
     if !is_static && name == "<init>" {
         let recv = args[0];
         if matches!(
             owner,
-            "java/util/ArrayList" | "java/util/LinkedList" | "java/util/ArrayDeque" | "java/util/concurrent/CopyOnWriteArrayList"
+            "java/util/ArrayList"
+                | "java/util/LinkedList"
+                | "java/util/ArrayDeque"
+                | "java/util/concurrent/CopyOnWriteArrayList"
+                | "it/unimi/dsi/fastutil/objects/ObjectArrayList"
+                | "it/unimi/dsi/fastutil/ints/IntArrayList"
         ) {
             let initial = args
                 .get(1)
@@ -1133,7 +1507,13 @@ fn dispatch_java_util(
         }
         if matches!(
             owner,
-            "java/util/HashSet" | "java/util/LinkedHashSet" | "java/util/TreeSet"
+            "java/util/HashSet"
+                | "java/util/LinkedHashSet"
+                | "java/util/TreeSet"
+                | "it/unimi/dsi/fastutil/objects/ObjectOpenHashSet"
+                | "it/unimi/dsi/fastutil/objects/ObjectLinkedOpenHashSet"
+                | "it/unimi/dsi/fastutil/objects/ReferenceOpenHashSet"
+                | "it/unimi/dsi/fastutil/objects/ObjectArraySet"
         ) {
             let initial = args
                 .get(1)
@@ -1155,6 +1535,13 @@ fn dispatch_java_util(
                 | "java/util/EnumMap"
                 | "java/util/TreeMap"
                 | "java/util/concurrent/ConcurrentHashMap"
+                | "it/unimi/dsi/fastutil/objects/Object2ObjectOpenHashMap"
+                | "it/unimi/dsi/fastutil/objects/Object2ObjectLinkedOpenHashMap"
+                | "it/unimi/dsi/fastutil/objects/Object2ObjectArrayMap"
+                | "it/unimi/dsi/fastutil/objects/Reference2ObjectOpenHashMap"
+                | "it/unimi/dsi/fastutil/objects/Object2IntOpenHashMap"
+                | "it/unimi/dsi/fastutil/objects/Object2BooleanOpenHashMap"
+                | "it/unimi/dsi/fastutil/ints/Int2ObjectOpenHashMap"
         ) {
             let initial = args
                 .get(1)
@@ -1355,6 +1742,30 @@ fn dispatch_list_instance(
             }
             V::Void
         }
+        "sort" => {
+            let mut items = match ctx.rt.get_obj(recv).map(|o| &o.data) {
+                Some(Data::List(v)) => v.clone(),
+                _ => Vec::new(),
+            };
+            let cmp = args.first().copied().unwrap_or(V::NULL);
+            let n = items.len();
+            for i in 1..n {
+                let mut j = i;
+                while j > 0 {
+                    let ord = eval_comparator(ctx, cmp, items[j - 1], items[j]);
+                    if ord > 0 {
+                        items.swap(j - 1, j);
+                        j -= 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            if let Some(Data::List(v)) = ctx.rt.get_obj_mut(recv).map(|o| &mut o.data) {
+                *v = items;
+            }
+            V::Void
+        }
         "iterator" => {
             let items = match ctx.rt.get_obj(recv).map(|o| &o.data) {
                 Some(Data::List(v)) => v.clone(),
@@ -1387,6 +1798,25 @@ fn dispatch_list_instance(
                 _ => Vec::new(),
             };
             ctx.rt.alloc("[Ljava/lang/Object;", 0, Data::Array(items))
+        }
+        "removeIf" => {
+            let items = match ctx.rt.get_obj(recv).map(|o| &o.data) {
+                Some(Data::List(v)) => v.clone(),
+                _ => Vec::new(),
+            };
+            let mut kept = Vec::with_capacity(items.len());
+            let mut removed = false;
+            for item in items {
+                if crate::vm::invoke_closure(ctx, args[0], &[item]).i() != 0 {
+                    removed = true;
+                } else {
+                    kept.push(item);
+                }
+            }
+            if let Some(Data::List(v)) = ctx.rt.get_obj_mut(recv).map(|o| &mut o.data) {
+                *v = kept;
+            }
+            V::bool(removed)
         }
         _ => return None,
     })
@@ -2104,6 +2534,423 @@ fn dispatch_arrays(rt: &mut Rt, name: &str, desc: &str, args: &[V]) -> Option<V>
         }
         _ => None,
     }
+}
+
+fn dispatch_atomic(rt: &mut Rt, owner: &str, recv: V, name: &str, args: &[V]) -> Option<V> {
+    match owner {
+        "java/util/concurrent/atomic/AtomicInteger" => match name {
+            "<init>" => {
+                let init = args.first().map_or(0, |v| v.i());
+                rt.put_field(recv, "$val", V::I(init));
+                Some(V::Void)
+            }
+            "get" | "intValue" => Some(V::I(rt.get_field(recv, "$val").i())),
+            "set" | "lazySet" => {
+                rt.put_field(recv, "$val", V::I(args.first()?.i()));
+                Some(V::Void)
+            }
+            "getAndSet" => {
+                let old = rt.get_field(recv, "$val").i();
+                rt.put_field(recv, "$val", V::I(args.first()?.i()));
+                Some(V::I(old))
+            }
+            "incrementAndGet" => {
+                let next = rt.get_field(recv, "$val").i().wrapping_add(1);
+                rt.put_field(recv, "$val", V::I(next));
+                Some(V::I(next))
+            }
+            "getAndIncrement" => {
+                let old = rt.get_field(recv, "$val").i();
+                rt.put_field(recv, "$val", V::I(old.wrapping_add(1)));
+                Some(V::I(old))
+            }
+            "decrementAndGet" => {
+                let next = rt.get_field(recv, "$val").i().wrapping_sub(1);
+                rt.put_field(recv, "$val", V::I(next));
+                Some(V::I(next))
+            }
+            "getAndDecrement" => {
+                let old = rt.get_field(recv, "$val").i();
+                rt.put_field(recv, "$val", V::I(old.wrapping_sub(1)));
+                Some(V::I(old))
+            }
+            "addAndGet" => {
+                let next = rt.get_field(recv, "$val").i().wrapping_add(args.first()?.i());
+                rt.put_field(recv, "$val", V::I(next));
+                Some(V::I(next))
+            }
+            "getAndAdd" => {
+                let old = rt.get_field(recv, "$val").i();
+                rt.put_field(recv, "$val", V::I(old.wrapping_add(args.first()?.i())));
+                Some(V::I(old))
+            }
+            "compareAndSet" => {
+                let cur = rt.get_field(recv, "$val").i();
+                if cur == args.first()?.i() {
+                    rt.put_field(recv, "$val", V::I(args.get(1)?.i()));
+                    Some(V::TRUE)
+                } else {
+                    Some(V::FALSE)
+                }
+            }
+            _ => None,
+        },
+        "java/util/concurrent/atomic/AtomicLong" => match name {
+            "<init>" => {
+                let init = args.first().map_or(0, |v| v.j());
+                rt.put_field(recv, "$val", V::J(init));
+                Some(V::Void)
+            }
+            "get" | "longValue" => Some(V::J(rt.get_field(recv, "$val").j())),
+            "set" | "lazySet" => {
+                rt.put_field(recv, "$val", V::J(args.first()?.j()));
+                Some(V::Void)
+            }
+            "incrementAndGet" => {
+                let next = rt.get_field(recv, "$val").j().wrapping_add(1);
+                rt.put_field(recv, "$val", V::J(next));
+                Some(V::J(next))
+            }
+            "getAndIncrement" => {
+                let old = rt.get_field(recv, "$val").j();
+                rt.put_field(recv, "$val", V::J(old.wrapping_add(1)));
+                Some(V::J(old))
+            }
+            "addAndGet" => {
+                let next = rt.get_field(recv, "$val").j().wrapping_add(args.first()?.j());
+                rt.put_field(recv, "$val", V::J(next));
+                Some(V::J(next))
+            }
+            "compareAndSet" => {
+                let cur = rt.get_field(recv, "$val").j();
+                if cur == args.first()?.j() {
+                    rt.put_field(recv, "$val", V::J(args.get(1)?.j()));
+                    Some(V::TRUE)
+                } else {
+                    Some(V::FALSE)
+                }
+            }
+            _ => None,
+        },
+        "java/util/concurrent/atomic/AtomicBoolean" => match name {
+            "<init>" => {
+                let init = args.first().map_or(0, |v| i32::from(v.i() != 0));
+                rt.put_field(recv, "$val", V::I(init));
+                Some(V::Void)
+            }
+            "get" => Some(V::bool(rt.get_field(recv, "$val").i() != 0)),
+            "set" | "lazySet" => {
+                rt.put_field(recv, "$val", V::bool(args.first()?.i() != 0));
+                Some(V::Void)
+            }
+            "getAndSet" => {
+                let old = rt.get_field(recv, "$val").i() != 0;
+                rt.put_field(recv, "$val", V::bool(args.first()?.i() != 0));
+                Some(V::bool(old))
+            }
+            "compareAndSet" => {
+                let cur = rt.get_field(recv, "$val").i() != 0;
+                if cur == (args.first()?.i() != 0) {
+                    rt.put_field(recv, "$val", V::bool(args.get(1)?.i() != 0));
+                    Some(V::TRUE)
+                } else {
+                    Some(V::FALSE)
+                }
+            }
+            _ => None,
+        },
+        "java/util/concurrent/atomic/AtomicReference" => match name {
+            "<init>" => {
+                let init = args.first().copied().unwrap_or(V::NULL);
+                rt.put_field(recv, "$val", init);
+                Some(V::Void)
+            }
+            "get" => Some(rt.get_field(recv, "$val")),
+            "set" | "lazySet" => {
+                rt.put_field(recv, "$val", *args.first()?);
+                Some(V::Void)
+            }
+            "getAndSet" => {
+                let old = rt.get_field(recv, "$val");
+                rt.put_field(recv, "$val", *args.first()?);
+                Some(old)
+            }
+            "compareAndSet" => {
+                let cur = rt.get_field(recv, "$val");
+                if cur == *args.first()? {
+                    rt.put_field(recv, "$val", *args.get(1)?);
+                    Some(V::TRUE)
+                } else {
+                    Some(V::FALSE)
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn new_comparator_obj(rt: &mut Rt, kind: &str, f1: V, f2: V) -> V {
+    let obj = rt.new_instance("java/util/Comparator", 0);
+    let k = rt.intern_str(kind);
+    rt.put_field(obj, "$cmp_kind", k);
+    rt.put_field(obj, "$f1", f1);
+    rt.put_field(obj, "$f2", f2);
+    obj
+}
+
+fn dispatch_comparator(
+    ctx: &mut ExecCtx<'_>,
+    name: &str,
+    _desc: &str,
+    is_static: bool,
+    args: &[V],
+) -> Option<V> {
+    if is_static {
+        return match name {
+            "naturalOrder" => Some(new_comparator_obj(ctx.rt, "natural", V::NULL, V::NULL)),
+            "reverseOrder" => Some(new_comparator_obj(ctx.rt, "reverse_natural", V::NULL, V::NULL)),
+            "comparing" => {
+                let key_fn = *args.first()?;
+                let key_cmp = args.get(1).copied().unwrap_or(V::NULL);
+                Some(new_comparator_obj(ctx.rt, "key", key_fn, key_cmp))
+            }
+            "comparingInt" => Some(new_comparator_obj(ctx.rt, "key_int", *args.first()?, V::NULL)),
+            "comparingLong" => Some(new_comparator_obj(ctx.rt, "key_long", *args.first()?, V::NULL)),
+            "comparingDouble" => {
+                Some(new_comparator_obj(ctx.rt, "key_double", *args.first()?, V::NULL))
+            }
+            "nullsFirst" => Some(new_comparator_obj(ctx.rt, "nulls_first", *args.first()?, V::NULL)),
+            "nullsLast" => Some(new_comparator_obj(ctx.rt, "nulls_last", *args.first()?, V::NULL)),
+            _ => None,
+        };
+    }
+
+    let recv = *args.first()?;
+    match name {
+        "compare" if args.len() == 3 => Some(V::I(eval_comparator(ctx, recv, args[1], args[2]))),
+        "reversed" => Some(new_comparator_obj(ctx.rt, "reversed", recv, V::NULL)),
+        "thenComparing" => {
+            let arg1 = *args.get(1)?;
+            let second = if args.len() == 3 {
+                new_comparator_obj(ctx.rt, "key", arg1, args[2])
+            } else if ctx
+                .rt
+                .get_obj(arg1)
+                .and_then(|o| match &o.data {
+                    Data::Closure(c) => Some(c.sam_name.as_str()),
+                    _ => None,
+                })
+                == Some("apply")
+            {
+                new_comparator_obj(ctx.rt, "key", arg1, V::NULL)
+            } else {
+                arg1
+            };
+            Some(new_comparator_obj(ctx.rt, "chain", recv, second))
+        }
+        "thenComparingInt" => {
+            let second = new_comparator_obj(ctx.rt, "key_int", *args.get(1)?, V::NULL);
+            Some(new_comparator_obj(ctx.rt, "chain", recv, second))
+        }
+        "thenComparingLong" => {
+            let second = new_comparator_obj(ctx.rt, "key_long", *args.get(1)?, V::NULL);
+            Some(new_comparator_obj(ctx.rt, "chain", recv, second))
+        }
+        "thenComparingDouble" => {
+            let second = new_comparator_obj(ctx.rt, "key_double", *args.get(1)?, V::NULL);
+            Some(new_comparator_obj(ctx.rt, "chain", recv, second))
+        }
+        _ => None,
+    }
+}
+
+fn eval_comparator(ctx: &mut ExecCtx<'_>, cmp: V, a: V, b: V) -> i32 {
+    if cmp.is_null() {
+        return eval_natural_order(ctx, a, b);
+    }
+    if matches!(ctx.rt.get_obj(cmp).map(|o| &o.data), Some(Data::Closure(_))) {
+        return crate::vm::invoke_closure(ctx, cmp, &[a, b]).i();
+    }
+    let kind = ctx
+        .rt
+        .str_of(ctx.rt.get_field(cmp, "$cmp_kind"))
+        .unwrap_or("")
+        .to_owned();
+    let f1 = ctx.rt.get_field(cmp, "$f1");
+    let f2 = ctx.rt.get_field(cmp, "$f2");
+    match kind.as_str() {
+        "natural" => eval_natural_order(ctx, a, b),
+        "reverse_natural" => -eval_natural_order(ctx, a, b),
+        "reversed" => -eval_comparator(ctx, f1, a, b),
+        "chain" => {
+            let first = eval_comparator(ctx, f1, a, b);
+            if first != 0 {
+                first
+            } else {
+                eval_comparator(ctx, f2, a, b)
+            }
+        }
+        "key" => {
+            let ka = crate::vm::invoke_closure(ctx, f1, &[a]);
+            let kb = crate::vm::invoke_closure(ctx, f1, &[b]);
+            if f2.is_null() {
+                eval_natural_order(ctx, ka, kb)
+            } else {
+                eval_comparator(ctx, f2, ka, kb)
+            }
+        }
+        "key_int" => {
+            let ka = crate::vm::invoke_closure(ctx, f1, &[a]).i();
+            let kb = crate::vm::invoke_closure(ctx, f1, &[b]).i();
+            ka.cmp(&kb) as i32
+        }
+        "key_long" => {
+            let ka = crate::vm::invoke_closure(ctx, f1, &[a]).j();
+            let kb = crate::vm::invoke_closure(ctx, f1, &[b]).j();
+            ka.cmp(&kb) as i32
+        }
+        "key_double" => {
+            let ka = crate::vm::invoke_closure(ctx, f1, &[a]).d();
+            let kb = crate::vm::invoke_closure(ctx, f1, &[b]).d();
+            ka.total_cmp(&kb) as i32
+        }
+        "nulls_first" => match (a.is_null(), b.is_null()) {
+            (true, true) => 0,
+            (true, false) => -1,
+            (false, true) => 1,
+            (false, false) => eval_comparator(ctx, f1, a, b),
+        },
+        "nulls_last" => match (a.is_null(), b.is_null()) {
+            (true, true) => 0,
+            (true, false) => 1,
+            (false, true) => -1,
+            (false, false) => eval_comparator(ctx, f1, a, b),
+        },
+        _ => {
+            let mref = MemberRef::new("java/util/Comparator", "compare", "(Ljava/lang/Object;Ljava/lang/Object;)I");
+            crate::vm::invoke_member(ctx, mmga_classfile::op::INVOKEINTERFACE, &mref, &[cmp, a, b]).i()
+        }
+    }
+}
+
+fn eval_natural_order(ctx: &mut ExecCtx<'_>, a: V, b: V) -> i32 {
+    if let (Some(sa), Some(sb)) = (ctx.rt.str_of(a), ctx.rt.str_of(b)) {
+        return sa.cmp(sb) as i32;
+    }
+    let mref = MemberRef::new("java/lang/Comparable", "compareTo", "(Ljava/lang/Object;)I");
+    crate::vm::invoke_member(ctx, mmga_classfile::op::INVOKEINTERFACE, &mref, &[a, b]).i()
+}
+
+fn dispatch_number_format(
+    rt: &mut Rt,
+    name: &str,
+    desc: &str,
+    is_static: bool,
+    args: &[V],
+) -> Option<V> {
+    if is_static {
+        return match name {
+            "getIntegerInstance" => {
+                let nf = rt.new_instance("java/text/DecimalFormat", 0);
+                rt.put_field(nf, "$int_only", V::I(1));
+                rt.put_field(nf, "$grouping", V::I(1));
+                rt.put_field(nf, "$max_frac", V::I(0));
+                Some(nf)
+            }
+            "getNumberInstance" | "getInstance" => {
+                let nf = rt.new_instance("java/text/DecimalFormat", 0);
+                rt.put_field(nf, "$int_only", V::I(0));
+                rt.put_field(nf, "$grouping", V::I(1));
+                rt.put_field(nf, "$max_frac", V::I(3));
+                Some(nf)
+            }
+            _ => None,
+        };
+    }
+    let recv = *args.first()?;
+    match (name, desc) {
+        ("<init>", _) => {
+            rt.put_field(recv, "$int_only", V::I(0));
+            rt.put_field(recv, "$grouping", V::I(1));
+            rt.put_field(recv, "$max_frac", V::I(3));
+            Some(V::Void)
+        }
+        ("setMaximumFractionDigits", "(I)V") => {
+            rt.put_field(recv, "$max_frac", V::I(args[1].i().max(0)));
+            Some(V::Void)
+        }
+        ("setMinimumFractionDigits", "(I)V") => {
+            rt.put_field(recv, "$min_frac", V::I(args[1].i().max(0)));
+            Some(V::Void)
+        }
+        ("setGroupingUsed", "(Z)V") => {
+            rt.put_field(recv, "$grouping", V::bool(args[1].i() != 0));
+            Some(V::Void)
+        }
+        ("setRoundingMode", _) => Some(V::Void),
+        ("format", "(J)Ljava/lang/String;") => {
+            let group = rt.get_field(recv, "$grouping").i() != 0;
+            let s = format_grouped_int(args[1].j(), group);
+            Some(rt.new_str(s))
+        }
+        ("format", "(D)Ljava/lang/String;") => {
+            let group = rt.get_field(recv, "$grouping").i() != 0;
+            let max_frac = rt.get_field(recv, "$max_frac").i().clamp(0, 12) as usize;
+            let d = args[1].d();
+            if max_frac == 0 || d.fract() == 0.0 {
+                Some(rt.new_str(format_grouped_int(d.round() as i64, group)))
+            } else {
+                let raw = format!("{d:.max_frac$}");
+                let trimmed = raw.trim_end_matches('0').trim_end_matches('.');
+                let (int_part, frac_part) = trimmed.split_once('.').unwrap_or((trimmed, ""));
+                let i_val = int_part.parse::<i64>().unwrap_or(0);
+                let g = format_grouped_int(i_val, group);
+                let out = if frac_part.is_empty() {
+                    if d < 0.0 && i_val == 0 {
+                        format!("-{g}")
+                    } else {
+                        g
+                    }
+                } else if d < 0.0 && i_val == 0 {
+                    format!("-{g}.{frac_part}")
+                } else {
+                    format!("{g}.{frac_part}")
+                };
+                Some(rt.new_str(out))
+            }
+        }
+        ("format", "(Ljava/lang/Object;)Ljava/lang/String;") => {
+            let u = unbox_primitive(rt, args[1]);
+            match u {
+                V::J(j) => Some(rt.new_str(format_grouped_int(j, rt.get_field(recv, "$grouping").i() != 0))),
+                V::I(i) => Some(rt.new_str(format_grouped_int(i64::from(i), rt.get_field(recv, "$grouping").i() != 0))),
+                V::F(f) => dispatch_number_format(rt, "format", "(D)Ljava/lang/String;", false, &[recv, V::D(f64::from(f))]),
+                V::D(d) => dispatch_number_format(rt, "format", "(D)Ljava/lang/String;", false, &[recv, V::D(d)]),
+                _ => Some(rt.new_str(rt.value_to_string(args[1]))),
+            }
+        }
+        _ => None,
+    }
+}
+
+fn format_grouped_int(val: i64, grouping: bool) -> String {
+    if !grouping {
+        return val.to_string();
+    }
+    let neg = val < 0;
+    let digits = val.unsigned_abs().to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3 + 1);
+    if neg {
+        out.push('-');
+    }
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 /// RFC 1321 MD5 digest used exclusively for `java.util.UUID.nameUUIDFromBytes` (RFC 4122 v3).

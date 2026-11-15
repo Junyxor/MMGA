@@ -227,18 +227,21 @@ mod tests {
             &mut ctx,
             mmga_classfile::op::INVOKESTATIC,
             &mmga_classfile::MemberRef::new(
-                "com/google/common/collect/ImmutableList",
-                "copyOf",
-                "([Ljava/lang/Object;)Lcom/google/common/collect/ImmutableList;",
+                "com/google/common/cache/CacheBuilder",
+                "newBuilder",
+                "()Lcom/google/common/cache/CacheBuilder;",
             ),
-            &[V::NULL],
+            &[],
         );
         assert_eq!(unmapped_guava, V::NULL);
         let exc2 = ctx
             .rt
             .take_exception()
             .expect("unmapped library call must throw");
-        assert!(ctx.rt.exception_summary(exc2).contains("ImmutableList.copyOf"));
+        assert!(ctx
+            .rt
+            .exception_summary(exc2)
+            .contains("CacheBuilder.newBuilder"));
 
         let unmapped_static = read_static_field(
             &mut ctx,

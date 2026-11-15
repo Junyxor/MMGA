@@ -166,8 +166,17 @@ impl PreparedLoad {
         let mut classes: BTreeMap<String, ClassFile> = BTreeMap::new();
         let mut jar_resources: BTreeMap<String, Vec<u8>> = BTreeMap::new();
         let mut translations: BTreeMap<String, String> = BTreeMap::new();
+        let mut services: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for jar in &jars {
             crate::minecraft::extract_lang_entries(&jar.resources, &mut translations);
+            for (spi, impls) in &jar.services {
+                let entry = services.entry(spi.clone()).or_default();
+                for imp in impls {
+                    if !entry.contains(imp) {
+                        entry.push(imp.clone());
+                    }
+                }
+            }
             for (rpath, rbytes) in &jar.resources {
                 jar_resources
                     .entry(rpath.clone())
@@ -213,6 +222,7 @@ impl PreparedLoad {
         }
 
         let mut linked = LinkedSpace::new();
+        linked.services = services;
         linked.add_bytecode_classes(classes);
         let mut loader = FmlLoader {
             state: NeoForgeState::new(),
@@ -258,6 +268,17 @@ impl FmlLoader {
 
         self.run_registration(rt, linked)?;
         self.enter(LoadPhase::Registered);
+
+        self.post_each_mod(
+            rt,
+            linked,
+            "net/neoforged/neoforge/network/event/RegisterPayloadHandlersEvent",
+        )?;
+        self.post_each_mod(
+            rt,
+            linked,
+            "net/neoforged/neoforge/capabilities/RegisterCapabilitiesEvent",
+        )?;
 
         self.post_each_mod(
             rt,
@@ -432,16 +453,18 @@ impl FmlLoader {
                     depth: 0,
                 };
                 let obj = alloc_new_object(&mut ctx, &class_name);
-                let mut args = vec![obj];
-                for param in params {
-                    args.push(match param {
-                        CtorParam::Bus => bus,
-                        CtorParam::Container => container,
-                        CtorParam::Dist => dist,
-                    });
+                if ctx.rt.pending_exception.is_none() {
+                    let mut args = vec![obj];
+                    for param in params {
+                        args.push(match param {
+                            CtorParam::Bus => bus,
+                            CtorParam::Container => container,
+                            CtorParam::Dist => dist,
+                        });
+                    }
+                    let member = MemberRef::new(&class_name, "<init>", &desc);
+                    let _ = invoke_member(&mut ctx, op::INVOKESPECIAL, &member, &args);
                 }
-                let member = MemberRef::new(&class_name, "<init>", &desc);
-                let _ = invoke_member(&mut ctx, op::INVOKESPECIAL, &member, &args);
                 obj
             };
             self.constructing = None;
@@ -500,6 +523,11 @@ impl FmlLoader {
     fn run_registration(&mut self, rt: &mut Rt, linked: &LinkedSpace) -> Result<(), String> {
         let mut keys: Vec<String> = REGISTRATION_ORDER.iter().map(|k| (*k).to_owned()).collect();
         let mut seen: BTreeSet<String> = keys.iter().cloned().collect();
+        for custom in &self.state.registries.custom_registries {
+            if seen.insert(custom.clone()) {
+                keys.push(custom.clone());
+            }
+        }
         for supplier in self.state.registries.pending_suppliers() {
             if seen.insert(supplier.registry_key.clone()) {
                 keys.push(supplier.registry_key);
@@ -772,6 +800,26 @@ impl FmlLoader {
         if is_static && owner == "net/neoforged/fml/ModLoadingContext" && name == "get" {
             return Some(rt.new_pinned_handle(owner, "mod_loading_context", 0, ""));
         }
+        if is_static && owner == "net/neoforged/fml/loading/FMLLoader" {
+            return match name {
+                "isProduction" => Some(V::TRUE),
+                "getDist" => Some(self.dist_handle(rt)),
+                _ => None,
+            };
+        }
+        if is_static
+            && owner == "net/neoforged/neoforge/data/loading/DatagenModLoader"
+            && name == "isRunningDataGen"
+        {
+            return Some(V::FALSE);
+        }
+        if is_static
+            && owner == "net/neoforged/neoforge/common/NeoForgeMod"
+            && name == "enableMilkFluid"
+        {
+            self.state.milk_fluid_enabled = true;
+            return Some(V::Void);
+        }
         if is_static && owner == "net/neoforged/fml/ModLoadingIssue" && matches!(name, "warning" | "error") {
             let key = args
                 .first()
@@ -859,6 +907,28 @@ impl FmlLoader {
             let target_id = rt.str_of(*args.first()?)?.to_owned();
             return Some(self.drain_imc_stream(rt, &target_id));
         }
+        if is_static && owner == "net/neoforged/fml/loading/FMLPaths" && name == "getOrCreateGameRelativePath" {
+            let rel = path_text(rt, *args.first()?)?;
+            let p = std::path::Path::new(&rel);
+            let full = if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                self.config_dir
+                    .parent()
+                    .unwrap_or(&self.config_dir)
+                    .join(p)
+            };
+            if std::fs::create_dir_all(&full).is_err() {
+                rt.throw_exception("java/lang/RuntimeException", &format!("Failed to create {rel}"));
+                return Some(V::NULL);
+            }
+            return Some(rt.new_pinned_handle(
+                "java/nio/file/Path",
+                "nio_path",
+                0,
+                full.display().to_string(),
+            ));
+        }
         if is_static && owner == "java/nio/file/Files" {
             return self.nio_files(rt, name, args);
         }
@@ -876,6 +946,23 @@ impl FmlLoader {
                     } else {
                         V::NULL
                     });
+                }
+                ("net/neoforged/fml/ModList", "getModContainerById") => {
+                    let id = rt.str_of(*args.get(1)?)?.to_owned();
+                    let found = if self.version_of(&id).is_some() {
+                        Some(self.mod_container_handle(rt, &id))
+                    } else {
+                        None
+                    };
+                    return Some(rt.alloc("java/util/Optional", 0, Data::Optional(found)));
+                }
+                ("net/neoforged/api/distmarker/Dist", "isClient") => {
+                    let tag = handle_tag(rt, args[0])?;
+                    return Some(V::bool(tag == "CLIENT"));
+                }
+                ("net/neoforged/api/distmarker/Dist", "isDedicatedServer") => {
+                    let tag = handle_tag(rt, args[0])?;
+                    return Some(V::bool(tag == "DEDICATED_SERVER"));
                 }
                 ("net/neoforged/neoforgespi/language/IModFileInfo", "getFile")
                 | ("net/neoforged/fml/ModFileInfo", "getFile") => {
@@ -912,10 +999,10 @@ impl FmlLoader {
                     let id = handle_tag(rt, args[0])?;
                     return Some(rt.intern_str(&id));
                 }
-                ("org/apache/maven/artifact/versioning/ArtifactVersion", "toString")
-                | ("org/apache/maven/artifact/versioning/DefaultArtifactVersion", "toString") => {
+                ("org/apache/maven/artifact/versioning/ArtifactVersion", _)
+                | ("org/apache/maven/artifact/versioning/DefaultArtifactVersion", _) => {
                     let version = handle_tag(rt, args[0])?;
-                    return Some(rt.new_str(version));
+                    return dispatch_maven_artifact_version(rt, &version, name);
                 }
                 ("net/neoforged/fml/ModContainer", "getModInfo") => {
                     let id = handle_tag(rt, args[0])?;
@@ -1008,10 +1095,17 @@ impl FmlLoader {
                 }
                 ("net/neoforged/fml/loading/FMLPaths", "get") => {
                     let which = handle_tag(rt, args[0])?;
-                    if which != "config" {
-                        return None;
-                    }
-                    let dir = self.config_dir.clone();
+                    let base_root = self
+                        .config_dir
+                        .parent()
+                        .unwrap_or(&self.config_dir)
+                        .join("mmga-game");
+                    let dir = match which.as_str() {
+                        "config" | "configdir" => self.config_dir.clone(),
+                        "gamedir" => base_root,
+                        "modsdir" => base_root.join("mods"),
+                        _ => return None,
+                    };
                     let _ = std::fs::create_dir_all(&dir);
                     return Some(rt.new_pinned_handle(
                         "java/nio/file/Path",
@@ -1022,7 +1116,7 @@ impl FmlLoader {
                 }
                 ("java/nio/file/Path", "resolve") => {
                     let base = path_text(rt, args[0])?;
-                    let child = rt.str_of(*args.get(1)?)?;
+                    let child = path_text(rt, *args.get(1)?)?;
                     let joined = std::path::Path::new(&base).join(child);
                     return Some(rt.new_pinned_handle(
                         "java/nio/file/Path",
@@ -1095,41 +1189,115 @@ impl FmlLoader {
 
     fn add_listener(&mut self, rt: &mut Rt, args: &[V], desc: &str) -> Option<V> {
         let bus = self.bus_id_of(rt, *args.first()?)?;
-        let (priority, consumer_idx) = if desc.starts_with("(Ljava/util/function/Consumer;)") {
-            (EventPriority::Normal, 1usize)
-        } else if desc
-            .starts_with("(Lnet/neoforged/bus/api/EventPriority;Ljava/util/function/Consumer;)")
-        {
-            let ordinal = args.get(1).and_then(|v| rt.handle_of(*v)).map(|h| h.1);
-            let priority = match ordinal {
-                Some(0) => EventPriority::Highest,
-                Some(1) => EventPriority::High,
-                Some(3) => EventPriority::Low,
-                Some(4) => EventPriority::Lowest,
-                _ => EventPriority::Normal,
-            };
-            (priority, 2usize)
-        } else {
-            return None;
-        };
-        let consumer = *args.get(consumer_idx)?;
-        let event_class = event_class_of_listener(rt, consumer).or_else(|| {
-            rt.throw_exception(
-                "java/lang/IllegalArgumentException",
-                "addListener could not determine the event class from the callback",
-            );
-            None
-        })?;
+        let mut priority = EventPriority::Normal;
+        let mut receive_canceled = false;
+        let mut explicit_cls: Option<String> = None;
+        let mut consumer: Option<V> = None;
+
+        for &arg in &args[1..] {
+            if let Some((kind, id, tag, _)) = rt.handle_of(arg) {
+                if kind == "event_priority" {
+                    priority = match id {
+                        0 => EventPriority::Highest,
+                        1 => EventPriority::High,
+                        3 => EventPriority::Low,
+                        4 => EventPriority::Lowest,
+                        _ => EventPriority::Normal,
+                    };
+                    continue;
+                }
+                if kind == "class" {
+                    explicit_cls = Some(tag.to_owned());
+                    continue;
+                }
+            }
+            if matches!(arg, V::I(_)) && desc.contains('Z') {
+                receive_canceled = arg.i() != 0;
+                continue;
+            }
+            consumer = Some(arg);
+        }
+
+        let consumer = consumer?;
+        let event_class = explicit_cls
+            .or_else(|| event_class_of_listener(rt, consumer))
+            .or_else(|| {
+                rt.throw_exception(
+                    "java/lang/IllegalArgumentException",
+                    "addListener could not determine the event class from the callback",
+                );
+                None
+            })?;
         rt.pin(consumer);
         if let Err(err) = self.state.bus.register_listener(
             bus,
             event_class,
             priority,
-            false,
+            receive_canceled,
             consumer,
             EventCallback::Consumer(consumer),
         ) {
             rt.throw_exception("java/lang/IllegalArgumentException", &err);
+        }
+        Some(V::Void)
+    }
+
+    fn register_bus_target(
+        &mut self,
+        rt: &mut Rt,
+        linked: &LinkedSpace,
+        args: &[V],
+    ) -> Option<V> {
+        let bus = self.bus_id_of(rt, *args.first()?)?;
+        let target = *args.get(1)?;
+        if target.is_null() {
+            return Some(rt.throw_exception(
+                "java/lang/NullPointerException",
+                "IEventBus.register(null)",
+            ));
+        }
+        let (only_static, class_name) = match rt.handle_of(target) {
+            Some(("class", _, tag, _)) => (true, tag.to_owned()),
+            _ => (false, rt.class_of(target)?.to_owned()),
+        };
+        if !only_static {
+            rt.pin(target);
+        }
+        let mut cur = Some(class_name.as_str());
+        while let Some(cls) = cur {
+            if let Some(cf) = linked.bytecode_classes.get(cls) {
+                for m in mmga_classfile::scan_subscribe_methods(cf, only_static) {
+                    if only_static != m.is_static {
+                        continue;
+                    }
+                    let cb = if m.is_static {
+                        EventCallback::StaticMethod {
+                            class_name: cls.to_owned(),
+                            method_name: m.method_name,
+                            method_desc: m.method_desc,
+                        }
+                    } else {
+                        EventCallback::InstanceMethod {
+                            instance: target,
+                            class_name: cls.to_owned(),
+                            method_name: m.method_name,
+                            method_desc: m.method_desc,
+                        }
+                    };
+                    if let Err(err) = self.state.bus.register_listener(
+                        bus.clone(),
+                        m.event_class,
+                        EventPriority::parse(&m.priority),
+                        m.receive_canceled,
+                        target,
+                        cb,
+                    ) {
+                        rt.throw_exception("java/lang/IllegalArgumentException", &err);
+                        return Some(V::Void);
+                    }
+                }
+            }
+            cur = linked.superclass_of(cls);
         }
         Some(V::Void)
     }
@@ -1146,22 +1314,27 @@ impl FmlLoader {
                 "net/neoforged/neoforge/registries/DeferredRegister$Items",
                 rt.str_of(*args.first()?)?.to_owned(),
             ),
-            "create" => {
+            "create" | "createDataComponents" | "createEntities" => {
                 let namespace = args
                     .iter()
                     .rev()
                     .find_map(|v| rt.str_of(*v))
                     .unwrap_or("minecraft")
                     .to_owned();
-                let registry_key = args
-                    .first()
-                    .and_then(|v| rt.str_of(*v).map(str::to_owned))
-                    .or_else(|| {
-                        args.first()
-                            .and_then(|v| rt.handle_of(*v))
-                            .map(|(_, _, tag, _)| tag.to_owned())
-                    })
-                    .unwrap_or_else(|| "minecraft:custom".into());
+                let registry_key = match name {
+                    "createDataComponents" => "minecraft:data_component_type".to_owned(),
+                    "createEntities" => "minecraft:entity_type".to_owned(),
+                    _ => args
+                        .first()
+                        .and_then(|v| {
+                            crate::minecraft::resource_key_parts(rt, *v)
+                                .map(|(_, loc)| loc)
+                                .or_else(|| resource_id(rt, *v))
+                                .or_else(|| rt.str_of(*v).map(str::to_owned))
+                                .or_else(|| rt.handle_of(*v).map(|(_, _, tag, _)| tag.to_owned()))
+                        })
+                        .unwrap_or_else(|| "minecraft:custom".into()),
+                };
                 (
                     registry_key,
                     "net/neoforged/neoforge/registries/DeferredRegister",
@@ -1225,7 +1398,29 @@ impl FmlLoader {
             let text = args.first().and_then(|value| rt.str_of(*value));
             return Some(V::bool(text.is_none_or(|text| text.is_empty())));
         }
+        if owner == "net/minecraft/Util" && is_static {
+            match name {
+                "makeDescriptionId" => {
+                    let kind = rt.str_of(*args.first()?)?.to_owned();
+                    let out = match args.get(1).copied().and_then(|v| resource_id(rt, v)) {
+                        Some(id) => {
+                            let (ns, path) = id.split_once(':').unwrap_or(("minecraft", &id));
+                            format!("{kind}.{ns}.{}", path.replace('/', "."))
+                        }
+                        None => format!("{kind}.unregistered_sadface"),
+                    };
+                    return Some(rt.new_str(out));
+                }
+                "getMillis" => return Some(V::J(1_000)),
+                "getNanos" => return Some(V::J(1_000_000_000)),
+                _ => {}
+            }
+        }
         if owner == "net/minecraft/resources/ResourceLocation" {
+            if is_static && name == "withDefaultNamespace" {
+                let path = rt.str_of(*args.first()?)?.to_owned();
+                return Some(resource_location(rt, "minecraft", &path));
+            }
             if is_static && name == "fromNamespaceAndPath" {
                 let namespace = rt.str_of(*args.first()?)?.to_owned();
                 let path = rt.str_of(*args.get(1)?)?.to_owned();
@@ -1270,6 +1465,49 @@ impl FmlLoader {
                     .map(|(_, path)| path)
                     .unwrap_or(id.as_str());
                 return Some(rt.intern_str(path));
+            }
+            if !is_static && name == "withPrefix" {
+                let id = resource_id(rt, args[0])?;
+                let prefix = rt.str_of(*args.get(1)?)?.to_owned();
+                let (ns, path) = id.split_once(':').unwrap_or(("minecraft", &id));
+                return Some(resource_location(rt, ns, &format!("{prefix}{path}")));
+            }
+            if !is_static && name == "withSuffix" {
+                let id = resource_id(rt, args[0])?;
+                let suffix = rt.str_of(*args.get(1)?)?.to_owned();
+                let (ns, path) = id.split_once(':').unwrap_or(("minecraft", &id));
+                return Some(resource_location(rt, ns, &format!("{path}{suffix}")));
+            }
+            if !is_static && name == "withPath" && member.desc.starts_with("(Ljava/lang/String;)") {
+                let id = resource_id(rt, args[0])?;
+                let new_path = rt.str_of(*args.get(1)?)?.to_owned();
+                let (ns, _) = id.split_once(':').unwrap_or(("minecraft", &id));
+                return Some(resource_location(rt, ns, &new_path));
+            }
+            if !is_static && name == "toLanguageKey" {
+                let id = resource_id(rt, args[0])?;
+                let (ns, path) = id.split_once(':').unwrap_or(("minecraft", &id));
+                let body = format!("{ns}.{}", path.replace('/', "."));
+                let out = match args.get(1).and_then(|&v| rt.str_of(v)) {
+                    Some(prefix) => format!("{prefix}.{body}"),
+                    None => body,
+                };
+                return Some(rt.new_str(out));
+            }
+            if !is_static && name == "hashCode" {
+                let id = resource_id(rt, args[0])?;
+                let h = id.encode_utf16().fold(0i32, |acc, u| {
+                    acc.wrapping_mul(31).wrapping_add(i32::from(u))
+                });
+                return Some(V::I(h));
+            }
+            if !is_static && name == "compareTo" {
+                let left = resource_id(rt, args[0])?;
+                let right = resource_id(rt, *args.get(1)?)?;
+                let (l_ns, l_p) = left.split_once(':').unwrap_or(("minecraft", &left));
+                let (r_ns, r_p) = right.split_once(':').unwrap_or(("minecraft", &right));
+                let ord = l_p.cmp(r_p).then_with(|| l_ns.cmp(r_ns)) as i32;
+                return Some(V::I(ord));
             }
             if !is_static && name == "equals" {
                 let left = resource_id(rt, args[0])?;
@@ -1352,24 +1590,57 @@ impl FmlLoader {
 }
 
 impl HostApi for FmlLoader {
-    fn get_static_field(&mut self, rt: &mut Rt, owner: &str, name: &str, _desc: &str) -> Option<V> {
+    fn get_static_field(&mut self, rt: &mut Rt, owner: &str, name: &str, desc: &str) -> Option<V> {
         if owner == "net/neoforged/neoforge/common/NeoForge" && name == "EVENT_BUS" {
             return Some(self.game_bus_handle(rt));
+        }
+        if owner == "net/minecraft/core/registries/Registries" && name == "ROOT_REGISTRY_NAME" {
+            return Some(resource_location(rt, "minecraft", "root"));
+        }
+        if owner == "net/minecraft/Util" && name == "NIL_UUID" {
+            return Some(rt.alloc_pinned(
+                "java/util/UUID",
+                0,
+                Data::NativeHandle {
+                    kind: "uuid",
+                    id: 0,
+                    tag: "00000000-0000-0000-0000-000000000000".into(),
+                    payload: [0, 0],
+                },
+            ));
+        }
+        if let Some(reg_key) = crate::minecraft::lookup_builtin_registry_key(owner, name) {
+            if desc.starts_with("Lnet/minecraft/resources/ResourceKey;") {
+                return Some(crate::minecraft::new_resource_key(rt, "minecraft:root", reg_key));
+            }
+            let cls = if desc.starts_with("Lnet/minecraft/core/DefaultedRegistry;") {
+                "net/minecraft/core/DefaultedRegistry"
+            } else {
+                "net/minecraft/core/Registry"
+            };
+            return Some(rt.new_pinned_handle(cls, "registry", 0, reg_key));
         }
         if owner.ends_with("EventPriority") {
             let priority = EventPriority::parse(name);
             return Some(rt.new_pinned_handle(owner, "event_priority", priority as u64, name));
         }
-        if owner == "net/neoforged/fml/loading/FMLEnvironment" && name == "dist" {
-            return Some(self.dist_handle(rt));
+        if owner == "net/neoforged/fml/loading/FMLEnvironment" {
+            return match name {
+                "dist" => Some(self.dist_handle(rt)),
+                "production" => Some(V::TRUE),
+                "naming" => Some(rt.intern_str("moj")),
+                _ => None,
+            };
         }
         if owner == "net/neoforged/api/distmarker/Dist"
             && matches!(name, "CLIENT" | "DEDICATED_SERVER")
         {
             return Some(rt.new_pinned_handle(owner, "dist", 0, name));
         }
-        if owner == "net/neoforged/fml/loading/FMLPaths" && name == "CONFIGDIR" {
-            return Some(rt.new_pinned_handle(owner, "fml_path", 0, "config"));
+        if owner == "net/neoforged/fml/loading/FMLPaths"
+            && matches!(name, "GAMEDIR" | "CONFIGDIR" | "MODSDIR" | "FMLCONFIG")
+        {
+            return Some(rt.new_pinned_handle(owner, "fml_path", 0, name.to_ascii_lowercase()));
         }
         if owner == "net/neoforged/fml/config/ModConfig$Type"
             && matches!(name, "COMMON" | "CLIENT" | "SERVER" | "STARTUP")
@@ -1406,6 +1677,72 @@ impl HostApi for FmlLoader {
         if let Some(value) = self.fml_identity(rt, member, is_static, args) {
             return Some(value);
         }
+        if member.owner == "net/neoforged/neoforge/common/util/Lazy" {
+            if is_static && (member.name == "of" || member.name == "concurrentOf") {
+                let sup = *args.first()?;
+                rt.pin(sup);
+                let lazy = rt.new_instance("net/neoforged/neoforge/common/util/Lazy", 0);
+                rt.put_field(lazy, "$supplier", sup);
+                rt.put_field(lazy, "$computed", V::I(0));
+                return Some(lazy);
+            }
+            if !is_static {
+                let recv = *args.first()?;
+                return match member.name.as_str() {
+                    "get" => {
+                        if rt.get_field(recv, "$computed").i() != 0 {
+                            return Some(rt.get_field(recv, "$cached"));
+                        }
+                        let sup = rt.get_field(recv, "$supplier");
+                        let val = {
+                            let mut ctx = ExecCtx {
+                                rt,
+                                linked,
+                                host: self,
+                                depth: 0,
+                            };
+                            invoke_closure(&mut ctx, sup, &[])
+                        };
+                        if rt.pending_exception.is_none() {
+                            rt.put_field(recv, "$cached", val);
+                            rt.put_field(recv, "$computed", V::I(1));
+                        }
+                        Some(val)
+                    }
+                    "invalidate" => {
+                        rt.put_field(recv, "$computed", V::I(0));
+                        rt.put_field(recv, "$cached", V::NULL);
+                        Some(V::Void)
+                    }
+                    _ => None,
+                };
+            }
+        }
+        if !is_static
+            && member.owner == "java/util/function/Supplier"
+            && member.name == "get"
+            && rt.class_of(*args.first()?) == Some("net/neoforged/neoforge/common/util/Lazy")
+        {
+            let recv = args[0];
+            if rt.get_field(recv, "$computed").i() != 0 {
+                return Some(rt.get_field(recv, "$cached"));
+            }
+            let sup = rt.get_field(recv, "$supplier");
+            let val = {
+                let mut ctx = ExecCtx {
+                    rt,
+                    linked,
+                    host: self,
+                    depth: 0,
+                };
+                invoke_closure(&mut ctx, sup, &[])
+            };
+            if rt.pending_exception.is_none() {
+                rt.put_field(recv, "$cached", val);
+                rt.put_field(recv, "$computed", V::I(1));
+            }
+            return Some(val);
+        }
         if let Some(value) =
             crate::minecraft::call_resources_and_io(rt, &self.jar_resources, member, is_static, args)
         {
@@ -1420,6 +1757,40 @@ impl HostApi for FmlLoader {
             rt,
             &mut self.state.commands,
             &self.translations,
+            member,
+            is_static,
+            args,
+        ) {
+            return Some(value);
+        }
+        if let Some(value) = crate::minecraft::call_keys_authlib_and_libs(
+            rt,
+            &mut self.state.registries,
+            member,
+            is_static,
+            args,
+        ) {
+            return Some(value);
+        }
+        if let Some(value) = crate::minecraft::call_network_and_codecs(
+            rt,
+            linked,
+            self,
+            member,
+            is_static,
+            args,
+            |host| {
+                // SAFETY: `self` is `FmlLoader` passed as `&mut dyn HostApi` above.
+                let ptr = host as *mut dyn HostApi as *mut FmlLoader;
+                unsafe { (&mut (*ptr).state.network, (*ptr).constructing.clone()) }
+            },
+        ) {
+            return Some(value);
+        }
+        if let Some(value) = crate::minecraft::call_dfu_either_and_pair(
+            rt,
+            linked,
+            self,
             member,
             is_static,
             args,
@@ -1446,10 +1817,57 @@ impl HostApi for FmlLoader {
             && is_static
             && matches!(
                 member.name.as_str(),
-                "create" | "createBlocks" | "createItems"
+                "create" | "createBlocks" | "createItems" | "createDataComponents" | "createEntities"
             )
         {
             return self.deferred_create(rt, &member.name, args);
+        }
+        if owner == "net/neoforged/neoforge/registries/RegisterEvent" && !is_static {
+            let recv = *args.first()?;
+            let reg_key = rt
+                .str_of(rt.get_field(recv, "registryKey"))
+                .unwrap_or("minecraft:custom")
+                .to_owned();
+            return match member.name.as_str() {
+                "getRegistryKey" => Some(crate::minecraft::new_resource_key(
+                    rt,
+                    "minecraft:root",
+                    &reg_key,
+                )),
+                "getRegistry" => Some(rt.new_pinned_handle(
+                    "net/minecraft/core/Registry",
+                    "registry",
+                    0,
+                    reg_key,
+                )),
+                "register" if args.len() == 4 => {
+                    let id_str = resource_id(rt, args[2])?;
+                    let ns = id_str
+                        .split_once(':')
+                        .map_or("minecraft", |(n, _)| n)
+                        .to_owned();
+                    let val = if rt.get_obj(args[3]).is_some_and(|o| matches!(o.data, Data::Closure(_))) {
+                        let mut ctx = ExecCtx {
+                            rt,
+                            linked,
+                            host: self,
+                            depth: 0,
+                        };
+                        invoke_closure(&mut ctx, args[3], &[])
+                    } else {
+                        args[3]
+                    };
+                    if rt.pending_exception.is_some() {
+                        return Some(V::Void);
+                    }
+                    let props = content_properties(rt, &reg_key, val);
+                    self.state
+                        .registries
+                        .register_direct(rt, &reg_key, &id_str, &ns, val, props);
+                    Some(V::Void)
+                }
+                _ => None,
+            };
         }
         if owner.starts_with("net/neoforged/neoforge/registries/DeferredRegister")
             && !is_static
@@ -1459,9 +1877,17 @@ impl HostApi for FmlLoader {
         }
         if (owner == "net/neoforged/bus/api/IEventBus" || owner.ends_with("/EventBus"))
             && !is_static
-            && member.name == "addListener"
         {
-            return self.add_listener(rt, args, &member.desc);
+            return match member.name.as_str() {
+                "addListener" => self.add_listener(rt, args, &member.desc),
+                "register" => self.register_bus_target(rt, linked, args),
+                "unregister" => {
+                    let bus = self.bus_id_of(rt, *args.first()?)?;
+                    self.state.bus.unregister(&bus, *args.get(1)?);
+                    Some(V::Void)
+                }
+                _ => None,
+            };
         }
         if owner.ends_with("DeferredHolder") && !is_static && member.name == "get" {
             return self.holder_get(rt, args);
@@ -1747,6 +2173,33 @@ fn resource_id(rt: &Rt, value: V) -> Option<String> {
 
 fn handle_tag(rt: &Rt, value: V) -> Option<String> {
     rt.handle_of(value).map(|(_, _, tag, _)| tag.to_owned())
+}
+
+fn dispatch_maven_artifact_version(rt: &mut Rt, raw: &str, method: &str) -> Option<V> {
+    let base = raw.split('+').next().unwrap_or(raw);
+    let (core, qualifier) = match base.split_once('-') {
+        Some((c, q)) => (c, Some(q)),
+        None => (base, None),
+    };
+    let mut nums = core
+        .split('.')
+        .map(|s| s.parse::<i32>().unwrap_or(0))
+        .collect::<Vec<i32>>();
+    while nums.len() < 4 {
+        nums.push(0);
+    }
+    match method {
+        "toString" => Some(rt.new_str(raw)),
+        "getMajorVersion" => Some(V::I(nums[0])),
+        "getMinorVersion" => Some(V::I(nums[1])),
+        "getIncrementalVersion" => Some(V::I(nums[2])),
+        "getBuildNumber" => Some(V::I(nums[3])),
+        "getQualifier" => match qualifier {
+            Some(q) => Some(rt.new_str(q)),
+            None => Some(V::NULL),
+        },
+        _ => None,
+    }
 }
 
 fn path_text(rt: &Rt, value: V) -> Option<String> {

@@ -112,11 +112,12 @@ fn main() {
             match prepared.bootstrap(&mut rt) {
                 Ok(()) => {
                     println!(
-                        "bootstrap returned Ok phase={:?} trace={:?} mod_entries={} configs={} commands={} listeners={} loading_issues={} events_posted={} callbacks={} unmapped={}",
+                        "bootstrap returned Ok phase={:?} trace={:?} mod_entries={} configs={} channels={} commands={} listeners={} loading_issues={} events_posted={} callbacks={} unmapped={}",
                         prepared.loader.phase,
                         prepared.loader.trace,
                         prepared.loader.state.registries.total_mod_entries(),
                         prepared.loader.registered_configs.len(),
+                        prepared.loader.state.network.channels.len(),
                         prepared.loader.state.commands.roots.len(),
                         prepared.loader.state.bus.listener_count(),
                         prepared.loader.loading_issues.len(),

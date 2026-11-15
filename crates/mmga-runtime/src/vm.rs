@@ -210,10 +210,18 @@ pub fn alloc_new_object(ctx: &mut ExecCtx<'_>, class_name: &str) -> V {
         "java/util/ArrayList"
         | "java/util/LinkedList"
         | "java/util/ArrayDeque"
-        | "java/util/concurrent/CopyOnWriteArrayList" => {
+        | "java/util/concurrent/CopyOnWriteArrayList"
+        | "it/unimi/dsi/fastutil/objects/ObjectArrayList"
+        | "it/unimi/dsi/fastutil/ints/IntArrayList" => {
             return ctx.rt.alloc(class_name, 0, Data::List(Vec::new()));
         }
-        "java/util/HashSet" | "java/util/LinkedHashSet" | "java/util/TreeSet" => {
+        "java/util/HashSet"
+        | "java/util/LinkedHashSet"
+        | "java/util/TreeSet"
+        | "it/unimi/dsi/fastutil/objects/ObjectOpenHashSet"
+        | "it/unimi/dsi/fastutil/objects/ObjectLinkedOpenHashSet"
+        | "it/unimi/dsi/fastutil/objects/ReferenceOpenHashSet"
+        | "it/unimi/dsi/fastutil/objects/ObjectArraySet" => {
             return ctx.rt.alloc(class_name, 0, Data::Set(Vec::new()));
         }
         "java/util/HashMap"
@@ -221,7 +229,14 @@ pub fn alloc_new_object(ctx: &mut ExecCtx<'_>, class_name: &str) -> V {
         | "java/util/IdentityHashMap"
         | "java/util/EnumMap"
         | "java/util/TreeMap"
-        | "java/util/concurrent/ConcurrentHashMap" => {
+        | "java/util/concurrent/ConcurrentHashMap"
+        | "it/unimi/dsi/fastutil/objects/Object2ObjectOpenHashMap"
+        | "it/unimi/dsi/fastutil/objects/Object2ObjectLinkedOpenHashMap"
+        | "it/unimi/dsi/fastutil/objects/Object2ObjectArrayMap"
+        | "it/unimi/dsi/fastutil/objects/Reference2ObjectOpenHashMap"
+        | "it/unimi/dsi/fastutil/objects/Object2IntOpenHashMap"
+        | "it/unimi/dsi/fastutil/objects/Object2BooleanOpenHashMap"
+        | "it/unimi/dsi/fastutil/ints/Int2ObjectOpenHashMap" => {
             return ctx.rt.alloc(class_name, 0, Data::Map(Vec::new()));
         }
         _ => {}

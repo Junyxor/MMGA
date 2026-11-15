@@ -139,6 +139,8 @@ pub enum ResolvedMethod {
 pub struct LinkedSpace {
     pub bytecode_classes: BTreeMap<String, ClassFile>,
     pub mixin_report: MixinWeaveReport,
+    /// `META-INF/services/<spi_internal_name>` -> implementation internal class names.
+    pub services: BTreeMap<String, Vec<String>>,
     class_ids: FxHashMap<String, u32>,
     id_to_class: Vec<String>,
     superclasses: FxHashMap<String, String>,
@@ -543,15 +545,33 @@ fn jdk_supertypes(cls: &str) -> &'static [&'static str] {
         "java/util/Deque" => &["java/util/Queue"],
         "java/util/ArrayList"
         | "java/util/LinkedList"
-        | "java/util/concurrent/CopyOnWriteArrayList" => &["java/util/List"],
+        | "java/util/concurrent/CopyOnWriteArrayList"
+        | "it/unimi/dsi/fastutil/objects/ObjectArrayList"
+        | "it/unimi/dsi/fastutil/ints/IntArrayList"
+        | "com/google/common/collect/ImmutableList" => &["java/util/List"],
         "java/util/ArrayDeque" => &["java/util/Deque"],
-        "java/util/HashSet" | "java/util/LinkedHashSet" | "java/util/TreeSet" => &["java/util/Set"],
+        "java/util/HashSet"
+        | "java/util/LinkedHashSet"
+        | "java/util/TreeSet"
+        | "it/unimi/dsi/fastutil/objects/ObjectOpenHashSet"
+        | "it/unimi/dsi/fastutil/objects/ObjectLinkedOpenHashSet"
+        | "it/unimi/dsi/fastutil/objects/ReferenceOpenHashSet"
+        | "it/unimi/dsi/fastutil/objects/ObjectArraySet"
+        | "com/google/common/collect/ImmutableSet" => &["java/util/Set"],
         "java/util/HashMap"
         | "java/util/LinkedHashMap"
         | "java/util/TreeMap"
         | "java/util/EnumMap"
         | "java/util/IdentityHashMap"
-        | "java/util/concurrent/ConcurrentHashMap" => &["java/util/Map"],
+        | "java/util/concurrent/ConcurrentHashMap"
+        | "it/unimi/dsi/fastutil/objects/Object2ObjectOpenHashMap"
+        | "it/unimi/dsi/fastutil/objects/Object2ObjectLinkedOpenHashMap"
+        | "it/unimi/dsi/fastutil/objects/Object2ObjectArrayMap"
+        | "it/unimi/dsi/fastutil/objects/Reference2ObjectOpenHashMap"
+        | "it/unimi/dsi/fastutil/objects/Object2IntOpenHashMap"
+        | "it/unimi/dsi/fastutil/objects/Object2BooleanOpenHashMap"
+        | "it/unimi/dsi/fastutil/ints/Int2ObjectOpenHashMap"
+        | "com/google/common/collect/ImmutableMap" => &["java/util/Map"],
         "java/util/AbstractMap$SimpleEntry" | "java/util/AbstractMap$SimpleImmutableEntry" => {
             &["java/util/Map$Entry"]
         }

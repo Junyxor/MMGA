@@ -38,6 +38,7 @@ pub struct NeoForgeState {
     pub network: NetworkStore,
     pub commands: BrigadierTree,
     pub world: WorldState,
+    pub milk_fluid_enabled: bool,
 }
 
 impl Default for NeoForgeState {
@@ -57,6 +58,7 @@ impl NeoForgeState {
             network: NetworkStore::default(),
             commands: BrigadierTree::default(),
             world: WorldState::new(),
+            milk_fluid_enabled: false,
         }
     }
 }

@@ -43,6 +43,155 @@ pub fn get_static_field(rt: &mut Rt, owner: &str, name: &str) -> Option<V> {
         let cname = if cfg!(windows) { "msvcrt" } else { "c" };
         return Some(rt.intern_str(cname));
     }
+    if owner == "net/minecraft/world/item/CreativeModeTabs" {
+        let tab_path = match name {
+            "BUILDING_BLOCKS" => "building_blocks",
+            "COLORED_BLOCKS" => "colored_blocks",
+            "NATURAL_BLOCKS" => "natural_blocks",
+            "FUNCTIONAL_BLOCKS" => "functional_blocks",
+            "REDSTONE_BLOCKS" => "redstone_blocks",
+            "HOTBAR" => "hotbar",
+            "SEARCH" => "search",
+            "TOOLS_AND_UTILITIES" => "tools_and_utilities",
+            "COMBAT" => "combat",
+            "FOOD_AND_DRINKS" => "food_and_drinks",
+            "INGREDIENTS" => "ingredients",
+            "SPAWN_EGGS" => "spawn_eggs",
+            "OP_BLOCKS" => "op_blocks",
+            "INVENTORY" => "inventory",
+            _ => return None,
+        };
+        return Some(new_resource_key(
+            rt,
+            "minecraft:creative_mode_tab",
+            &format!("minecraft:{tab_path}"),
+        ));
+    }
+    if owner == "net/minecraft/core/RegistrationInfo" && name == "BUILT_IN" {
+        return Some(rt.new_pinned_handle(owner, "registration_info", 0, "BUILT_IN"));
+    }
+    if owner == "net/minecraft/util/Mth" {
+        return match name {
+            "PI" => Some(V::F(std::f32::consts::PI)),
+            "HALF_PI" => Some(V::F(std::f32::consts::FRAC_PI_2)),
+            "TWO_PI" => Some(V::F(std::f32::consts::TAU)),
+            "DEG_TO_RAD" => Some(V::F(std::f32::consts::PI / 180.0)),
+            "RAD_TO_DEG" => Some(V::F(180.0 / std::f32::consts::PI)),
+            "EPSILON" => Some(V::F(1.0e-5)),
+            "SQRT_OF_TWO" => Some(V::F(std::f32::consts::SQRT_2)),
+            _ => None,
+        };
+    }
+    if owner == "net/minecraft/util/ByIdMap$OutOfBoundsStrategy"
+        && matches!(name, "ZERO" | "WRAP" | "CLAMP")
+    {
+        return Some(rt.new_pinned_handle(owner, "by_id_oob", 0, name));
+    }
+    if owner == "net/neoforged/neoforge/network/registration/HandlerThread"
+        && matches!(name, "MAIN" | "NETWORK")
+    {
+        return Some(rt.new_pinned_handle(owner, "handler_thread", 0, name));
+    }
+    if owner == "net/minecraft/sounds/SoundSource" {
+        let ord = match name {
+            "MASTER" => 0,
+            "MUSIC" => 1,
+            "RECORDS" => 2,
+            "WEATHER" => 3,
+            "BLOCKS" => 4,
+            "HOSTILE" => 5,
+            "NEUTRAL" => 6,
+            "PLAYERS" => 7,
+            "AMBIENT" => 8,
+            "VOICE" => 9,
+            _ => return None,
+        };
+        let obj = rt.new_instance(owner, 0);
+        let en = rt.intern_str(name);
+        let low = rt.intern_str(&name.to_ascii_lowercase());
+        rt.put_field(obj, "$name", en);
+        rt.put_field(obj, "$ordinal", V::I(ord));
+        rt.put_field(obj, "$source_name", low);
+        rt.pin(obj);
+        return Some(obj);
+    }
+    if owner == "net/minecraft/core/Direction" {
+        let ord = match name {
+            "DOWN" => 0,
+            "UP" => 1,
+            "NORTH" => 2,
+            "SOUTH" => 3,
+            "WEST" => 4,
+            "EAST" => 5,
+            _ => return None,
+        };
+        let obj = rt.new_instance(owner, 0);
+        let en = rt.intern_str(name);
+        rt.put_field(obj, "$name", en);
+        rt.put_field(obj, "$ordinal", V::I(ord));
+        rt.pin(obj);
+        return Some(obj);
+    }
+    if owner == "net/minecraft/network/codec/ByteBufCodecs" {
+        let valid = matches!(
+            name,
+            "BOOL"
+                | "BYTE"
+                | "SHORT"
+                | "UNSIGNED_SHORT"
+                | "INT"
+                | "VAR_INT"
+                | "LONG"
+                | "VAR_LONG"
+                | "FLOAT"
+                | "DOUBLE"
+                | "BYTE_ARRAY"
+                | "STRING_UTF8"
+                | "TAG"
+                | "COMPOUND_TAG"
+                | "TRUSTED_COMPOUND_TAG"
+                | "OPTIONAL_COMPOUND_TAG"
+                | "VECTOR3F"
+                | "QUATERNIONF"
+                | "GAME_PROFILE"
+                | "GAME_PROFILE_PROPERTIES"
+        );
+        if valid {
+            return Some(rt.new_pinned_handle(
+                "net/minecraft/network/codec/StreamCodec",
+                "stream_codec",
+                0,
+                name,
+            ));
+        }
+    }
+    if owner == "net/minecraft/world/level/material/MapColor" {
+        return map_color_constant(rt, name);
+    }
+    if matches!(
+        (owner, name),
+        ("net/minecraft/resources/ResourceLocation", "STREAM_CODEC")
+            | ("net/minecraft/core/UUIDUtil", "STREAM_CODEC")
+            | ("net/minecraft/core/BlockPos", "STREAM_CODEC")
+            | ("net/minecraft/core/GlobalPos", "STREAM_CODEC")
+            | ("net/minecraft/network/chat/ComponentSerialization", "STREAM_CODEC")
+            | ("net/minecraft/network/chat/ComponentSerialization", "TRUSTED_STREAM_CODEC")
+            | ("net/minecraft/network/chat/ComponentSerialization", "OPTIONAL_STREAM_CODEC")
+            | ("net/minecraft/world/item/ItemStack", "STREAM_CODEC")
+            | ("net/minecraft/world/item/ItemStack", "OPTIONAL_STREAM_CODEC")
+            | ("net/minecraft/world/item/ItemStack", "LIST_STREAM_CODEC")
+            | ("net/minecraft/world/item/ItemStack", "OPTIONAL_LIST_STREAM_CODEC")
+            | ("net/neoforged/neoforge/fluids/FluidStack", "STREAM_CODEC")
+            | ("net/neoforged/neoforge/fluids/FluidStack", "OPTIONAL_STREAM_CODEC")
+            | ("net/minecraft/core/Direction", "STREAM_CODEC")
+    ) {
+        return Some(rt.new_pinned_handle(
+            "net/minecraft/network/codec/StreamCodec",
+            "stream_codec",
+            0,
+            format!("{owner}.{name}"),
+        ));
+    }
     None
 }
 
@@ -51,8 +200,15 @@ pub fn is_subtype(sub_class: &str, super_class: &str) -> bool {
     if sub_class == MUTABLE_COMPONENT
         && matches!(
             super_class,
-            "net/minecraft/network/chat/Component" | "net/minecraft/network/chat/FormattedText"
+            "net/minecraft/network/chat/Component"
+                | "net/minecraft/network/chat/FormattedText"
+                | "com/mojang/brigadier/Message"
         )
+    {
+        return true;
+    }
+    if sub_class == "com/mojang/brigadier/exceptions/CommandSyntaxException"
+        && matches!(super_class, "java/lang/Exception" | "java/lang/Throwable")
     {
         return true;
     }
@@ -68,8 +224,9 @@ pub fn is_subtype(sub_class: &str, super_class: &str) -> bool {
         return true;
     }
     if super_class == "java/util/function/Supplier"
-        && sub_class.starts_with("net/neoforged/neoforge/common/ModConfigSpec$")
-        && sub_class.ends_with("Value")
+        && (sub_class == "net/neoforged/neoforge/common/util/Lazy"
+            || (sub_class.starts_with("net/neoforged/neoforge/common/ModConfigSpec$")
+                && sub_class.ends_with("Value")))
     {
         return true;
     }
@@ -84,7 +241,219 @@ pub fn is_subtype(sub_class: &str, super_class: &str) -> bool {
     {
         return true;
     }
+    if super_class == "com/mojang/brigadier/tree/CommandNode"
+        && (sub_class == "com/mojang/brigadier/tree/LiteralCommandNode"
+            || sub_class == "com/mojang/brigadier/tree/ArgumentCommandNode"
+            || sub_class == "com/mojang/brigadier/tree/RootCommandNode")
+    {
+        return true;
+    }
+    if super_class == "net/minecraft/core/Registry"
+        && (sub_class == "net/minecraft/core/DefaultedRegistry"
+            || sub_class == "net/minecraft/core/WritableRegistry"
+            || sub_class == "net/minecraft/core/MappedRegistry")
+    {
+        return true;
+    }
+    if super_class == "net/minecraft/core/WritableRegistry"
+        && (sub_class == "net/minecraft/core/Registry"
+            || sub_class == "net/minecraft/core/DefaultedRegistry"
+            || sub_class == "net/minecraft/core/MappedRegistry")
+    {
+        return true;
+    }
+    if super_class == "net/minecraft/core/Holder"
+        && (sub_class == "net/minecraft/core/Holder$Reference"
+            || sub_class == "net/minecraft/core/Holder$Direct"
+            || sub_class.ends_with("DeferredHolder")
+            || sub_class.ends_with("DeferredBlock")
+            || sub_class.ends_with("DeferredItem"))
+    {
+        return true;
+    }
+    if super_class == "net/minecraft/commands/synchronization/ArgumentTypeInfo"
+        && sub_class == "net/minecraft/commands/synchronization/SingletonArgumentInfo"
+    {
+        return true;
+    }
+    if super_class == "com/google/common/collect/Table"
+        && (sub_class == "com/google/common/collect/HashBasedTable"
+            || sub_class == "com/google/common/collect/ImmutableTable")
+    {
+        return true;
+    }
+    if super_class == "com/google/common/collect/Multimap"
+        && matches!(
+            sub_class,
+            "com/google/common/collect/HashMultimap"
+                | "com/google/common/collect/ArrayListMultimap"
+                | "com/google/common/collect/LinkedHashMultimap"
+                | "com/google/common/collect/ListMultimap"
+                | "com/google/common/collect/SetMultimap"
+        )
+    {
+        return true;
+    }
+    if super_class == "com/google/common/collect/ListMultimap"
+        && sub_class == "com/google/common/collect/ArrayListMultimap"
+    {
+        return true;
+    }
+    if super_class == "com/google/common/collect/SetMultimap"
+        && (sub_class == "com/google/common/collect/HashMultimap"
+            || sub_class == "com/google/common/collect/LinkedHashMultimap")
+    {
+        return true;
+    }
+    if super_class == "com/google/common/collect/BiMap"
+        && sub_class == "com/google/common/collect/HashBiMap"
+    {
+        return true;
+    }
+    if super_class == "java/util/Map"
+        && (sub_class == "com/google/common/collect/BiMap"
+            || sub_class == "com/google/common/collect/HashBiMap")
+    {
+        return true;
+    }
     false
+}
+
+/// Maps genuine Minecraft 1.21.1 `BuiltInRegistries` / `Registries` and NeoForge 21.1
+/// `NeoForgeRegistries` / `NeoForgeRegistries$Keys` field names to canonical `"namespace:path"` keys.
+/// Unknown field names return `None` so unmapped static accesses fail explicitly.
+pub fn lookup_builtin_registry_key(owner: &str, name: &str) -> Option<&'static str> {
+    match owner {
+        "net/minecraft/core/registries/BuiltInRegistries"
+        | "net/minecraft/core/registries/Registries" => {
+            if owner == "net/minecraft/core/registries/BuiltInRegistries" && name == "REGISTRY" {
+                return Some("minecraft:root");
+            }
+            if owner == "net/minecraft/core/registries/Registries" && name == "ROOT_REGISTRY_NAME" {
+                return None; // ResourceLocation constant handled separately
+            }
+            let key = match name {
+                "GAME_EVENT" => "minecraft:game_event",
+                "SOUND_EVENT" => "minecraft:sound_event",
+                "FLUID" => "minecraft:fluid",
+                "MOB_EFFECT" => "minecraft:mob_effect",
+                "BLOCK" => "minecraft:block",
+                "ENTITY_TYPE" => "minecraft:entity_type",
+                "ITEM" => "minecraft:item",
+                "POTION" => "minecraft:potion",
+                "PARTICLE_TYPE" => "minecraft:particle_type",
+                "BLOCK_ENTITY_TYPE" => "minecraft:block_entity_type",
+                "CUSTOM_STAT" => "minecraft:custom_stat",
+                "CHUNK_STATUS" => "minecraft:chunk_status",
+                "RULE_TEST" => "minecraft:rule_test",
+                "RULE_BLOCK_ENTITY_MODIFIER" => "minecraft:rule_block_entity_modifier",
+                "POS_RULE_TEST" => "minecraft:pos_rule_test",
+                "MENU" => "minecraft:menu",
+                "RECIPE_TYPE" => "minecraft:recipe_type",
+                "RECIPE_SERIALIZER" => "minecraft:recipe_serializer",
+                "ATTRIBUTE" => "minecraft:attribute",
+                "POSITION_SOURCE_TYPE" => "minecraft:position_source_type",
+                "COMMAND_ARGUMENT_TYPE" => "minecraft:command_argument_type",
+                "STAT_TYPE" => "minecraft:stat_type",
+                "VILLAGER_TYPE" => "minecraft:villager_type",
+                "VILLAGER_PROFESSION" => "minecraft:villager_profession",
+                "POINT_OF_INTEREST_TYPE" => "minecraft:point_of_interest_type",
+                "MEMORY_MODULE_TYPE" => "minecraft:memory_module_type",
+                "SENSOR_TYPE" => "minecraft:sensor_type",
+                "SCHEDULE" => "minecraft:schedule",
+                "ACTIVITY" => "minecraft:activity",
+                "LOOT_POOL_ENTRY_TYPE" => "minecraft:loot_pool_entry_type",
+                "LOOT_FUNCTION_TYPE" => "minecraft:loot_function_type",
+                "LOOT_CONDITION_TYPE" => "minecraft:loot_condition_type",
+                "LOOT_NUMBER_PROVIDER_TYPE" => "minecraft:loot_number_provider_type",
+                "LOOT_NBT_PROVIDER_TYPE" => "minecraft:loot_nbt_provider_type",
+                "LOOT_SCORE_PROVIDER_TYPE" => "minecraft:loot_score_provider_type",
+                "FLOAT_PROVIDER_TYPE" => "minecraft:float_provider_type",
+                "INT_PROVIDER_TYPE" => "minecraft:int_provider_type",
+                "HEIGHT_PROVIDER_TYPE" => "minecraft:height_provider_type",
+                "BLOCK_PREDICATE_TYPE" => "minecraft:block_predicate_type",
+                "CARVER" => "minecraft:worldgen/carver",
+                "FEATURE" => "minecraft:worldgen/feature",
+                "STRUCTURE_PLACEMENT" => "minecraft:worldgen/structure_placement",
+                "STRUCTURE_PIECE" => "minecraft:worldgen/structure_piece",
+                "STRUCTURE_TYPE" => "minecraft:worldgen/structure_type",
+                "PLACEMENT_MODIFIER_TYPE" => "minecraft:worldgen/placement_modifier_type",
+                "BLOCKSTATE_PROVIDER_TYPE" => "minecraft:worldgen/block_state_provider_type",
+                "FOLIAGE_PLACER_TYPE" => "minecraft:worldgen/foliage_placer_type",
+                "TRUNK_PLACER_TYPE" => "minecraft:worldgen/trunk_placer_type",
+                "ROOT_PLACER_TYPE" => "minecraft:worldgen/root_placer_type",
+                "TREE_DECORATOR_TYPE" => "minecraft:worldgen/tree_decorator_type",
+                "FEATURE_SIZE_TYPE" => "minecraft:worldgen/feature_size_type",
+                "BIOME_SOURCE" => "minecraft:worldgen/biome_source",
+                "CHUNK_GENERATOR" => "minecraft:worldgen/chunk_generator",
+                "MATERIAL_CONDITION" => "minecraft:worldgen/material_condition",
+                "MATERIAL_RULE" => "minecraft:worldgen/material_rule",
+                "DENSITY_FUNCTION_TYPE" => "minecraft:worldgen/density_function_type",
+                "BLOCK_TYPE" => "minecraft:block_type",
+                "STRUCTURE_PROCESSOR" => "minecraft:worldgen/structure_processor",
+                "STRUCTURE_POOL_ELEMENT" => "minecraft:worldgen/structure_pool_element",
+                "CAT_VARIANT" => "minecraft:cat_variant",
+                "FROG_VARIANT" => "minecraft:frog_variant",
+                "INSTRUMENT" => "minecraft:instrument",
+                "DECORATED_POT_PATTERN" => "minecraft:decorated_pot_pattern",
+                "CREATIVE_MODE_TAB" => "minecraft:creative_mode_tab",
+                "TRIGGER_TYPES" => "minecraft:trigger_type",
+                "NUMBER_FORMAT_TYPE" => "minecraft:number_format_type",
+                "ARMOR_MATERIAL" => "minecraft:armor_material",
+                "DATA_COMPONENT_TYPE" | "ENCHANTMENT_EFFECT_COMPONENT_TYPE" if name == "DATA_COMPONENT_TYPE" => "minecraft:data_component_type",
+                "ENCHANTMENT_EFFECT_COMPONENT_TYPE" => "minecraft:enchantment_effect_component_type",
+                "ENTITY_SUB_PREDICATE_TYPE" => "minecraft:entity_sub_predicate_type",
+                "ITEM_SUB_PREDICATE_TYPE" => "minecraft:item_sub_predicate_type",
+                "MAP_DECORATION_TYPE" => "minecraft:map_decoration_type",
+                "ENCHANTMENT_LEVEL_BASED_VALUE_TYPE" => "minecraft:enchantment_level_based_value_type",
+                "ENCHANTMENT_ENTITY_EFFECT_TYPE" => "minecraft:enchantment_entity_effect_type",
+                "ENCHANTMENT_LOCATION_BASED_EFFECT_TYPE" => "minecraft:enchantment_location_based_effect_type",
+                "ENCHANTMENT_VALUE_EFFECT_TYPE" => "minecraft:enchantment_value_effect_type",
+                "ENCHANTMENT_PROVIDER_TYPE" => "minecraft:enchantment_provider_type",
+                // Datapack ResourceKeys on `Registries`
+                "BIOME" if owner.ends_with("/Registries") => "minecraft:worldgen/biome",
+                "CONFIGURED_FEATURE" if owner.ends_with("/Registries") => "minecraft:worldgen/configured_feature",
+                "PLACED_FEATURE" if owner.ends_with("/Registries") => "minecraft:worldgen/placed_feature",
+                "STRUCTURE" if owner.ends_with("/Registries") => "minecraft:worldgen/structure",
+                "STRUCTURE_SET" if owner.ends_with("/Registries") => "minecraft:worldgen/structure_set",
+                "NOISE_SETTINGS" if owner.ends_with("/Registries") => "minecraft:worldgen/noise_settings",
+                "NOISE" if owner.ends_with("/Registries") => "minecraft:worldgen/noise",
+                "DENSITY_FUNCTION" if owner.ends_with("/Registries") => "minecraft:worldgen/density_function",
+                "DAMAGE_TYPE" if owner.ends_with("/Registries") => "minecraft:damage_type",
+                "DIMENSION_TYPE" if owner.ends_with("/Registries") => "minecraft:dimension_type",
+                "DIMENSION" | "LEVEL_STEM" if owner.ends_with("/Registries") => "minecraft:dimension",
+                "ENCHANTMENT" if owner.ends_with("/Registries") => "minecraft:enchantment",
+                "PAINTING_VARIANT" if owner.ends_with("/Registries") => "minecraft:painting_variant",
+                "JUKEBOX_SONG" if owner.ends_with("/Registries") => "minecraft:jukebox_song",
+                "WOLF_VARIANT" if owner.ends_with("/Registries") => "minecraft:wolf_variant",
+                "BANNER_PATTERN" if owner.ends_with("/Registries") => "minecraft:banner_pattern",
+                "TRIM_PATTERN" if owner.ends_with("/Registries") => "minecraft:trim_pattern",
+                "TRIM_MATERIAL" if owner.ends_with("/Registries") => "minecraft:trim_material",
+                "CHAT_TYPE" if owner.ends_with("/Registries") => "minecraft:chat_type",
+                "LOOT_TABLE" if owner.ends_with("/Registries") => "minecraft:loot_table",
+                "ADVANCEMENT" if owner.ends_with("/Registries") => "minecraft:advancement",
+                "RECIPE" if owner.ends_with("/Registries") => "minecraft:recipe",
+                _ => return None,
+            };
+            Some(key)
+        }
+        "net/neoforged/neoforge/registries/NeoForgeRegistries"
+        | "net/neoforged/neoforge/registries/NeoForgeRegistries$Keys" => match name {
+            "ENTITY_DATA_SERIALIZERS" => Some("neoforge:entity_data_serializers"),
+            "GLOBAL_LOOT_MODIFIER_SERIALIZERS" => Some("neoforge:global_loot_modifier_serializers"),
+            "BIOME_MODIFIER_SERIALIZERS" => Some("neoforge:biome_modifier_serializers"),
+            "STRUCTURE_MODIFIER_SERIALIZERS" => Some("neoforge:structure_modifier_serializers"),
+            "FLUID_TYPES" => Some("neoforge:fluid_type"),
+            "HOLDER_SET_TYPES" => Some("neoforge:holder_set_type"),
+            "DISPLAY_CONTEXTS" => Some("neoforge:display_contexts"),
+            "INGREDIENT_TYPES" => Some("neoforge:ingredient_serializer"),
+            "FLUID_INGREDIENT_TYPES" => Some("neoforge:fluid_ingredient_type"),
+            "CONDITION_CODECS" => Some("neoforge:condition_codecs"),
+            "ATTACHMENT_TYPES" => Some("neoforge:attachment_types"),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Dispatches `net.minecraft.network.chat.Component` / `MutableComponent` / `Style` / `ChatFormatting`.
@@ -550,6 +919,358 @@ pub fn call_resources_and_io(
                 return Some(rt.new_handle("com/sun/jna/Function", "jna_fn", 0, sym));
             }
             return Some(rt.throw_exception("java/lang/UnsatisfiedLinkError", &sym));
+        }
+    }
+
+    None
+}
+
+/// Dispatches `ByIdMap`, `StreamCodec` / `ByteBufCodecs`, `CustomPacketPayload$Type`,
+/// `RegisterPayloadHandlersEvent` / `PayloadRegistrar`, and `SoundSource`.
+pub fn call_network_and_codecs(
+    rt: &mut Rt,
+    linked: &LinkedSpace,
+    host: &mut dyn mmga_runtime::HostApi,
+    member: &MemberRef,
+    is_static: bool,
+    args: &[V],
+    extract_net: impl FnOnce(&mut dyn mmga_runtime::HostApi) -> (&mut crate::NetworkStore, Option<String>),
+) -> Option<V> {
+    let owner = member.owner.as_str();
+    let name = member.name.as_str();
+
+    if owner == "net/minecraft/sounds/SoundSource" && !is_static && name == "getName" {
+        return Some(rt.get_field(args[0], "$source_name"));
+    }
+
+    // 1. `net/minecraft/util/ByIdMap`
+    if owner == "net/minecraft/util/ByIdMap" && is_static {
+        match name {
+            "continuous" | "sparse" => {
+                let id_fn = *args.first()?;
+                let values = extract_varargs(rt, *args.get(1)?);
+                let strategy = args
+                    .get(2)
+                    .and_then(|&v| rt.handle_of(v))
+                    .map(|(_, _, t, _)| t.to_owned())
+                    .unwrap_or_else(|| "ZERO".into());
+
+                let mut max_id = 0usize;
+                let mut pairs: Vec<(usize, V)> = Vec::with_capacity(values.len());
+                {
+                    let mut ctx = ExecCtx { rt, linked, host, depth: 0 };
+                    for v in values {
+                        let id = invoke_closure(&mut ctx, id_fn, &[v]).i();
+                        if ctx.rt.pending_exception.is_some() {
+                            return Some(V::NULL);
+                        }
+                        if id >= 0 {
+                            let u = id as usize;
+                            max_id = max_id.max(u);
+                            pairs.push((u, v));
+                        }
+                    }
+                }
+                let mut table = vec![V::NULL; pairs.len().max(max_id + 1)];
+                for (id, v) in pairs {
+                    if id < table.len() {
+                        table[id] = v;
+                    }
+                }
+                let arr = rt.alloc("[Ljava/lang/Object;", 0, Data::Array(table));
+                let mapper = rt.new_instance("java/util/function/IntFunction", 0);
+                let strat_v = rt.intern_str(&strategy);
+                rt.put_field(mapper, "$by_id_table", arr);
+                rt.put_field(mapper, "$by_id_strategy", strat_v);
+                rt.pin(mapper);
+                return Some(mapper);
+            }
+            _ => return None,
+        }
+    }
+    if owner == "java/util/function/IntFunction"
+        && !is_static
+        && name == "apply"
+        && !rt.get_field(args[0], "$by_id_table").is_null()
+    {
+        let arr = rt.get_field(args[0], "$by_id_table");
+        let strat = rt
+            .str_of(rt.get_field(args[0], "$by_id_strategy"))
+            .unwrap_or("ZERO")
+            .to_owned();
+        let items = extract_varargs(rt, arr);
+        if items.is_empty() {
+            return Some(V::NULL);
+        }
+        let raw = args[1].i();
+        let idx = if raw >= 0 && (raw as usize) < items.len() {
+            raw as usize
+        } else {
+            match strat.as_str() {
+                "WRAP" => raw.rem_euclid(items.len() as i32) as usize,
+                "CLAMP" => raw.clamp(0, items.len() as i32 - 1) as usize,
+                _ => 0,
+            }
+        };
+        return Some(items[idx]);
+    }
+
+    // 2. `ByteBufCodecs` & `StreamCodec`
+    if owner == "net/minecraft/network/codec/ByteBufCodecs" && is_static {
+        return match name {
+            "idMapper"
+            | "stringUtf8"
+            | "byteArray"
+            | "collection"
+            | "map"
+            | "optional"
+            | "holderRegistry"
+            | "registry"
+            | "holder"
+            | "fromCodec"
+            | "fromCodecTrusted"
+            | "fromCodecWithRegistries"
+            | "fromCodecWithRegistriesTrusted"
+            | "either" => Some(rt.new_pinned_handle(
+                "net/minecraft/network/codec/StreamCodec",
+                "stream_codec",
+                0,
+                name,
+            )),
+            "list" => Some(rt.new_pinned_handle(
+                "net/minecraft/network/codec/StreamCodec$CodecOperation",
+                "codec_op",
+                0,
+                "list",
+            )),
+            _ => None,
+        };
+    }
+    if owner == "net/minecraft/network/codec/StreamCodec" {
+        if is_static {
+            return match name {
+                "unit" | "of" | "ofMember" | "composite" | "recursive" => Some(
+                    rt.new_pinned_handle(owner, "stream_codec", 0, name),
+                ),
+                _ => None,
+            };
+        }
+        return match name {
+            "map" | "apply" | "cast" | "dispatch" => Some(args[0]),
+            _ => None,
+        };
+    }
+
+    // 3. `CustomPacketPayload$Type`
+    if owner == "net/minecraft/network/protocol/common/custom/CustomPacketPayload$Type" && !is_static
+    {
+        let recv = *args.first()?;
+        return match name {
+            "<init>" => {
+                rt.put_field(recv, "id", *args.get(1)?);
+                Some(V::Void)
+            }
+            "id" => Some(rt.get_field(recv, "id")),
+            "toString" => {
+                let s = rt.value_to_string(rt.get_field(recv, "id"));
+                Some(rt.new_str(format!("Type[id={s}]")))
+            }
+            _ => None,
+        };
+    }
+
+    // 4. `RegisterPayloadHandlersEvent` & `PayloadRegistrar`
+    if owner == "net/neoforged/neoforge/network/event/RegisterPayloadHandlersEvent"
+        && !is_static
+        && name == "registrar"
+    {
+        let version = rt.str_of(*args.get(1)?)?.to_owned();
+        let (_, cur_mod) = extract_net(host);
+        let ns = cur_mod.unwrap_or_else(|| "minecraft".into());
+        let reg = rt.new_instance(
+            "net/neoforged/neoforge/network/registration/PayloadRegistrar",
+            0,
+        );
+        let ns_v = rt.new_str(ns);
+        let ver_v = rt.new_str(version);
+        rt.put_field(reg, "$ns", ns_v);
+        rt.put_field(reg, "$ver", ver_v);
+        return Some(reg);
+    }
+
+    if owner == "net/neoforged/neoforge/network/registration/PayloadRegistrar" && !is_static {
+        let recv = *args.first()?;
+        return match name {
+            "versioned" => {
+                let ver_v = *args.get(1)?;
+                let next = rt.new_instance(owner, 0);
+                let ns_v = rt.get_field(recv, "$ns");
+                rt.put_field(next, "$ns", ns_v);
+                rt.put_field(next, "$ver", ver_v);
+                Some(next)
+            }
+            "optional" | "executesOn" => Some(recv),
+            "playToServer"
+            | "playToClient"
+            | "playBidirectional"
+            | "configurationToServer"
+            | "configurationToClient"
+            | "configurationBidirectional"
+            | "commonToServer"
+            | "commonToClient"
+            | "commonBidirectional" => {
+                let ns = rt
+                    .str_of(rt.get_field(recv, "$ns"))
+                    .unwrap_or("minecraft")
+                    .to_owned();
+                let ver = rt
+                    .str_of(rt.get_field(recv, "$ver"))
+                    .unwrap_or("1")
+                    .to_owned();
+                let type_obj = *args.get(1)?;
+                let payload_id = loc_str(rt, rt.get_field(type_obj, "id"))
+                    .unwrap_or_else(|| format!("{ns}:unknown"));
+                let handler = args.get(3).copied().unwrap_or(V::NULL);
+                let dir = if name.ends_with("ToServer") {
+                    "play_to_server"
+                } else if name.ends_with("ToClient") {
+                    "play_to_client"
+                } else {
+                    "bidirectional"
+                };
+                let (net, _) = extract_net(host);
+                net.register_channel(rt, ns, ver, payload_id, dir, handler);
+                Some(recv)
+            }
+            _ => None,
+        };
+    }
+
+    None
+}
+
+/// Dispatches `com.mojang.datafixers.util.Either` and `com.mojang.datafixers.util.Pair`.
+pub fn call_dfu_either_and_pair(
+    rt: &mut Rt,
+    linked: &LinkedSpace,
+    host: &mut dyn mmga_runtime::HostApi,
+    member: &MemberRef,
+    is_static: bool,
+    args: &[V],
+) -> Option<V> {
+    let owner = member.owner.as_str();
+    let name = member.name.as_str();
+
+    if owner == "com/mojang/datafixers/util/Either" {
+        if is_static {
+            return match name {
+                "left" => {
+                    let e = rt.new_instance(owner, 0);
+                    rt.put_field(e, "$is_left", V::I(1));
+                    rt.put_field(e, "$val", *args.first()?);
+                    Some(e)
+                }
+                "right" => {
+                    let e = rt.new_instance(owner, 0);
+                    rt.put_field(e, "$is_left", V::I(0));
+                    rt.put_field(e, "$val", *args.first()?);
+                    Some(e)
+                }
+                _ => None,
+            };
+        }
+        let recv = *args.first()?;
+        let is_left = rt.get_field(recv, "$is_left").i() != 0;
+        let val = rt.get_field(recv, "$val");
+        return match name {
+            "left" => {
+                let opt = if is_left && !val.is_null() { Some(val) } else { None };
+                Some(rt.alloc("java/util/Optional", 0, Data::Optional(opt)))
+            }
+            "right" => {
+                let opt = if !is_left && !val.is_null() { Some(val) } else { None };
+                Some(rt.alloc("java/util/Optional", 0, Data::Optional(opt)))
+            }
+            "ifLeft" => {
+                if is_left {
+                    let mut ctx = ExecCtx { rt, linked, host, depth: 0 };
+                    let _ = invoke_closure(&mut ctx, *args.get(1)?, &[val]);
+                }
+                Some(recv)
+            }
+            "ifRight" => {
+                if !is_left {
+                    let mut ctx = ExecCtx { rt, linked, host, depth: 0 };
+                    let _ = invoke_closure(&mut ctx, *args.get(1)?, &[val]);
+                }
+                Some(recv)
+            }
+            "map" if args.len() == 3 => {
+                let mapped = {
+                    let fn_v = if is_left { args[1] } else { args[2] };
+                    let mut ctx = ExecCtx { rt, linked, host, depth: 0 };
+                    invoke_closure(&mut ctx, fn_v, &[val])
+                };
+                Some(mapped)
+            }
+            "mapLeft" => {
+                if is_left {
+                    let mapped = {
+                        let mut ctx = ExecCtx { rt, linked, host, depth: 0 };
+                        invoke_closure(&mut ctx, *args.get(1)?, &[val])
+                    };
+                    let e = rt.new_instance(owner, 0);
+                    rt.put_field(e, "$is_left", V::I(1));
+                    rt.put_field(e, "$val", mapped);
+                    Some(e)
+                } else {
+                    Some(recv)
+                }
+            }
+            "mapRight" => {
+                if !is_left {
+                    let mapped = {
+                        let mut ctx = ExecCtx { rt, linked, host, depth: 0 };
+                        invoke_closure(&mut ctx, *args.get(1)?, &[val])
+                    };
+                    let e = rt.new_instance(owner, 0);
+                    rt.put_field(e, "$is_left", V::I(0));
+                    rt.put_field(e, "$val", mapped);
+                    Some(e)
+                } else {
+                    Some(recv)
+                }
+            }
+            "orThrow" => {
+                if is_left {
+                    Some(val)
+                } else {
+                    Some(rt.throw_exception("java/lang/RuntimeException", &rt.value_to_string(val)))
+                }
+            }
+            _ => None,
+        };
+    }
+
+    if owner == "com/mojang/datafixers/util/Pair" {
+        if is_static && name == "of" && args.len() == 2 {
+            let p = rt.new_instance(owner, 0);
+            rt.put_field(p, "first", args[0]);
+            rt.put_field(p, "second", args[1]);
+            return Some(p);
+        }
+        if !is_static {
+            let recv = *args.first()?;
+            return match name {
+                "<init>" if args.len() == 3 => {
+                    rt.put_field(recv, "first", args[1]);
+                    rt.put_field(recv, "second", args[2]);
+                    Some(V::Void)
+                }
+                "getFirst" => Some(rt.get_field(recv, "first")),
+                "getSecond" => Some(rt.get_field(recv, "second")),
+                _ => None,
+            };
         }
     }
 
@@ -1321,6 +2042,73 @@ pub fn call_brigadier(
             _ => None,
         };
     }
+    if owner == "net/minecraft/commands/arguments/ResourceLocationArgument" && is_static {
+        return match name {
+            "id" => Some(rt.new_handle(owner, "cmd_arg_type", 0, "word")),
+            "getId" => {
+                let ctx_v = *args.first()?;
+                let key = rt.str_of(*args.get(1)?)?;
+                let raw = rt
+                    .str_of(rt.get_field(ctx_v, &format!("$arg:{key}")))
+                    .unwrap_or("minecraft:empty")
+                    .to_owned();
+                Some(new_rl_handle(rt, &raw))
+            }
+            _ => None,
+        };
+    }
+    if owner == "net/minecraft/commands/arguments/EntityArgument" && is_static {
+        return match name {
+            "player" | "players" | "entity" | "entities" => {
+                Some(rt.new_handle(owner, "cmd_arg_type", 0, "word"))
+            }
+            "getPlayers" | "getEntities" => {
+                Some(rt.alloc("java/util/ArrayList", 0, Data::List(Vec::new())))
+            }
+            _ => None,
+        };
+    }
+    if (owner == "net/minecraft/commands/arguments/coordinates/BlockPosArgument"
+        || owner == "net/minecraft/commands/arguments/coordinates/Vec3Argument"
+        || owner == "net/minecraft/commands/arguments/ComponentArgument"
+        || owner == "net/minecraft/commands/arguments/CompoundTagArgument"
+        || owner == "net/minecraft/commands/arguments/TimeArgument"
+        || owner == "net/minecraft/commands/arguments/UuidArgument"
+        || owner == "net/minecraft/commands/arguments/DimensionArgument")
+        && is_static
+    {
+        return match name {
+            "blockPos" | "vec3" | "textComponent" | "compoundTag" | "time" | "uuid" | "dimension" => {
+                Some(rt.new_handle(owner, "cmd_arg_type", 0, "word"))
+            }
+            _ => None,
+        };
+    }
+    if owner.ends_with("ConfigPathArgument") && is_static && name == "path" {
+        return Some(rt.new_handle(owner, "cmd_arg_type", 0, "word"));
+    }
+    if owner.starts_with("com/mojang/brigadier/exceptions/") && !is_static {
+        let recv = *args.first()?;
+        return match name {
+            "<init>" => {
+                if let Some(&arg1) = args.get(1) {
+                    rt.put_field(recv, "$msg_or_fn", arg1);
+                }
+                Some(V::Void)
+            }
+            "create" | "createWithContext" => {
+                let exc = rt.new_instance(
+                    "com/mojang/brigadier/exceptions/CommandSyntaxException",
+                    0,
+                );
+                let msg = rt.value_to_string(rt.get_field(recv, "$msg_or_fn"));
+                let msg_v = rt.new_str(msg);
+                rt.put_field(exc, "detailMessage", msg_v);
+                Some(exc)
+            }
+            _ => None,
+        };
+    }
     if owner == "com/mojang/brigadier/StringReader" && is_static && name == "isAllowedInUnquotedString" {
         let ch = char::from_u32(args.first()?.i() as u32).unwrap_or('\0');
         let ok = ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '+');
@@ -1346,11 +2134,13 @@ pub fn call_brigadier(
             }
             "executes" => {
                 if let Some(&cmd) = args.get(1) {
-                    commands.set_executes(rt, node_id, cmd);
+                    if !cmd.is_null() {
+                        commands.set_executes(rt, node_id, cmd);
+                    }
                 }
                 Some(recv)
             }
-            "requires" | "suggests" | "redirect" | "fork" => Some(recv),
+            "requires" | "suggests" | "redirect" | "fork" | "forward" => Some(recv),
             "build" => Some(rt.new_handle(
                 "com/mojang/brigadier/tree/LiteralCommandNode",
                 "cmd_node",
@@ -1361,19 +2151,178 @@ pub fn call_brigadier(
         };
     }
 
-    if owner == "com/mojang/brigadier/CommandDispatcher" && !is_static && name == "register" {
-        let builder = *args.get(1)?;
-        let ("cmd_node", node_id, tag, _) = rt.handle_of(builder)? else {
-            return None;
+    if owner == "com/mojang/brigadier/CommandDispatcher" && !is_static {
+        return match name {
+            "register" => {
+                let builder = *args.get(1)?;
+                let ("cmd_node", node_id, tag, _) = rt.handle_of(builder)? else {
+                    return None;
+                };
+                let tag = tag.to_owned();
+                commands.register_root(node_id);
+                Some(rt.new_handle(
+                    "com/mojang/brigadier/tree/LiteralCommandNode",
+                    "cmd_node",
+                    node_id,
+                    tag,
+                ))
+            }
+            "getRoot" => Some(rt.new_pinned_handle(
+                "com/mojang/brigadier/tree/RootCommandNode",
+                "cmd_root",
+                0,
+                "",
+            )),
+            "findNode" => {
+                let path_tokens: Vec<String> = match rt.get_obj(*args.get(1)?).map(|o| &o.data) {
+                    Some(Data::Set(xs) | Data::List(xs) | Data::Array(xs)) => xs
+                        .iter()
+                        .filter_map(|&v| rt.str_of(v).map(str::to_owned))
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                if path_tokens.is_empty() {
+                    return Some(V::NULL);
+                }
+                let mut cur_candidates = commands.roots.clone();
+                let mut matched_id = None;
+                let mut matched_tag = String::new();
+                for tok in &path_tokens {
+                    let mut found = None;
+                    for &cid in &cur_candidates {
+                        if let Some(n) = commands.nodes.get(&cid) {
+                            let n_name = match &n.kind {
+                                CommandNodeKind::Literal(l) => l.as_str(),
+                                CommandNodeKind::Argument { name, .. } => name.as_str(),
+                            };
+                            if n_name == tok {
+                                found = Some((cid, n_name.to_owned(), n.children.clone()));
+                                break;
+                            }
+                        }
+                    }
+                    match found {
+                        Some((id, tag, kids)) => {
+                            matched_id = Some(id);
+                            matched_tag = tag;
+                            cur_candidates = kids;
+                        }
+                        None => return Some(V::NULL),
+                    }
+                }
+                match matched_id {
+                    Some(id) => Some(rt.new_handle(
+                        "com/mojang/brigadier/tree/LiteralCommandNode",
+                        "cmd_node",
+                        id,
+                        matched_tag,
+                    )),
+                    None => Some(V::NULL),
+                }
+            }
+            _ => None,
         };
-        let tag = tag.to_owned();
-        commands.register_root(node_id);
-        return Some(rt.new_handle(
-            "com/mojang/brigadier/tree/LiteralCommandNode",
-            "cmd_node",
-            node_id,
-            tag,
-        ));
+    }
+    if (owner == "com/mojang/brigadier/tree/RootCommandNode"
+        || owner == "com/mojang/brigadier/tree/CommandNode"
+        || owner == "com/mojang/brigadier/tree/LiteralCommandNode"
+        || owner == "com/mojang/brigadier/tree/ArgumentCommandNode")
+        && !is_static
+    {
+        return match name {
+            "addChild" => {
+                let child = *args.get(1)?;
+                let ("cmd_node", child_id, _, _) = rt.handle_of(child)? else {
+                    return None;
+                };
+                if rt.handle_of(args[0]).is_some_and(|(k, ..)| k == "cmd_root") {
+                    commands.register_root(child_id);
+                } else if let Some(("cmd_node", parent_id, _, _)) = rt.handle_of(args[0]) {
+                    commands.add_child(parent_id, child_id);
+                }
+                Some(V::Void)
+            }
+            "getName" => {
+                let tag = rt
+                    .handle_of(args[0])
+                    .map(|(_, _, t, _)| t.to_owned())
+                    .unwrap_or_default();
+                Some(rt.new_str(tag))
+            }
+            "getRequirement" => Some(V::NULL),
+            "getRedirect" => Some(V::NULL),
+            "getRedirectModifier" => Some(V::NULL),
+            "isFork" => Some(V::FALSE),
+            "getCommand" => {
+                let cmd = rt
+                    .handle_of(args[0])
+                    .and_then(|(_, id, _, _)| commands.nodes.get(&id))
+                    .and_then(|n| n.executes)
+                    .unwrap_or(V::NULL);
+                Some(cmd)
+            }
+            "getChildren" => {
+                let child_ids = if rt.handle_of(args[0]).is_some_and(|(k, ..)| k == "cmd_root") {
+                    commands.roots.clone()
+                } else if let Some(("cmd_node", nid, _, _)) = rt.handle_of(args[0]) {
+                    commands
+                        .nodes
+                        .get(&nid)
+                        .map(|n| n.children.clone())
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                let list: Vec<V> = child_ids
+                    .into_iter()
+                    .filter_map(|cid| {
+                        let n = commands.nodes.get(&cid)?;
+                        let (cls, tag) = match &n.kind {
+                            CommandNodeKind::Literal(l) => {
+                                ("com/mojang/brigadier/tree/LiteralCommandNode", l.clone())
+                            }
+                            CommandNodeKind::Argument { name, .. } => {
+                                ("com/mojang/brigadier/tree/ArgumentCommandNode", name.clone())
+                            }
+                        };
+                        Some(rt.new_handle(cls, "cmd_node", cid, tag))
+                    })
+                    .collect();
+                Some(rt.alloc("java/util/ArrayList", 0, Data::List(list)))
+            }
+            "getChild" => {
+                let want = rt.str_of(*args.get(1)?)?.to_owned();
+                let child_ids = if rt.handle_of(args[0]).is_some_and(|(k, ..)| k == "cmd_root") {
+                    commands.roots.clone()
+                } else if let Some(("cmd_node", nid, _, _)) = rt.handle_of(args[0]) {
+                    commands
+                        .nodes
+                        .get(&nid)
+                        .map(|n| n.children.clone())
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                for cid in child_ids {
+                    if let Some(n) = commands.nodes.get(&cid) {
+                        let (cls, tag) = match &n.kind {
+                            CommandNodeKind::Literal(l) => {
+                                ("com/mojang/brigadier/tree/LiteralCommandNode", l.as_str())
+                            }
+                            CommandNodeKind::Argument { name, .. } => (
+                                "com/mojang/brigadier/tree/ArgumentCommandNode",
+                                name.as_str(),
+                            ),
+                        };
+                        if tag == want {
+                            return Some(rt.new_handle(cls, "cmd_node", cid, want));
+                        }
+                    }
+                }
+                Some(V::NULL)
+            }
+            _ => None,
+        };
     }
 
     if owner == "com/mojang/brigadier/context/CommandContext" && !is_static {
@@ -1408,6 +2357,1237 @@ pub fn call_brigadier(
     }
 
     None
+}
+
+/// Dispatches `ResourceKey`, `TagKey` (`ItemTags` / `BlockTags` / `FluidTags` / `EntityTypeTags`),
+/// `SingletonArgumentInfo` / `ArgumentTypeInfos`, `com.mojang.authlib.GameProfile`, Guava collections, and `GsonBuilder`.
+pub fn call_keys_authlib_and_libs(
+    rt: &mut Rt,
+    registries: &mut crate::RegistryStore,
+    member: &MemberRef,
+    is_static: bool,
+    args: &[V],
+) -> Option<V> {
+    let owner = member.owner.as_str();
+    let name = member.name.as_str();
+    let desc = member.desc.as_str();
+
+    // 1. `net/minecraft/resources/ResourceKey`
+    if owner == "net/minecraft/resources/ResourceKey" {
+        if is_static && name == "createRegistryKey" {
+            let loc = loc_str(rt, *args.first()?)?;
+            return Some(new_resource_key(rt, "minecraft:root", &loc));
+        }
+        if is_static && name == "create" && args.len() == 2 {
+            let reg = resource_key_parts(rt, args[0])
+                .map(|(_, loc)| loc)
+                .or_else(|| loc_str(rt, args[0]))?;
+            let loc = loc_str(rt, args[1])?;
+            return Some(new_resource_key(rt, &reg, &loc));
+        }
+        if !is_static {
+            let (reg, loc) = resource_key_parts(rt, *args.first()?)?;
+            return match name {
+                "location" => Some(new_rl_handle(rt, &loc)),
+                "registry" => Some(new_rl_handle(rt, &reg)),
+                "isFor" => {
+                    let want = resource_key_parts(rt, *args.get(1)?)
+                        .map(|(_, l)| l)
+                        .unwrap_or_default();
+                    Some(V::bool(reg == want))
+                }
+                "equals" => {
+                    let other = args.get(1).and_then(|&v| resource_key_parts(rt, v));
+                    Some(V::bool(other == Some((reg, loc))))
+                }
+                "toString" => Some(rt.new_str(format!("ResourceKey[{reg} / {loc}]"))),
+                _ => None,
+            };
+        }
+    }
+
+    // 2. `TagKey`, `BlockTags`, `ItemTags`, `FluidTags`, `EntityTypeTags`, `BiomeTags`
+    if owner == "net/minecraft/tags/TagKey" {
+        if is_static && name == "create" && args.len() == 2 {
+            let reg = resource_key_parts(rt, args[0])
+                .map(|(_, l)| l)
+                .or_else(|| loc_str(rt, args[0]))?;
+            let loc = loc_str(rt, args[1])?;
+            return Some(new_tag_key(rt, &reg, &loc));
+        }
+        if !is_static {
+            let (reg, loc) = tag_key_parts(rt, *args.first()?)?;
+            return match name {
+                "location" => Some(new_rl_handle(rt, &loc)),
+                "registry" => Some(new_resource_key(rt, "minecraft:root", &reg)),
+                "isFor" => {
+                    let want = resource_key_parts(rt, *args.get(1)?)
+                        .map(|(_, l)| l)
+                        .unwrap_or_default();
+                    Some(V::bool(reg == want))
+                }
+                "equals" => {
+                    let other = args.get(1).and_then(|&v| tag_key_parts(rt, v));
+                    Some(V::bool(other == Some((reg, loc))))
+                }
+                "toString" => Some(rt.new_str(format!("TagKey[{reg} / {loc}]"))),
+                _ => None,
+            };
+        }
+    }
+    if is_static && (name == "create" || name == "bind") {
+        let tag_reg = match owner {
+            "net/minecraft/tags/BlockTags" => Some("minecraft:block"),
+            "net/minecraft/tags/ItemTags" => Some("minecraft:item"),
+            "net/minecraft/tags/FluidTags" => Some("minecraft:fluid"),
+            "net/minecraft/tags/EntityTypeTags" => Some("minecraft:entity_type"),
+            _ => None,
+        };
+        if let Some(reg) = tag_reg {
+            let loc = args
+                .first()
+                .and_then(|&v| loc_str(rt, v))
+                .or_else(|| {
+                    args.first().and_then(|&v| rt.str_of(v)).map(|s| {
+                        if s.contains(':') {
+                            s.to_owned()
+                        } else {
+                            format!("minecraft:{s}")
+                        }
+                    })
+                })?;
+            return Some(new_tag_key(rt, reg, &loc));
+        }
+    }
+
+    // 3. `Registry` / `DefaultedRegistry` / `WritableRegistry` / `RegistryBuilder` / `Mth`
+    if owner == "net/minecraft/util/Mth" && is_static {
+        return match (name, desc) {
+            ("floor", "(F)I") => Some(V::I(args[0].f().floor() as i32)),
+            ("floor", "(D)I") => Some(V::I(args[0].d().floor() as i32)),
+            ("ceil", "(F)I") => Some(V::I(args[0].f().ceil() as i32)),
+            ("ceil", "(D)I") => Some(V::I(args[0].d().ceil() as i32)),
+            ("clamp", "(III)I") => Some(V::I(args[0].i().clamp(args[1].i(), args[2].i()))),
+            ("clamp", "(FFF)F") => Some(V::F(args[0].f().clamp(args[1].f(), args[2].f()))),
+            ("clamp", "(DDD)D") => Some(V::D(args[0].d().clamp(args[1].d(), args[2].d()))),
+            ("lerp", "(FFF)F") => {
+                let (t, a, b) = (args[0].f(), args[1].f(), args[2].f());
+                Some(V::F(a + t * (b - a)))
+            }
+            ("lerp", "(DDD)D") => {
+                let (t, a, b) = (args[0].d(), args[1].d(), args[2].d());
+                Some(V::D(a + t * (b - a)))
+            }
+            ("sin", "(F)F") => Some(V::F(args[0].f().sin())),
+            ("cos", "(F)F") => Some(V::F(args[0].f().cos())),
+            ("sqrt", "(F)F") => Some(V::F(args[0].f().sqrt())),
+            ("abs", "(I)I") => Some(V::I(args[0].i().wrapping_abs())),
+            ("abs", "(F)F") => Some(V::F(args[0].f().abs())),
+            ("hsvToRgb", "(FFF)I") => Some(V::I(hsv_to_rgb(args[0].f(), args[1].f(), args[2].f()))),
+            _ => None,
+        };
+    }
+
+    if owner == "net/neoforged/neoforge/registries/RegistryBuilder" && !is_static {
+        let recv = *args.first()?;
+        return match name {
+            "<init>" => {
+                let reg_key = resource_key_parts(rt, *args.get(1)?)
+                    .map(|(_, loc)| loc)
+                    .unwrap_or_else(|| "minecraft:custom".into());
+                let key_v = rt.intern_str(&reg_key);
+                rt.put_field(recv, "$reg_key", key_v);
+                Some(V::Void)
+            }
+            "sync" | "defaultKey" | "maxId" | "withIntrusiveHolders" | "disableRegistrationCheck" => {
+                Some(recv)
+            }
+            "onBake" | "onAdd" | "onClear" | "onValidate" | "callback" => {
+                if let Some(&cb) = args.get(1) {
+                    rt.pin(cb);
+                    if name == "onBake" {
+                        rt.put_field(recv, "$on_bake", cb);
+                    }
+                }
+                Some(recv)
+            }
+            "create" => {
+                let reg_key = rt
+                    .str_of(rt.get_field(recv, "$reg_key"))
+                    .unwrap_or("minecraft:custom")
+                    .to_owned();
+                if !registries.custom_registries.contains(&reg_key) {
+                    registries.custom_registries.push(reg_key.clone());
+                }
+                registries.entries.entry(reg_key.clone()).or_default();
+                Some(rt.new_pinned_handle(
+                    "net/minecraft/core/Registry",
+                    "registry",
+                    0,
+                    reg_key,
+                ))
+            }
+            _ => None,
+        };
+    }
+
+    if owner == "net/minecraft/core/Registry" && is_static && name == "register" {
+        let reg_v = *args.first()?;
+        let ("registry", _, reg_key, _) = rt.handle_of(reg_v)? else {
+            return None;
+        };
+        let reg_key = reg_key.to_owned();
+        let full_id = loc_str(rt, args[1])
+            .or_else(|| resource_key_parts(rt, args[1]).map(|(_, l)| l))
+            .or_else(|| {
+                rt.str_of(args[1]).map(|s| {
+                    if s.contains(':') {
+                        s.to_owned()
+                    } else {
+                        format!("minecraft:{s}")
+                    }
+                })
+            })?;
+        let val = args[2];
+        let ns = full_id
+            .split_once(':')
+            .map_or("minecraft", |(n, _)| n)
+            .to_owned();
+        registries.register_direct(
+            rt,
+            &reg_key,
+            &full_id,
+            &ns,
+            val,
+            crate::ContentProperties::default(),
+        );
+        return Some(val);
+    }
+    if owner == "net/minecraft/core/Registry" && is_static && name == "registerForHolder" {
+        let reg_v = *args.first()?;
+        let ("registry", _, reg_key, _) = rt.handle_of(reg_v)? else {
+            return None;
+        };
+        let reg_key = reg_key.to_owned();
+        let full_id = loc_str(rt, args[1])
+            .or_else(|| resource_key_parts(rt, args[1]).map(|(_, l)| l))?;
+        let val = args[2];
+        let ns = full_id
+            .split_once(':')
+            .map_or("minecraft", |(n, _)| n)
+            .to_owned();
+        registries.register_direct(
+            rt,
+            &reg_key,
+            &full_id,
+            &ns,
+            val,
+            crate::ContentProperties::default(),
+        );
+        let h = rt.new_instance("net/minecraft/core/Holder$Reference", 0);
+        let k = new_resource_key(rt, &reg_key, &full_id);
+        rt.put_field(h, "$key", k);
+        rt.put_field(h, "$value", val);
+        return Some(h);
+    }
+
+    if (owner == "net/minecraft/core/Registry"
+        || owner == "net/minecraft/core/DefaultedRegistry"
+        || owner == "net/minecraft/core/WritableRegistry")
+        && !is_static
+    {
+        let recv = *args.first()?;
+        let ("registry", _, reg_key, _) = rt.handle_of(recv)? else {
+            return None;
+        };
+        let reg_key = reg_key.to_owned();
+        if name == "register" && args.len() >= 3 {
+            let full_id = resource_key_parts(rt, args[1])
+                .map(|(_, l)| l)
+                .or_else(|| loc_str(rt, args[1]))?;
+            let val = args[2];
+            let ns = full_id
+                .split_once(':')
+                .map_or("minecraft", |(n, _)| n)
+                .to_owned();
+            registries.register_direct(
+                rt,
+                &reg_key,
+                &full_id,
+                &ns,
+                val,
+                crate::ContentProperties::default(),
+            );
+            let h = rt.new_instance("net/minecraft/core/Holder$Reference", 0);
+            let k = new_resource_key(rt, &reg_key, &full_id);
+            rt.put_field(h, "$key", k);
+            rt.put_field(h, "$value", val);
+            return Some(h);
+        }
+        return match name {
+            "key" => Some(new_resource_key(rt, "minecraft:root", &reg_key)),
+            "containsKey" => {
+                let id = args.get(1).and_then(|&v| {
+                    loc_str(rt, v).or_else(|| resource_key_parts(rt, v).map(|(_, l)| l))
+                })?;
+                Some(V::bool(registries.lookup(&reg_key, &id).is_some()))
+            }
+            "get" => {
+                let id = args.get(1).and_then(|&v| {
+                    loc_str(rt, v).or_else(|| resource_key_parts(rt, v).map(|(_, l)| l))
+                })?;
+                Some(registries.lookup(&reg_key, &id).map_or(V::NULL, |e| e.value))
+            }
+            "getOptional" => {
+                let id = args.get(1).and_then(|&v| {
+                    loc_str(rt, v).or_else(|| resource_key_parts(rt, v).map(|(_, l)| l))
+                })?;
+                let found = registries
+                    .lookup(&reg_key, &id)
+                    .map(|e| e.value)
+                    .filter(|v| !v.is_null());
+                Some(rt.alloc("java/util/Optional", 0, Data::Optional(found)))
+            }
+            "getKey" => {
+                let target = *args.get(1)?;
+                let found = registries
+                    .entries
+                    .get(&reg_key)
+                    .and_then(|m| {
+                        m.values()
+                            .find(|e| !e.value.is_null() && e.value == target)
+                    })
+                    .map(|e| e.id.clone());
+                Some(match found {
+                    Some(id) => new_rl_handle(rt, &id),
+                    None => V::NULL,
+                })
+            }
+            "holders" => {
+                let refs: Vec<V> = registries
+                    .entries
+                    .get(&reg_key)
+                    .map(|m| {
+                        m.values()
+                            .filter(|e| !e.value.is_null())
+                            .map(|e| {
+                                let h = rt.new_instance("net/minecraft/core/Holder$Reference", 0);
+                                let k = new_resource_key(rt, &reg_key, &e.id);
+                                rt.put_field(h, "$key", k);
+                                rt.put_field(h, "$value", e.value);
+                                h
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Some(rt.alloc("java/util/stream/Stream", 0, Data::Stream(refs)))
+            }
+            "stream" => {
+                let vals: Vec<V> = registries
+                    .entries
+                    .get(&reg_key)
+                    .map(|m| {
+                        m.values()
+                            .filter(|e| !e.value.is_null())
+                            .map(|e| e.value)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Some(rt.alloc("java/util/stream/Stream", 0, Data::Stream(vals)))
+            }
+            "iterator" => {
+                let vals: Vec<V> = registries
+                    .entries
+                    .get(&reg_key)
+                    .map(|m| {
+                        m.values()
+                            .filter(|e| !e.value.is_null())
+                            .map(|e| e.value)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Some(rt.alloc("java/util/Iterator", 0, Data::Iter { items: vals, pos: 0 }))
+            }
+            "keySet" => {
+                let ids: Vec<V> = registries
+                    .entries
+                    .get(&reg_key)
+                    .map(|m| m.keys().map(|id| new_rl_handle(rt, id)).collect())
+                    .unwrap_or_default();
+                Some(rt.alloc("java/util/Set", 0, Data::Set(ids)))
+            }
+            "size" => {
+                let n = registries
+                    .entries
+                    .get(&reg_key)
+                    .map_or(0, |m| m.len() as i32);
+                Some(V::I(n))
+            }
+            _ => None,
+        };
+    }
+
+    if (owner == "net/minecraft/core/Holder" || owner == "net/minecraft/core/Holder$Reference")
+        && !is_static
+    {
+        let recv = *args.first()?;
+        if let Some(("deferred_holder", hid, full_id, _)) = rt.handle_of(recv) {
+            let full_id = full_id.to_owned();
+            return match name {
+                "value" | "get" => Some(registries.holder_value(hid).unwrap_or(V::NULL)),
+                "isBound" => Some(V::bool(
+                    registries.holder_value(hid).is_some_and(|v| !v.is_null()),
+                )),
+                "getId" => Some(new_rl_handle(rt, &full_id)),
+                "unwrapKey" => {
+                    let reg = registries
+                        .holders
+                        .get(&hid)
+                        .map(|(r, _, _)| r.clone())
+                        .unwrap_or_else(|| "minecraft:custom".into());
+                    let k = new_resource_key(rt, &reg, &full_id);
+                    Some(rt.alloc("java/util/Optional", 0, Data::Optional(Some(k))))
+                }
+                _ => None,
+            };
+        }
+        return match name {
+            "value" | "get" => Some(rt.get_field(recv, "$value")),
+            "isBound" => Some(V::bool(!rt.get_field(recv, "$value").is_null())),
+            "unwrapKey" => {
+                let k = rt.get_field(recv, "$key");
+                let opt = if k.is_null() { None } else { Some(k) };
+                Some(rt.alloc("java/util/Optional", 0, Data::Optional(opt)))
+            }
+            _ => None,
+        };
+    }
+
+    // 4. `SingletonArgumentInfo`, `ArgumentTypeInfos`, & `RegistrySetBuilder`
+    if owner == "net/minecraft/core/RegistrySetBuilder" && !is_static {
+        let recv = *args.first()?;
+        return match name {
+            "<init>" => {
+                let entries = rt.alloc("java/util/ArrayList", 0, Data::List(Vec::new()));
+                rt.put_field(recv, "$entries", entries);
+                Some(V::Void)
+            }
+            "add" => {
+                if let (Some(&key), Some(&bootstrap)) = (args.get(1), args.get(2)) {
+                    rt.pin(bootstrap);
+                    let pair = rt.new_instance("java/util/AbstractMap$SimpleImmutableEntry", 0);
+                    rt.put_field(pair, "key", key);
+                    rt.put_field(pair, "value", bootstrap);
+                    let list = rt.get_field(recv, "$entries");
+                    if let Some(Data::List(xs)) = rt.get_obj_mut(list).map(|o| &mut o.data) {
+                        xs.push(pair);
+                    }
+                }
+                Some(recv)
+            }
+            "getEntryKeys" => {
+                let keys: Vec<V> = match rt.get_obj(rt.get_field(recv, "$entries")).map(|o| &o.data)
+                {
+                    Some(Data::List(xs)) => xs
+                        .iter()
+                        .map(|&p| rt.get_field(p, "key"))
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                Some(rt.alloc("java/util/List", 0, Data::List(keys)))
+            }
+            _ => None,
+        };
+    }
+    if owner == "net/minecraft/commands/synchronization/SingletonArgumentInfo"
+        && is_static
+        && (name == "contextFree" || name == "contextAware")
+    {
+        let ctor = *args.first()?;
+        rt.pin(ctor);
+        let info = rt.new_instance(owner, 0);
+        rt.put_field(info, "$ctor", ctor);
+        return Some(info);
+    }
+    if owner == "net/minecraft/commands/synchronization/ArgumentTypeInfos"
+        && is_static
+        && name == "registerByClass"
+        && args.len() == 2
+    {
+        rt.pin(args[1]);
+        return Some(args[1]);
+    }
+
+    // 5. `com/mojang/authlib/GameProfile` & `PropertyMap`
+    if owner == "com/mojang/authlib/GameProfile" && !is_static {
+        let recv = *args.first()?;
+        return match (name, desc) {
+            ("<init>", "(Ljava/util/UUID;Ljava/lang/String;)V") => {
+                let id = *args.get(1)?;
+                let pname = *args.get(2)?;
+                if id.is_null() {
+                    return Some(rt.throw_exception(
+                        "java/lang/NullPointerException",
+                        "Profile ID must not be null",
+                    ));
+                }
+                if pname.is_null() {
+                    return Some(rt.throw_exception(
+                        "java/lang/NullPointerException",
+                        "Profile name must not be null",
+                    ));
+                }
+                let props = rt.alloc(
+                    "com/mojang/authlib/properties/PropertyMap",
+                    0,
+                    Data::Map(Vec::new()),
+                );
+                rt.put_field(recv, "$id", id);
+                rt.put_field(recv, "$profile_name", pname);
+                rt.put_field(recv, "$properties", props);
+                Some(V::Void)
+            }
+            ("getId", "()Ljava/util/UUID;") => Some(rt.get_field(recv, "$id")),
+            ("getName", "()Ljava/lang/String;") => Some(rt.get_field(recv, "$profile_name")),
+            ("getProperties", "()Lcom/mojang/authlib/properties/PropertyMap;") => {
+                Some(rt.get_field(recv, "$properties"))
+            }
+            ("equals", "(Ljava/lang/Object;)Z") => {
+                let other = args.get(1).copied().unwrap_or(V::NULL);
+                if recv == other {
+                    return Some(V::TRUE);
+                }
+                if rt.class_of(other) != Some("com/mojang/authlib/GameProfile") {
+                    return Some(V::FALSE);
+                }
+                let eq = rt.val_eq(rt.get_field(recv, "$id"), rt.get_field(other, "$id"))
+                    && rt.val_eq(
+                        rt.get_field(recv, "$profile_name"),
+                        rt.get_field(other, "$profile_name"),
+                    );
+                Some(V::bool(eq))
+            }
+            ("toString", "()Ljava/lang/String;") => {
+                let id = rt.value_to_string(rt.get_field(recv, "$id"));
+                let n = rt.value_to_string(rt.get_field(recv, "$profile_name"));
+                Some(rt.new_str(format!("GameProfile[id={id}, name={n}]")))
+            }
+            _ => None,
+        };
+    }
+
+    // 6. Guava `ImmutableList` / `ImmutableSet` / `ImmutableMap` / `Lists` / `Sets` / `Maps` / `Suppliers` & `GsonBuilder`
+    if owner == "com/google/common/collect/ImmutableList" && is_static {
+        return match name {
+            "of" => {
+                let items = if desc.contains("[Ljava/lang/Object;") {
+                    let mut v = args[..args.len() - 1].to_vec();
+                    v.extend(extract_varargs(rt, args[args.len() - 1]));
+                    v
+                } else {
+                    args.to_vec()
+                };
+                Some(rt.alloc(owner, 0, Data::List(items)))
+            }
+            "copyOf" => {
+                let items = extract_varargs(rt, *args.first()?);
+                Some(rt.alloc(owner, 0, Data::List(items)))
+            }
+            "builder" | "builderWithExpectedSize" => Some(rt.alloc(
+                "com/google/common/collect/ImmutableList$Builder",
+                0,
+                Data::List(Vec::new()),
+            )),
+            _ => None,
+        };
+    }
+    if owner == "com/google/common/collect/ImmutableList$Builder" && !is_static {
+        let recv = *args.first()?;
+        return match name {
+            "add" => {
+                let added = if desc.starts_with("([") {
+                    extract_varargs(rt, *args.get(1)?)
+                } else {
+                    vec![*args.get(1)?]
+                };
+                if let Some(Data::List(xs)) = rt.get_obj_mut(recv).map(|o| &mut o.data) {
+                    xs.extend(added);
+                }
+                Some(recv)
+            }
+            "addAll" => {
+                let added = extract_varargs(rt, *args.get(1)?);
+                if let Some(Data::List(xs)) = rt.get_obj_mut(recv).map(|o| &mut o.data) {
+                    xs.extend(added);
+                }
+                Some(recv)
+            }
+            "build" => {
+                let xs = extract_varargs(rt, recv);
+                Some(rt.alloc(
+                    "com/google/common/collect/ImmutableList",
+                    0,
+                    Data::List(xs),
+                ))
+            }
+            _ => None,
+        };
+    }
+    if owner == "com/google/common/collect/ImmutableSet" && is_static {
+        return match name {
+            "of" => {
+                let items = if desc.contains("[Ljava/lang/Object;") {
+                    let mut v = args[..args.len() - 1].to_vec();
+                    v.extend(extract_varargs(rt, args[args.len() - 1]));
+                    v
+                } else {
+                    args.to_vec()
+                };
+                Some(rt.alloc(owner, 0, Data::Set(items)))
+            }
+            "copyOf" => {
+                let items = extract_varargs(rt, *args.first()?);
+                Some(rt.alloc(owner, 0, Data::Set(items)))
+            }
+            "builder" => Some(rt.alloc(
+                "com/google/common/collect/ImmutableSet$Builder",
+                0,
+                Data::Set(Vec::new()),
+            )),
+            _ => None,
+        };
+    }
+    if owner == "com/google/common/collect/ImmutableSet$Builder" && !is_static {
+        let recv = *args.first()?;
+        return match name {
+            "add" => {
+                let added = if desc.starts_with("([") {
+                    extract_varargs(rt, *args.get(1)?)
+                } else {
+                    vec![*args.get(1)?]
+                };
+                let mut cur = extract_varargs(rt, recv);
+                for x in added {
+                    if !cur.iter().any(|&e| rt.val_eq(e, x)) {
+                        cur.push(x);
+                    }
+                }
+                if let Some(Data::Set(xs)) = rt.get_obj_mut(recv).map(|o| &mut o.data) {
+                    *xs = cur;
+                }
+                Some(recv)
+            }
+            "addAll" => {
+                let added = extract_varargs(rt, *args.get(1)?);
+                let mut cur = extract_varargs(rt, recv);
+                for x in added {
+                    if !cur.iter().any(|&e| rt.val_eq(e, x)) {
+                        cur.push(x);
+                    }
+                }
+                if let Some(Data::Set(xs)) = rt.get_obj_mut(recv).map(|o| &mut o.data) {
+                    *xs = cur;
+                }
+                Some(recv)
+            }
+            "build" => {
+                let xs = extract_varargs(rt, recv);
+                Some(rt.alloc(
+                    "com/google/common/collect/ImmutableSet",
+                    0,
+                    Data::Set(xs),
+                ))
+            }
+            _ => None,
+        };
+    }
+    if owner == "com/google/common/collect/ImmutableMap" && is_static {
+        return match name {
+            "of" => {
+                let mut pairs = Vec::new();
+                for c in args.chunks_exact(2) {
+                    pairs.push((c[0], c[1]));
+                }
+                Some(rt.alloc(owner, 0, Data::Map(pairs)))
+            }
+            "copyOf" => {
+                let pairs = match rt.get_obj(*args.first()?).map(|o| &o.data) {
+                    Some(Data::Map(m)) => m.clone(),
+                    _ => Vec::new(),
+                };
+                Some(rt.alloc(owner, 0, Data::Map(pairs)))
+            }
+            "builder" => Some(rt.alloc(
+                "com/google/common/collect/ImmutableMap$Builder",
+                0,
+                Data::Map(Vec::new()),
+            )),
+            _ => None,
+        };
+    }
+    if owner == "com/google/common/collect/ImmutableMap$Builder" && !is_static {
+        let recv = *args.first()?;
+        return match name {
+            "put" if args.len() == 3 => {
+                if let Some(Data::Map(m)) = rt.get_obj_mut(recv).map(|o| &mut o.data) {
+                    m.push((args[1], args[2]));
+                }
+                Some(recv)
+            }
+            "build" | "buildOrThrow" | "buildKeepingLast" => {
+                let pairs = match rt.get_obj(recv).map(|o| &o.data) {
+                    Some(Data::Map(m)) => m.clone(),
+                    _ => Vec::new(),
+                };
+                Some(rt.alloc(
+                    "com/google/common/collect/ImmutableMap",
+                    0,
+                    Data::Map(pairs),
+                ))
+            }
+            _ => None,
+        };
+    }
+    if owner == "com/google/common/collect/Lists" && is_static && name == "newArrayList" {
+        let items = if args.is_empty() {
+            Vec::new()
+        } else {
+            extract_varargs(rt, args[0])
+        };
+        return Some(rt.alloc("java/util/ArrayList", 0, Data::List(items)));
+    }
+    if owner == "com/google/common/collect/Sets" && is_static {
+        return match name {
+            "newHashSet" | "newLinkedHashSet" | "newIdentityHashSet" | "newConcurrentHashSet" => {
+                let items = if args.is_empty() {
+                    Vec::new()
+                } else {
+                    extract_varargs(rt, args[0])
+                };
+                Some(rt.alloc("java/util/HashSet", 0, Data::Set(items)))
+            }
+            _ => None,
+        };
+    }
+    if owner == "com/google/common/collect/Maps" && is_static {
+        return match name {
+            "newHashMap" | "newLinkedHashMap" | "newIdentityHashMap" | "newConcurrentMap" => {
+                Some(rt.alloc("java/util/HashMap", 0, Data::Map(Vec::new())))
+            }
+            "newEnumMap" => Some(rt.alloc("java/util/EnumMap", 0, Data::Map(Vec::new()))),
+            _ => None,
+        };
+    }
+    if (owner == "com/google/common/collect/HashBiMap" || owner == "com/google/common/collect/BiMap")
+        && is_static
+        && name == "create"
+    {
+        return Some(rt.alloc("com/google/common/collect/HashBiMap", 0, Data::Map(Vec::new())));
+    }
+    if (owner == "com/google/common/collect/HashBiMap" || owner == "com/google/common/collect/BiMap")
+        && !is_static
+        && name == "inverse"
+    {
+        let inv: Vec<(V, V)> = match rt.get_obj(args[0]).map(|o| &o.data) {
+            Some(Data::Map(m)) => m.iter().map(|&(k, v)| (v, k)).collect(),
+            _ => Vec::new(),
+        };
+        return Some(rt.alloc("com/google/common/collect/HashBiMap", 0, Data::Map(inv)));
+    }
+    if owner == "com/google/common/base/Suppliers" && is_static && name == "memoize" {
+        return args.first().copied();
+    }
+    if owner == "com/google/common/base/Preconditions" && is_static {
+        return match name {
+            "checkNotNull" => {
+                let v = *args.first()?;
+                if v.is_null() {
+                    Some(rt.throw_exception(
+                        "java/lang/NullPointerException",
+                        "Preconditions.checkNotNull",
+                    ))
+                } else {
+                    Some(v)
+                }
+            }
+            "checkArgument" => {
+                if args.first()?.i() == 0 {
+                    Some(rt.throw_exception(
+                        "java/lang/IllegalArgumentException",
+                        "Preconditions.checkArgument",
+                    ))
+                } else {
+                    Some(V::Void)
+                }
+            }
+            "checkState" => {
+                if args.first()?.i() == 0 {
+                    Some(rt.throw_exception(
+                        "java/lang/IllegalStateException",
+                        "Preconditions.checkState",
+                    ))
+                } else {
+                    Some(V::Void)
+                }
+            }
+            _ => None,
+        };
+    }
+
+    if owner == "com/google/gson/GsonBuilder" && !is_static {
+        let recv = *args.first()?;
+        return match name {
+            "<init>" => Some(V::Void),
+            "setPrettyPrinting"
+            | "disableHtmlEscaping"
+            | "serializeNulls"
+            | "setLenient"
+            | "registerTypeAdapter"
+            | "registerTypeHierarchyAdapter"
+            | "registerTypeAdapterFactory"
+            | "excludeFieldsWithModifiers" => Some(recv),
+            "create" => Some(rt.new_instance("com/google/gson/Gson", 0)),
+            _ => None,
+        };
+    }
+    if owner == "com/google/gson/Gson" && !is_static && name == "<init>" {
+        return Some(V::Void);
+    }
+
+    // 7. Guava `Table` (`HashBasedTable`) & `Multimap` (`HashMultimap`, `ArrayListMultimap`, `LinkedHashMultimap`)
+    if matches!(
+        owner,
+        "com/google/common/collect/HashBasedTable" | "com/google/common/collect/Table"
+    ) {
+        if is_static && name == "create" {
+            let tbl = rt.new_instance("com/google/common/collect/HashBasedTable", 0);
+            let rows = rt.alloc("java/util/LinkedHashMap", 0, Data::Map(Vec::new()));
+            rt.put_field(tbl, "$rows", rows);
+            return Some(tbl);
+        }
+        if !is_static {
+            return call_guava_table(rt, args[0], name, &args[1..]);
+        }
+    }
+    if matches!(
+        owner,
+        "com/google/common/collect/Multimap"
+            | "com/google/common/collect/ListMultimap"
+            | "com/google/common/collect/SetMultimap"
+            | "com/google/common/collect/HashMultimap"
+            | "com/google/common/collect/LinkedHashMultimap"
+            | "com/google/common/collect/ArrayListMultimap"
+    ) {
+        if is_static && name == "create" {
+            let m = rt.new_instance(owner, 0);
+            let map = rt.alloc("java/util/LinkedHashMap", 0, Data::Map(Vec::new()));
+            let is_set = owner.contains("HashMultimap");
+            rt.put_field(m, "$map", map);
+            rt.put_field(m, "$is_set", V::bool(is_set));
+            return Some(m);
+        }
+        if !is_static {
+            return call_guava_multimap(rt, args[0], name, &args[1..]);
+        }
+    }
+
+    None
+}
+
+fn call_guava_table(rt: &mut Rt, recv: V, name: &str, args: &[V]) -> Option<V> {
+    let rows_map = rt.get_field(recv, "$rows");
+    let rows_snapshot = || -> Vec<(V, V)> {
+        match rt.get_obj(rows_map).map(|o| &o.data) {
+            Some(Data::Map(m)) => m.clone(),
+            _ => Vec::new(),
+        }
+    };
+    match name {
+        "put" if args.len() == 3 => {
+            let (r, c, v) = (args[0], args[1], args[2]);
+            let rows = rows_snapshot();
+            let col_map = if let Some(&(_, cm)) = rows.iter().find(|&&(rk, _)| rt.val_eq(rk, r)) {
+                cm
+            } else {
+                let cm = rt.alloc("java/util/LinkedHashMap", 0, Data::Map(Vec::new()));
+                if let Some(Data::Map(m)) = rt.get_obj_mut(rows_map).map(|o| &mut o.data) {
+                    m.push((r, cm));
+                }
+                cm
+            };
+            let cols = match rt.get_obj(col_map).map(|o| &o.data) {
+                Some(Data::Map(m)) => m.clone(),
+                _ => Vec::new(),
+            };
+            let pos = cols.iter().position(|&(ck, _)| rt.val_eq(ck, c));
+            let mut prev = V::NULL;
+            if let Some(Data::Map(m)) = rt.get_obj_mut(col_map).map(|o| &mut o.data) {
+                if let Some(idx) = pos {
+                    prev = m[idx].1;
+                    m[idx].1 = v;
+                } else {
+                    m.push((c, v));
+                }
+            }
+            Some(prev)
+        }
+        "get" if args.len() == 2 => {
+            let (r, c) = (args[0], args[1]);
+            let Some((_, col_map)) = rows_snapshot().into_iter().find(|&(rk, _)| rt.val_eq(rk, r)) else {
+                return Some(V::NULL);
+            };
+            let cols = match rt.get_obj(col_map).map(|o| &o.data) {
+                Some(Data::Map(m)) => m.clone(),
+                _ => Vec::new(),
+            };
+            let val = cols
+                .into_iter()
+                .find(|&(ck, _)| rt.val_eq(ck, c))
+                .map_or(V::NULL, |(_, v)| v);
+            Some(val)
+        }
+        "contains" if args.len() == 2 => {
+            let (r, c) = (args[0], args[1]);
+            let Some((_, col_map)) = rows_snapshot().into_iter().find(|&(rk, _)| rt.val_eq(rk, r)) else {
+                return Some(V::FALSE);
+            };
+            let has = match rt.get_obj(col_map).map(|o| &o.data) {
+                Some(Data::Map(m)) => {
+                    let cols = m.clone();
+                    cols.into_iter().any(|(ck, _)| rt.val_eq(ck, c))
+                }
+                _ => false,
+            };
+            Some(V::bool(has))
+        }
+        "containsRow" if args.len() == 1 => {
+            let r = args[0];
+            let has = rows_snapshot().into_iter().any(|(rk, cm)| {
+                rt.val_eq(rk, r)
+                    && matches!(rt.get_obj(cm).map(|o| &o.data), Some(Data::Map(m)) if !m.is_empty())
+            });
+            Some(V::bool(has))
+        }
+        "row" if args.len() == 1 => {
+            let r = args[0];
+            if let Some((_, cm)) = rows_snapshot().into_iter().find(|&(rk, _)| rt.val_eq(rk, r)) {
+                Some(cm)
+            } else {
+                let cm = rt.alloc("java/util/LinkedHashMap", 0, Data::Map(Vec::new()));
+                if let Some(Data::Map(m)) = rt.get_obj_mut(rows_map).map(|o| &mut o.data) {
+                    m.push((r, cm));
+                }
+                Some(cm)
+            }
+        }
+        "rowMap" => Some(rows_map),
+        "rowKeySet" => {
+            let keys: Vec<V> = rows_snapshot().into_iter().map(|(rk, _)| rk).collect();
+            Some(rt.alloc("java/util/Set", 0, Data::Set(keys)))
+        }
+        "values" => {
+            let mut all = Vec::new();
+            for (_, cm) in rows_snapshot() {
+                if let Some(Data::Map(cols)) = rt.get_obj(cm).map(|o| &o.data) {
+                    all.extend(cols.iter().map(|&(_, v)| v));
+                }
+            }
+            Some(rt.alloc("java/util/ArrayList", 0, Data::List(all)))
+        }
+        "isEmpty" => {
+            let empty = rows_snapshot().into_iter().all(|(_, cm)| {
+                matches!(rt.get_obj(cm).map(|o| &o.data), Some(Data::Map(m)) if m.is_empty())
+            });
+            Some(V::bool(empty))
+        }
+        "size" => {
+            let total: usize = rows_snapshot()
+                .into_iter()
+                .map(|(_, cm)| match rt.get_obj(cm).map(|o| &o.data) {
+                    Some(Data::Map(m)) => m.len(),
+                    _ => 0,
+                })
+                .sum();
+            Some(V::I(total as i32))
+        }
+        "clear" => {
+            if let Some(Data::Map(m)) = rt.get_obj_mut(rows_map).map(|o| &mut o.data) {
+                m.clear();
+            }
+            Some(V::Void)
+        }
+        _ => None,
+    }
+}
+
+fn call_guava_multimap(rt: &mut Rt, recv: V, name: &str, args: &[V]) -> Option<V> {
+    let map_v = rt.get_field(recv, "$map");
+    let is_set = rt.get_field(recv, "$is_set").i() != 0;
+    let entries_snapshot = || -> Vec<(V, V)> {
+        match rt.get_obj(map_v).map(|o| &o.data) {
+            Some(Data::Map(m)) => m.clone(),
+            _ => Vec::new(),
+        }
+    };
+    let ensure_bucket = |rt: &mut Rt, key: V| -> V {
+        let snap = match rt.get_obj(map_v).map(|o| &o.data) {
+            Some(Data::Map(m)) => m.clone(),
+            _ => Vec::new(),
+        };
+        if let Some((_, bucket)) = snap.into_iter().find(|&(k, _)| rt.val_eq(k, key)) {
+            return bucket;
+        }
+        let b = if is_set {
+            rt.alloc("java/util/LinkedHashSet", 0, Data::Set(Vec::new()))
+        } else {
+            rt.alloc("java/util/ArrayList", 0, Data::List(Vec::new()))
+        };
+        if let Some(Data::Map(m)) = rt.get_obj_mut(map_v).map(|o| &mut o.data) {
+            m.push((key, b));
+        }
+        b
+    };
+
+    match name {
+        "put" if args.len() == 2 => {
+            let (k, v) = (args[0], args[1]);
+            let bucket = ensure_bucket(rt, k);
+            if is_set {
+                let cur = extract_varargs(rt, bucket);
+                if cur.iter().any(|&x| rt.val_eq(x, v)) {
+                    return Some(V::FALSE);
+                }
+                if let Some(Data::Set(xs)) = rt.get_obj_mut(bucket).map(|o| &mut o.data) {
+                    xs.push(v);
+                }
+                Some(V::TRUE)
+            } else {
+                if let Some(Data::List(xs)) = rt.get_obj_mut(bucket).map(|o| &mut o.data) {
+                    xs.push(v);
+                }
+                Some(V::TRUE)
+            }
+        }
+        "get" if args.len() == 1 => Some(ensure_bucket(rt, args[0])),
+        "removeAll" if args.len() == 1 => {
+            let k = args[0];
+            let snap = entries_snapshot();
+            if let Some(pos) = snap.iter().position(|&(ek, _)| rt.val_eq(ek, k)) {
+                let mut removed = V::NULL;
+                if let Some(Data::Map(m)) = rt.get_obj_mut(map_v).map(|o| &mut o.data) {
+                    removed = m.remove(pos).1;
+                }
+                Some(removed)
+            } else if is_set {
+                Some(rt.alloc("java/util/Set", 0, Data::Set(Vec::new())))
+            } else {
+                Some(rt.alloc("java/util/List", 0, Data::List(Vec::new())))
+            }
+        }
+        "containsKey" if args.len() == 1 => {
+            let k = args[0];
+            let has = entries_snapshot().into_iter().any(|(ek, b)| {
+                rt.val_eq(ek, k) && !extract_varargs(rt, b).is_empty()
+            });
+            Some(V::bool(has))
+        }
+        "keySet" => {
+            let keys: Vec<V> = entries_snapshot()
+                .into_iter()
+                .filter(|&(_, b)| !extract_varargs(rt, b).is_empty())
+                .map(|(k, _)| k)
+                .collect();
+            Some(rt.alloc("java/util/Set", 0, Data::Set(keys)))
+        }
+        "values" => {
+            let mut vals = Vec::new();
+            for (_, b) in entries_snapshot() {
+                vals.extend(extract_varargs(rt, b));
+            }
+            Some(rt.alloc("java/util/ArrayList", 0, Data::List(vals)))
+        }
+        "entries" => {
+            let mut pairs = Vec::new();
+            for (k, b) in entries_snapshot() {
+                for v in extract_varargs(rt, b) {
+                    let e = rt.new_instance("java/util/AbstractMap$SimpleEntry", 0);
+                    rt.put_field(e, "key", k);
+                    rt.put_field(e, "value", v);
+                    pairs.push(e);
+                }
+            }
+            Some(rt.alloc("java/util/ArrayList", 0, Data::List(pairs)))
+        }
+        "asMap" => Some(map_v),
+        "isEmpty" => {
+            let empty = entries_snapshot()
+                .into_iter()
+                .all(|(_, b)| extract_varargs(rt, b).is_empty());
+            Some(V::bool(empty))
+        }
+        "size" => {
+            let total: usize = entries_snapshot()
+                .into_iter()
+                .map(|(_, b)| extract_varargs(rt, b).len())
+                .sum();
+            Some(V::I(total as i32))
+        }
+        "clear" => {
+            if let Some(Data::Map(m)) = rt.get_obj_mut(map_v).map(|o| &mut o.data) {
+                m.clear();
+            }
+            Some(V::Void)
+        }
+        _ => None,
+    }
+}
+
+pub fn new_resource_key(rt: &mut Rt, registry: &str, location: &str) -> V {
+    rt.new_pinned_handle(
+        "net/minecraft/resources/ResourceKey",
+        "resource_key",
+        0,
+        format!("{registry}|{location}"),
+    )
+}
+
+fn new_tag_key(rt: &mut Rt, registry: &str, location: &str) -> V {
+    rt.new_pinned_handle(
+        "net/minecraft/tags/TagKey",
+        "tag_key",
+        0,
+        format!("{registry}|{location}"),
+    )
+}
+
+fn new_rl_handle(rt: &mut Rt, full: &str) -> V {
+    let norm = if full.contains(':') {
+        full.to_owned()
+    } else {
+        format!("minecraft:{full}")
+    };
+    rt.new_pinned_handle(
+        "net/minecraft/resources/ResourceLocation",
+        "resource_location",
+        0,
+        norm,
+    )
+}
+
+pub fn resource_key_parts(rt: &Rt, v: V) -> Option<(String, String)> {
+    let ("resource_key", _, tag, _) = rt.handle_of(v)? else {
+        return None;
+    };
+    let (reg, loc) = tag.split_once('|')?;
+    Some((reg.to_owned(), loc.to_owned()))
+}
+
+fn tag_key_parts(rt: &Rt, v: V) -> Option<(String, String)> {
+    let ("tag_key", _, tag, _) = rt.handle_of(v)? else {
+        return None;
+    };
+    let (reg, loc) = tag.split_once('|')?;
+    Some((reg.to_owned(), loc.to_owned()))
+}
+
+fn loc_str(rt: &Rt, v: V) -> Option<String> {
+    if let Some(("resource_location", _, tag, _)) = rt.handle_of(v) {
+        return Some(tag.to_owned());
+    }
+    rt.str_of(rt.get_field(v, "id")).map(str::to_owned)
+}
+
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> i32 {
+    let i = ((h * 6.0) as i32).rem_euclid(6);
+    let f = h * 6.0 - (h * 6.0).floor();
+    let p = v * (1.0 - s);
+    let q = v * (1.0 - f * s);
+    let t = v * (1.0 - (1.0 - f) * s);
+    let (r, g, b) = match i {
+        0 => (v, t, p),
+        1 => (q, v, p),
+        2 => (p, v, t),
+        3 => (p, q, v),
+        4 => (t, p, v),
+        _ => (v, p, q),
+    };
+    let ri = ((r * 255.0).clamp(0.0, 255.0)) as i32;
+    let gi = ((g * 255.0).clamp(0.0, 255.0)) as i32;
+    let bi = ((b * 255.0).clamp(0.0, 255.0)) as i32;
+    (ri << 16) | (gi << 8) | bi
+}
+
+fn map_color_constant(rt: &mut Rt, name: &str) -> Option<V> {
+    let table: &[(&str, i32, i32)] = &[
+        ("NONE", 0, 0x000000),
+        ("GRASS", 1, 0x7FB238),
+        ("SAND", 2, 0xF7E9A3),
+        ("WOOL", 3, 0xC7C7C7),
+        ("FIRE", 4, 0xFF0000),
+        ("ICE", 5, 0xA0A0FF),
+        ("METAL", 6, 0xA7A7A7),
+        ("PLANT", 7, 0x007C00),
+        ("SNOW", 8, 0xFFFFFF),
+        ("CLAY", 9, 0xA4A8B8),
+        ("DIRT", 10, 0x976D4D),
+        ("STONE", 11, 0x707070),
+        ("WATER", 12, 0x4040FF),
+        ("WOOD", 13, 0x8F7748),
+        ("QUARTZ", 14, 0xFFFCF5),
+        ("COLOR_ORANGE", 15, 0xD87F33),
+        ("COLOR_MAGENTA", 16, 0xB24CD8),
+        ("COLOR_LIGHT_BLUE", 17, 0x6699D8),
+        ("COLOR_YELLOW", 18, 0xE5E533),
+        ("COLOR_LIGHT_GREEN", 19, 0x7FCC19),
+        ("COLOR_PINK", 20, 0xF27FA5),
+        ("COLOR_GRAY", 21, 0x4C4C4C),
+        ("COLOR_LIGHT_GRAY", 22, 0x999999),
+        ("COLOR_CYAN", 23, 0x4C7F99),
+        ("COLOR_PURPLE", 24, 0x7F3FB2),
+        ("COLOR_BLUE", 25, 0x334CB2),
+        ("COLOR_BROWN", 26, 0x664C33),
+        ("COLOR_GREEN", 27, 0x667F33),
+        ("COLOR_RED", 28, 0x993333),
+        ("COLOR_BLACK", 29, 0x191919),
+        ("GOLD", 30, 0xFAEE4D),
+        ("DIAMOND", 31, 0x5CDBD5),
+        ("LAPIS", 32, 0x4A80FF),
+        ("EMERALD", 33, 0x00D93A),
+        ("PODZOL", 34, 0x815631),
+        ("NETHER", 35, 0x700200),
+        ("TERRACOTTA_WHITE", 36, 0xD1B1A1),
+        ("TERRACOTTA_ORANGE", 37, 0x9F5224),
+        ("TERRACOTTA_MAGENTA", 38, 0x95576C),
+        ("TERRACOTTA_LIGHT_BLUE", 39, 0x706C8A),
+        ("TERRACOTTA_YELLOW", 40, 0xBA8524),
+        ("TERRACOTTA_LIGHT_GREEN", 41, 0x677535),
+        ("TERRACOTTA_PINK", 42, 0xA04D4E),
+        ("TERRACOTTA_GRAY", 43, 0x392923),
+        ("TERRACOTTA_LIGHT_GRAY", 44, 0x876B62),
+        ("TERRACOTTA_CYAN", 45, 0x575C5C),
+        ("TERRACOTTA_PURPLE", 46, 0x7A4958),
+        ("TERRACOTTA_BLUE", 47, 0x4C3E5C),
+        ("TERRACOTTA_BROWN", 48, 0x4C3223),
+        ("TERRACOTTA_GREEN", 49, 0x4C522A),
+        ("TERRACOTTA_RED", 50, 0x8E3C2E),
+        ("TERRACOTTA_BLACK", 51, 0x251610),
+        ("CRIMSON_NYLIUM", 52, 0xBD3031),
+        ("CRIMSON_STEM", 53, 0x943F61),
+        ("CRIMSON_HYPHAE", 54, 0x5C191D),
+        ("WARPED_NYLIUM", 55, 0x167E86),
+        ("WARPED_STEM", 56, 0x3A8E8C),
+        ("WARPED_HYPHAE", 57, 0x562C3E),
+        ("WARPED_WART_BLOCK", 58, 0x14B485),
+        ("DEEPSLATE", 59, 0x646464),
+        ("RAW_IRON", 60, 0xD8AF93),
+        ("GLOW_LICHEN", 61, 0x7FA796),
+    ];
+    let &(_, id, col) = table.iter().find(|x| x.0 == name)?;
+    let obj = rt.new_instance("net/minecraft/world/level/material/MapColor", 0);
+    rt.put_field(obj, "id", V::I(id));
+    rt.put_field(obj, "col", V::I(col));
+    rt.pin(obj);
+    Some(obj)
 }
 
 #[cfg(test)]
@@ -1544,6 +3724,142 @@ mod tests {
         };
         let _ = double_val;
         assert!(rt.handle_of(spec).is_some_and(|(k, ..)| k == "config_spec"));
+        assert!(rt.take_exception().is_none());
+    }
+
+    #[test]
+    fn builtin_registries_game_profile_and_guava_table_preserve_semantics() {
+        let mut prepared = crate::PreparedLoad::from_jars(Vec::new(), true).unwrap();
+        let mut rt = Rt::new();
+        let linked = &prepared.linked;
+
+        let (cmd_reg_key, profile_str, table_got) = {
+            let mut ctx = ExecCtx {
+                rt: &mut rt,
+                linked,
+                host: &mut prepared.loader,
+                depth: 0,
+            };
+
+            // 1. BuiltInRegistries.COMMAND_ARGUMENT_TYPE -> DeferredRegister.create(Registry, String)
+            let reg = mmga_runtime::read_static_field(
+                &mut ctx,
+                "net/minecraft/core/registries/BuiltInRegistries",
+                "COMMAND_ARGUMENT_TYPE",
+                "Lnet/minecraft/core/Registry;",
+            );
+            let ns = ctx.rt.intern_str("ponder");
+            let dr = mmga_runtime::invoke_member(
+                &mut ctx,
+                mmga_classfile::op::INVOKESTATIC,
+                &MemberRef::new(
+                    "net/neoforged/neoforge/registries/DeferredRegister",
+                    "create",
+                    "(Lnet/minecraft/core/Registry;Ljava/lang/String;)Lnet/neoforged/neoforge/registries/DeferredRegister;",
+                ),
+                &[reg, ns],
+            );
+            let dr_tag = ctx.rt.handle_of(dr).unwrap().2.to_owned();
+
+            // 2. UUID.nameUUIDFromBytes + GameProfile(UUID, String)
+            let raw_name = ctx.rt.intern_str("mekanism.common");
+            let bytes = mmga_runtime::invoke_member(
+                &mut ctx,
+                mmga_classfile::op::INVOKEVIRTUAL,
+                &MemberRef::new("java/lang/String", "getBytes", "()[B"),
+                &[raw_name],
+            );
+            let uuid = mmga_runtime::invoke_member(
+                &mut ctx,
+                mmga_classfile::op::INVOKESTATIC,
+                &MemberRef::new(
+                    "java/util/UUID",
+                    "nameUUIDFromBytes",
+                    "([B)Ljava/util/UUID;",
+                ),
+                &[bytes],
+            );
+            let gp = ctx
+                .rt
+                .new_instance("com/mojang/authlib/GameProfile", 0);
+            let pname = ctx.rt.intern_str("[Mekanism]");
+            let _ = mmga_runtime::invoke_member(
+                &mut ctx,
+                mmga_classfile::op::INVOKESPECIAL,
+                &MemberRef::new(
+                    "com/mojang/authlib/GameProfile",
+                    "<init>",
+                    "(Ljava/util/UUID;Ljava/lang/String;)V",
+                ),
+                &[gp, uuid, pname],
+            );
+            let gp_name = mmga_runtime::invoke_member(
+                &mut ctx,
+                mmga_classfile::op::INVOKEVIRTUAL,
+                &MemberRef::new(
+                    "com/mojang/authlib/GameProfile",
+                    "getName",
+                    "()Ljava/lang/String;",
+                ),
+                &[gp],
+            );
+            let gp_id = mmga_runtime::invoke_member(
+                &mut ctx,
+                mmga_classfile::op::INVOKEVIRTUAL,
+                &MemberRef::new(
+                    "com/mojang/authlib/GameProfile",
+                    "getId",
+                    "()Ljava/util/UUID;",
+                ),
+                &[gp],
+            );
+            let profile_summary = format!(
+                "{}:{}",
+                ctx.rt.str_of(gp_name).unwrap(),
+                ctx.rt.value_to_string(gp_id)
+            );
+
+            // 3. Guava HashBasedTable
+            let tbl = mmga_runtime::invoke_member(
+                &mut ctx,
+                mmga_classfile::op::INVOKESTATIC,
+                &MemberRef::new(
+                    "com/google/common/collect/HashBasedTable",
+                    "create",
+                    "()Lcom/google/common/collect/HashBasedTable;",
+                ),
+                &[],
+            );
+            let r = ctx.rt.intern_str("minecraft:block");
+            let c = ctx.rt.intern_str("cogwheel");
+            let v = ctx.rt.intern_str("entry_1");
+            let _ = mmga_runtime::invoke_member(
+                &mut ctx,
+                mmga_classfile::op::INVOKEVIRTUAL,
+                &MemberRef::new(
+                    "com/google/common/collect/HashBasedTable",
+                    "put",
+                    "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                ),
+                &[tbl, r, c, v],
+            );
+            let got = mmga_runtime::invoke_member(
+                &mut ctx,
+                mmga_classfile::op::INVOKEVIRTUAL,
+                &MemberRef::new(
+                    "com/google/common/collect/HashBasedTable",
+                    "get",
+                    "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+                ),
+                &[tbl, r, c],
+            );
+            (dr_tag, profile_summary, ctx.rt.str_of(got).unwrap().to_owned())
+        };
+
+        assert_eq!(cmd_reg_key, "minecraft:command_argument_type");
+        assert!(profile_str.starts_with("[Mekanism]:"));
+        assert_eq!(profile_str.split(':').nth(1).unwrap().len(), 36);
+        assert_eq!(table_got, "entry_1");
         assert!(rt.take_exception().is_none());
     }
 }
