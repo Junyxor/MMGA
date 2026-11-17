@@ -7,6 +7,7 @@
 pub mod armor;
 pub mod bus;
 pub mod codecs;
+pub mod common_components;
 pub mod components;
 pub mod loader;
 pub mod minecraft;

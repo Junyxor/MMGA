@@ -1757,6 +1757,9 @@ impl HostApi for FmlLoader {
         {
             return Some(value);
         }
+        if let Some(value) = crate::common_components::call(rt, member, is_static, args) {
+            return Some(value);
+        }
         if let Some(value) =
             crate::minecraft::call_chat(rt, &self.translations, member, is_static, args)
         {
