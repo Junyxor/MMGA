@@ -29,6 +29,9 @@ pub fn get_static_field(rt: &mut Rt, owner: &str, name: &str, desc: &str) -> Opt
         "DOORS" => "doors",
         "TRAPDOORS" => "trapdoors",
         "WOODEN_DOORS" => "wooden_doors",
+        // CopperBlockSet block builder fields, awe.L/K with these exact literals.
+        "SLABS" => "slabs",
+        "STAIRS" => "stairs",
         _ => return None,
     };
     if let Some(value) = rt.get_static(owner, name) {
@@ -116,6 +119,8 @@ mod tests {
             ("DOORS", "doors"),
             ("TRAPDOORS", "trapdoors"),
             ("WOODEN_DOORS", "wooden_doors"),
+            ("SLABS", "slabs"),
+            ("STAIRS", "stairs"),
         ] {
             let tag = read_static_field(&mut ctx, OWNER, name, "Lnet/minecraft/tags/TagKey;");
             assert!(ctx.rt.pending_exception.is_none(), "{name}");
