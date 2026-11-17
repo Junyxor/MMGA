@@ -1811,6 +1811,12 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::resource_reload::call(rt, member, is_static, args) {
             return Some(value);
         }
+        {
+            let mut ctx = ExecCtx { rt, linked, host: self, depth: 0 };
+            if let Some(value) = crate::util_values::call(&mut ctx, member, is_static, args) {
+                return Some(value);
+            }
+        }
         if let Some(value) = crate::blocks::call(rt, &mut self.state.registries, member, is_static, args) {
             return Some(value);
         }
