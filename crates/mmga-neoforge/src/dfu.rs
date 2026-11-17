@@ -18,15 +18,21 @@ const JSON_OPS: &str = "com/mojang/serialization/JsonOps";
 const ENUM_CODEC: &str = "net/minecraft/util/StringRepresentable$EnumCodec";
 const VALUE_CODEC: &str = "net/minecraft/util/StringRepresentable$StringRepresentableCodec";
 const LAZY_CODEC: &str = "com/mojang/serialization/Codec$RecursiveCodec";
+const UNBOUNDED_MAP: &str = "com/mojang/serialization/codecs/UnboundedMapCodec";
 
 pub fn is_subtype(sub: &str, sup: &str) -> bool {
     (matches!(
         sub,
-        CODEC | PRIMITIVE | ENUM_CODEC | VALUE_CODEC | LAZY_CODEC
+        CODEC | PRIMITIVE | ENUM_CODEC | VALUE_CODEC | LAZY_CODEC | UNBOUNDED_MAP
     ) && matches!(
         sup,
         CODEC | "com/mojang/serialization/Encoder" | "com/mojang/serialization/Decoder"
-    )) || (sub == ENUM_CODEC && sup == VALUE_CODEC)
+    )) || (sub == UNBOUNDED_MAP
+        && matches!(
+            sup,
+            "com/mojang/serialization/codecs/BaseMapCodec" | "java/lang/Record"
+        ))
+        || (sub == ENUM_CODEC && sup == VALUE_CODEC)
         || (sub == MAP
             && matches!(
                 sup,
@@ -354,9 +360,112 @@ fn call_codec(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: 
             | ENUM_CODEC
             | VALUE_CODEC
             | LAZY_CODEC
+            | UNBOUNDED_MAP
             | "com/mojang/serialization/Encoder"
             | "com/mojang/serialization/Decoder"
     );
+    if owner == CODEC && is_static && name == "unboundedMap"
+        && desc == "(Lcom/mojang/serialization/Codec;Lcom/mojang/serialization/Codec;)Lcom/mojang/serialization/codecs/UnboundedMapCodec;" {
+        return Some(graph(ctx.rt, UNBOUNDED_MAP, "unbounded_map", args));
+    }
+    if owner == UNBOUNDED_MAP && !is_static {
+        if name == "<init>"
+            && desc == "(Lcom/mojang/serialization/Codec;Lcom/mojang/serialization/Codec;)V"
+        {
+            let kind = ctx.rt.intern_str("unbounded_map");
+            let values = ctx
+                .rt
+                .alloc("[Ljava/lang/Object;", 0, Data::Array(args[1..].to_vec()));
+            ctx.rt.put_field(args[0], "$dfu_kind", kind);
+            ctx.rt.put_field(args[0], "$dfu_args", values);
+            return Some(V::Void);
+        }
+        if matches!(name, "keyCodec" | "elementCodec")
+            && desc == "()Lcom/mojang/serialization/Codec;"
+        {
+            let (_, values) = graph_parts(ctx.rt, args[0])?;
+            return Some(values[usize::from(name == "elementCodec")]);
+        }
+        if matches!(
+            (name, desc),
+            ("equals", "(Ljava/lang/Object;)Z")
+                | ("hashCode", "()I")
+                | ("toString", "()Ljava/lang/String;")
+        ) {
+            let (_, values) = graph_parts(ctx.rt, args[0])?;
+            if name == "equals" {
+                if args[0] == args[1] {
+                    return Some(V::TRUE);
+                }
+                if ctx.rt.class_of(args[1]) != Some(UNBOUNDED_MAP) {
+                    return Some(V::FALSE);
+                }
+                let (_, other) = graph_parts(ctx.rt, args[1])?;
+                for (left, right) in values.into_iter().zip(other) {
+                    if left == right {
+                        continue;
+                    }
+                    if left.is_null() {
+                        return Some(V::FALSE);
+                    }
+                    let equal = invoke_member(
+                        ctx,
+                        op::INVOKEVIRTUAL,
+                        &MemberRef::new("java/lang/Object", "equals", "(Ljava/lang/Object;)Z"),
+                        &[left, right],
+                    );
+                    if ctx.rt.pending_exception.is_some() {
+                        return Some(V::NULL);
+                    }
+                    if equal.i() == 0 {
+                        return Some(V::FALSE);
+                    }
+                }
+                return Some(V::TRUE);
+            }
+            if name == "hashCode" {
+                let mut hash = 0i32;
+                for value in values {
+                    let next = if value.is_null() {
+                        V::I(0)
+                    } else {
+                        invoke_member(
+                            ctx,
+                            op::INVOKEVIRTUAL,
+                            &MemberRef::new("java/lang/Object", "hashCode", "()I"),
+                            &[value],
+                        )
+                    };
+                    if ctx.rt.pending_exception.is_some() {
+                        return Some(V::NULL);
+                    }
+                    hash = hash.wrapping_mul(31).wrapping_add(next.i());
+                }
+                return Some(V::I(hash));
+            }
+            let mut labels = Vec::new();
+            for value in values {
+                if value.is_null() {
+                    labels.push("null".into());
+                    continue;
+                }
+                let label = invoke_member(
+                    ctx,
+                    op::INVOKEVIRTUAL,
+                    &MemberRef::new("java/lang/Object", "toString", "()Ljava/lang/String;"),
+                    &[value],
+                );
+                if ctx.rt.pending_exception.is_some() {
+                    return Some(V::NULL);
+                }
+                labels.push(ctx.rt.str_of(label)?.to_owned());
+            }
+            return Some(
+                ctx.rt
+                    .new_str(format!("UnboundedMapCodec[{} -> {}]", labels[0], labels[1])),
+            );
+        }
+    }
     if owner == MAP && is_static && name == "unit" {
         return match desc {
             "(Ljava/lang/Object;)Lcom/mojang/serialization/MapCodec;" => {
@@ -692,7 +801,7 @@ fn decode_remainder(rt: &Rt, codec: V, input: &serde_json::Value) -> serde_json:
         return serde_json::Value::Null;
     };
     match kind.as_str() {
-        "map_codec" | "item_stack" | "fluid_stack" => input.clone(),
+        "map_codec" | "item_stack" | "fluid_stack" | "unbounded_map" => input.clone(),
         "list" => serde_json::json!([]),
         "xmap" | "comapFlatMap" | "flatComapMap" | "flatXmap" | "range" | "extra_int_range" => {
             decode_remainder(rt, args[0], input)
@@ -899,6 +1008,231 @@ fn decode_with_remainder(
         .map(|value| (value, decode_remainder(ctx.rt, codec, input)))
 }
 
+fn decode_unbounded_map(
+    ctx: &mut ExecCtx<'_>,
+    args: &[V],
+    ops: V,
+    input: &serde_json::Value,
+    compressed: bool,
+    depth: usize,
+) -> Result<V, DecodeError> {
+    let values = input
+        .as_object()
+        .ok_or_else(|| format!("Not a map: {input}"))?;
+    let mut entries: Vec<(V, V)> = Vec::new();
+    let mut messages = Vec::new();
+    let mut failed = serde_json::Map::new();
+    for (name, input_value) in values {
+        let decoded_key = decode_value(
+            ctx,
+            args[0],
+            ops,
+            &serde_json::Value::String(name.clone()),
+            compressed,
+            depth + 1,
+        );
+        if ctx.rt.pending_exception.is_some() {
+            return Err("Map key codec failed".into());
+        }
+        let decoded_value = decode_value(ctx, args[1], ops, input_value, compressed, depth + 1);
+        if ctx.rt.pending_exception.is_some() {
+            return Err("Map value codec failed".into());
+        }
+        let mut errors = Vec::new();
+        let key = match decoded_key {
+            Ok(value) => Some(value),
+            Err(error) => {
+                errors.push(error.message);
+                error.partial
+            }
+        };
+        let value = match decoded_value {
+            Ok(value) => Some(value),
+            Err(error) => {
+                errors.push(error.message);
+                error.partial
+            }
+        };
+        let mut duplicate = false;
+        if let (Some(key), Some(value)) = (key, value) {
+            if key.is_null() || value.is_null() {
+                ctx.rt.throw_exception(
+                    "java/lang/NullPointerException",
+                    "null map entry from codec",
+                );
+                return Err("Null map entry".into());
+            }
+            for (existing, _) in &entries {
+                let equal = invoke_member(
+                    ctx,
+                    op::INVOKEVIRTUAL,
+                    &MemberRef::new("java/lang/Object", "equals", "(Ljava/lang/Object;)Z"),
+                    &[key, *existing],
+                );
+                if ctx.rt.pending_exception.is_some() {
+                    return Err("Map key equality failed".into());
+                }
+                if equal.i() != 0 {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if duplicate {
+                errors = vec![format!(
+                    "Duplicate entry for key: '{}'",
+                    ctx.rt.value_to_string(key)
+                )];
+            } else {
+                entries.push((key, value));
+            }
+        }
+        if !errors.is_empty() {
+            messages.extend(errors);
+            failed.insert(name.clone(), input_value.clone());
+        }
+    }
+    let elements = ctx.rt.alloc(
+        "com/google/common/collect/ImmutableMap",
+        0,
+        Data::Map(entries),
+    );
+    if messages.is_empty() {
+        Ok(elements)
+    } else {
+        Err(DecodeError {
+            message: format!(
+                "{} missed input: {}",
+                messages.join("; "),
+                serde_json::Value::Object(failed)
+            ),
+            partial: Some(elements),
+            remainder: Some(input.clone()),
+        })
+    }
+}
+
+fn encode_unbounded_map(
+    ctx: &mut ExecCtx<'_>,
+    args: &[V],
+    ops: V,
+    value: V,
+    compressed: bool,
+    depth: usize,
+) -> Result<serde_json::Value, EncodeError> {
+    if value.is_null() {
+        ctx.rt
+            .throw_exception("java/lang/NullPointerException", "null map to encode");
+        return Err("Null map".into());
+    }
+    let view = invoke_member(
+        ctx,
+        op::INVOKEINTERFACE,
+        &MemberRef::new("java/util/Map", "entrySet", "()Ljava/util/Set;"),
+        &[value],
+    );
+    if ctx.rt.pending_exception.is_some() {
+        return Err("Map entrySet failed".into());
+    }
+    let iter = invoke_member(
+        ctx,
+        op::INVOKEINTERFACE,
+        &MemberRef::new("java/lang/Iterable", "iterator", "()Ljava/util/Iterator;"),
+        &[view],
+    );
+    if ctx.rt.pending_exception.is_some() {
+        return Err("Map iterator failed".into());
+    }
+    let mut encoded = serde_json::Map::new();
+    let mut messages = Vec::new();
+    loop {
+        let next = invoke_member(
+            ctx,
+            op::INVOKEINTERFACE,
+            &MemberRef::new("java/util/Iterator", "hasNext", "()Z"),
+            &[iter],
+        );
+        if ctx.rt.pending_exception.is_some() {
+            return Err("Map hasNext failed".into());
+        }
+        if next.i() == 0 {
+            break;
+        }
+        let entry = invoke_member(
+            ctx,
+            op::INVOKEINTERFACE,
+            &MemberRef::new("java/util/Iterator", "next", "()Ljava/lang/Object;"),
+            &[iter],
+        );
+        if ctx.rt.pending_exception.is_some() {
+            return Err("Map next failed".into());
+        }
+        let key = invoke_member(
+            ctx,
+            op::INVOKEINTERFACE,
+            &MemberRef::new("java/util/Map$Entry", "getKey", "()Ljava/lang/Object;"),
+            &[entry],
+        );
+        if ctx.rt.pending_exception.is_some() {
+            return Err("Map key failed".into());
+        }
+        let value = invoke_member(
+            ctx,
+            op::INVOKEINTERFACE,
+            &MemberRef::new("java/util/Map$Entry", "getValue", "()Ljava/lang/Object;"),
+            &[entry],
+        );
+        if ctx.rt.pending_exception.is_some() {
+            return Err("Map value failed".into());
+        }
+        let key = encode_value(ctx, args[0], ops, key, compressed, depth + 1);
+        if ctx.rt.pending_exception.is_some() {
+            return Err("Map key encoding failed".into());
+        }
+        let value = encode_value(ctx, args[1], ops, value, compressed, depth + 1);
+        if ctx.rt.pending_exception.is_some() {
+            return Err("Map value encoding failed".into());
+        }
+        let key = match key {
+            Ok(key) => Some(key),
+            Err(error) => {
+                messages.push(error.message);
+                error.partial
+            }
+        };
+        let value = match value {
+            Ok(value) => Some(value),
+            Err(error) => {
+                messages.push(error.message);
+                error.partial
+            }
+        };
+        if let (Some(key), Some(value)) = (key, value) {
+            let name = match key {
+                serde_json::Value::String(name) => name,
+                serde_json::Value::Number(number) => number.to_string(),
+                serde_json::Value::Bool(value) => value.to_string(),
+                other => {
+                    ctx.rt.throw_exception(
+                        "java/lang/UnsupportedOperationException",
+                        &format!("JsonOps cannot encode non-primitive map key {other}"),
+                    );
+                    return Err("Unsupported map key".into());
+                }
+            };
+            encoded.insert(name, value);
+        }
+    }
+    let map = serde_json::Value::Object(encoded);
+    if messages.is_empty() {
+        Ok(map)
+    } else {
+        Err(EncodeError {
+            message: messages.join("; "),
+            partial: Some(map),
+        })
+    }
+}
+
 fn decode_value(
     ctx: &mut ExecCtx<'_>,
     codec: V,
@@ -921,6 +1255,7 @@ fn decode_value(
         return Err("Unknown codec".into());
     };
     match kind.as_str() {
+        "unbounded_map" => decode_unbounded_map(ctx, &args, ops, input, compressed, depth),
         "number_provider" => {
             crate::number_providers::decode_json(ctx.rt, input, args[0].i()).map_err(Into::into)
         }
@@ -1320,6 +1655,7 @@ fn encode_value(
         }
     }
     match kind.as_str() {
+        "unbounded_map" => encode_unbounded_map(ctx, &args, ops, value, compressed, depth),
         "number_provider" => {
             crate::number_providers::encode_json(ctx.rt, value, args[0].i()).map_err(Into::into)
         }
@@ -2356,6 +2692,137 @@ mod tests {
             args,
         )
         .expect("implemented DFU call")
+    }
+    #[test]
+    fn unbounded_map_preserves_values_partial_errors_and_the_original_remainder() {
+        let mut prepared = crate::PreparedLoad::from_jars(Vec::new(), true).unwrap();
+        let mut rt = Rt::new();
+        let string = get_static_field(
+            &mut rt,
+            CODEC,
+            "STRING",
+            "Lcom/mojang/serialization/codecs/PrimitiveCodec;",
+        )
+        .unwrap();
+        let int = get_static_field(
+            &mut rt,
+            CODEC,
+            "INT",
+            "Lcom/mojang/serialization/codecs/PrimitiveCodec;",
+        )
+        .unwrap();
+        let ops = get_static_field(
+            &mut rt,
+            JSON_OPS,
+            "INSTANCE",
+            "Lcom/mojang/serialization/JsonOps;",
+        )
+        .unwrap();
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &prepared.linked,
+            host: &mut prepared.loader,
+            depth: 0,
+        };
+        let codec=invoke(&mut ctx,CODEC,"unboundedMap","(Lcom/mojang/serialization/Codec;Lcom/mojang/serialization/Codec;)Lcom/mojang/serialization/codecs/UnboundedMapCodec;",true,&[string,int]);
+        let input = serde_json::json!({"one":1,"two":2});
+        let decoded = decode_value(&mut ctx, codec, ops, &input, false, 0).unwrap();
+        assert_eq!(
+            ctx.rt.class_of(decoded),
+            Some("com/google/common/collect/ImmutableMap")
+        );
+        assert_eq!(
+            encode_value(&mut ctx, codec, ops, decoded, false, 0).unwrap(),
+            input
+        );
+        let input = serde_json::json!({"bad":"wrong","good":7});
+        let input_ref = json::from_value(ctx.rt, input.clone());
+        let result=invoke(&mut ctx,CODEC,"decode","(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;",false,&[codec,ops,input_ref]);
+        assert_eq!(ctx.rt.get_field(result, "$success"), V::FALSE);
+        let pair = ctx.rt.get_field(result, "$partial");
+        let map = ctx.rt.get_field(pair, "first");
+        assert_eq!(
+            json::to_value(ctx.rt, ctx.rt.get_field(pair, "second")),
+            Some(input)
+        );
+        assert_eq!(
+            encode_value(&mut ctx, codec, ops, map, false, 0).unwrap(),
+            serde_json::json!({"good":7})
+        );
+        assert!(result::message(&mut ctx, result).contains("missed input"));
+        let key = ctx.rt.intern_str("new");
+        let value = box_primitive(ctx.rt, "java/lang/Integer", V::I(9));
+        invoke_member(
+            &mut ctx,
+            op::INVOKEINTERFACE,
+            &MemberRef::new(
+                "java/util/Map",
+                "put",
+                "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",
+            ),
+            &[map, key, value],
+        );
+        let error = ctx.rt.take_exception().unwrap();
+        assert!(ctx
+            .rt
+            .exception_summary(error)
+            .contains("UnsupportedOperationException"));
+    }
+    #[test]
+    fn unbounded_map_detects_duplicate_decoded_keys_and_never_swallow_unknown_codecs() {
+        let mut prepared = crate::PreparedLoad::from_jars(Vec::new(), true).unwrap();
+        let mut rt = Rt::new();
+        let key = get_static_field(
+            &mut rt,
+            "net/minecraft/resources/ResourceLocation",
+            "CODEC",
+            "Lcom/mojang/serialization/Codec;",
+        )
+        .unwrap();
+        let value = get_static_field(
+            &mut rt,
+            CODEC,
+            "INT",
+            "Lcom/mojang/serialization/codecs/PrimitiveCodec;",
+        )
+        .unwrap();
+        let ops = get_static_field(
+            &mut rt,
+            JSON_OPS,
+            "INSTANCE",
+            "Lcom/mojang/serialization/JsonOps;",
+        )
+        .unwrap();
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &prepared.linked,
+            host: &mut prepared.loader,
+            depth: 0,
+        };
+        let codec=invoke(&mut ctx,CODEC,"unboundedMap","(Lcom/mojang/serialization/Codec;Lcom/mojang/serialization/Codec;)Lcom/mojang/serialization/codecs/UnboundedMapCodec;",true,&[key,value]);
+        let error = decode_value(
+            &mut ctx,
+            codec,
+            ops,
+            &serde_json::json!({"a":1,"minecraft:a":2}),
+            false,
+            0,
+        )
+        .unwrap_err();
+        assert!(error.message.contains("Duplicate entry for key"));
+        assert!(error.partial.is_some());
+        assert_eq!(
+            encode_value(&mut ctx, codec, ops, error.partial.unwrap(), false, 0).unwrap(),
+            serde_json::json!({"minecraft:a":1})
+        );
+        let unknown = unsupported_codec(ctx.rt, "test");
+        let map=invoke(&mut ctx,CODEC,"unboundedMap","(Lcom/mojang/serialization/Codec;Lcom/mojang/serialization/Codec;)Lcom/mojang/serialization/codecs/UnboundedMapCodec;",true,&[key,unknown]);
+        assert!(decode_value(&mut ctx, map, ops, &serde_json::json!({"a":1}), false, 0).is_err());
+        let error = ctx.rt.take_exception().unwrap();
+        assert!(ctx
+            .rt
+            .exception_summary(error)
+            .contains("UnsupportedOperationException"));
     }
     #[test]
     fn primitive_json_codecs_roundtrip_values_and_report_wrong_types() {
