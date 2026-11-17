@@ -39,6 +39,7 @@
 - Direction 的 2D/3D 索引按官方顺序与 Java signed remainder/abs 执行；Axis/AxisDirection 常量和真实 anonymous constant-body superclass metadata 保持身份，EnumSet 对 declaring enum 与 constant-body class 分别校验。五项 Direction 回归和四项 EnumSet 回归通过，原 Create 越过 Iterate 初始化到 BlockTags.SLABS，仍在构造。
 - SINGLE_ITEM_CODEC 使用真实 id/components schema，忽略输入 count，并编码原 stack 而不修改其数量；未知 item/component 仍明确失败。一项 VM 回归先失败后通过；AE2 越过该 codec 到 GlobalPos.CODEC（`AEComponents.lambda$static$22`），仍在构造。
 - Create CopperBlockSet 的 vanilla SLABS/STAIRS tag 常量按官方 `minecraft:slabs/stairs` block keys 映射，回归先失败后通过。原 Create 越过该处到 ArrayUtils.contains(Object[],Object)；仍未完成构造/注册。
+- Commons Lang ArrayUtils.contains/indexOf 执行 wanted.equals(element)，保留 null、start index、live array mutation 和 callback 异常，不使用猜测的 equality。两项回归先失败后通过，原 Create 越过 CopperBlockSet.hasVariant，到 StringUtils.capitalize（Registrate toEnglishName）。
 - ClassLoader 使用真实 linked class-space identity、解析类和 host classpath bytes；ServiceLoader 改为 metadata/iterator 延迟 provider 构造，检查请求 loader、provider cache/reload 和 constructor cause，不再提前运行所有 provider。八项回归通过，Class.isEnum 区分真实 enum 与匿名 constant body。Mekanism 已越过 MekanismAPI，下一处 `Codec.checkRange(Number,Number)`（SerializerHelper），构造尚未完成。
 - 本机工具版本核实：Rust 1.98.0；PATH java/javac 为 17.0.12，javap 及 `D:/MC launcher/Java/21` 中的实际 JDK 为 Microsoft 25.0.3（目录名不是版本证据）。模组输入仍为官方 Java 21 classfile，已由 Rust VM 解析/执行；JDK 21 专有语义依据固定官方源数据，未把本机 Java 工具说成 Java 21，也未在本机运行官方 NeoForge 对照。
 
