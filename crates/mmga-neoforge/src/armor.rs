@@ -256,6 +256,26 @@ pub fn call(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: &[
             _ => None,
         };
     }
+    if member.owner == SLOT && is_static {
+        return match (member.name.as_str(), member.desc.as_str()) {
+            ("values", "()[Lnet/minecraft/world/entity/EquipmentSlot;") => {
+                let values = ["MAINHAND", "OFFHAND", "FEET", "LEGS", "CHEST", "HEAD", "BODY"]
+                    .iter().map(|name| slot_constant(rt, name).unwrap()).collect();
+                Some(rt.alloc("[Lnet/minecraft/world/entity/EquipmentSlot;", 0, Data::Array(values)))
+            }
+            ("valueOf", "(Ljava/lang/String;)Lnet/minecraft/world/entity/EquipmentSlot;") => {
+                let name = *args.first()?;
+                if name.is_null() {
+                    return Some(rt.throw_exception("java/lang/NullPointerException", "Name is null"));
+                }
+                let name = rt.str_of(name)?.to_owned();
+                Some(slot_constant(rt, &name).unwrap_or_else(|| rt.throw_exception(
+                    "java/lang/IllegalArgumentException", &format!("No enum constant net.minecraft.world.entity.EquipmentSlot.{name}"),
+                )))
+            }
+            _ => None,
+        };
+    }
     if member.owner == SLOT && !is_static {
         return match (member.name.as_str(), member.desc.as_str()) {
             ("getName" | "getSerializedName", "()Ljava/lang/String;") => {
@@ -526,6 +546,23 @@ mod tests {
     use mmga_runtime::{
         box_primitive, invoke_member, read_static_field, Data, HostApi, LinkedSpace,
     };
+
+    #[test]
+    fn equipment_slot_values_are_fresh_arrays_of_the_canonical_seven_constants() {
+        let mut rt=Rt::new();let linked=LinkedSpace::new();let mut host=ArmorHost::default();
+        let mut ctx=ExecCtx{rt:&mut rt,linked:&linked,host:&mut host,depth:0};
+        let first=invoke(&mut ctx,SLOT,"values","()[Lnet/minecraft/world/entity/EquipmentSlot;",true,&[]);
+        assert!(ctx.rt.pending_exception.is_none());let original=array(ctx.rt,first);assert_eq!(original.len(),7);
+        for(index,name)in["MAINHAND","OFFHAND","FEET","LEGS","CHEST","HEAD","BODY"].iter().enumerate(){
+            assert_eq!(original[index],read_static_field(&mut ctx,SLOT,name,"Lnet/minecraft/world/entity/EquipmentSlot;"));
+            let label=ctx.rt.intern_str(name);assert_eq!(invoke(&mut ctx,SLOT,"valueOf","(Ljava/lang/String;)Lnet/minecraft/world/entity/EquipmentSlot;",true,&[label]),original[index]);
+            assert_eq!(invoke(&mut ctx,SLOT,"ordinal","()I",false,&[original[index]]),V::I(index as i32));
+        }
+        if let Data::Array(values)=&mut ctx.rt.get_obj_mut(first).unwrap().data{values[0]=V::NULL;}
+        let second=invoke(&mut ctx,SLOT,"values","()[Lnet/minecraft/world/entity/EquipmentSlot;",true,&[]);assert_ne!(first,second);assert_eq!(array(ctx.rt,second),original);
+        let invalid=ctx.rt.new_str("mainhand");invoke(&mut ctx,SLOT,"valueOf","(Ljava/lang/String;)Lnet/minecraft/world/entity/EquipmentSlot;",true,&[invalid]);let error=ctx.rt.take_exception().unwrap();assert_eq!(ctx.rt.class_of(error),Some("java/lang/IllegalArgumentException"));
+        invoke(&mut ctx,SLOT,"valueOf","(Ljava/lang/String;)Lnet/minecraft/world/entity/EquipmentSlot;",true,&[V::NULL]);let error=ctx.rt.take_exception().unwrap();assert_eq!(ctx.rt.class_of(error),Some("java/lang/NullPointerException"));
+    }
 
     #[derive(Default)]
     struct ArmorHost(RegistryStore);
