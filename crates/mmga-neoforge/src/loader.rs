@@ -1895,6 +1895,9 @@ impl HostApi for FmlLoader {
             if let Some(value) = crate::ingredients::call(&mut ctx, member, is_static, args) {
                 return Some(value);
             }
+            if let Some(value) = crate::tag_codecs::call(&mut ctx, member, is_static, args) {
+                return Some(value);
+            }
             if let Some(value) = crate::loot_functions::call(&mut ctx, member, is_static, args) {
                 return Some(value);
             }

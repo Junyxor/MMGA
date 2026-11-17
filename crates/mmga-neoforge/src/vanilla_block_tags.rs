@@ -5,6 +5,7 @@
 //! contents are invented by exposing the constants.
 use mmga_runtime::{Rt, V};
 const OWNER: &str = "net/minecraft/tags/BlockTags";
+#[cfg(test)]
 const TAG: &str = "net/minecraft/tags/TagKey";
 pub fn get_static_field(rt: &mut Rt, owner: &str, name: &str, desc: &str) -> Option<V> {
     if owner != OWNER || desc != "Lnet/minecraft/tags/TagKey;" {
@@ -26,12 +27,7 @@ pub fn get_static_field(rt: &mut Rt, owner: &str, name: &str, desc: &str) -> Opt
     if let Some(value) = rt.get_static(owner, name) {
         return Some(value);
     }
-    let value = rt.new_pinned_handle(
-        TAG,
-        "tag_key",
-        0,
-        format!("minecraft:block|minecraft:{path}"),
-    );
+    let value = crate::tag_codecs::intern_key(rt, "minecraft:block", &format!("minecraft:{path}"));
     rt.put_static(owner, name, value);
     Some(value)
 }

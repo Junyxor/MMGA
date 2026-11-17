@@ -15,6 +15,7 @@
 - 当前恢复检查点 `cargo test --workspace --offline`：**195 项通过**（classfile 7 / runtime 15 / NeoForge 173），doc-tests 全通过。已有 `attribute_modifier::MAP_CODEC` dead-code warning 尚在；声明的 MSRV 1.83 仍未单独验证。测试证据 `.local/probes/resume-workspace-test.log`，优化探测用于加载验证而非性能对比。
 - AE2 的四个 amethyst SoundType 已按官方 volume/pitch 1.0 与 break/step/place/hit/fall 原始 SoundEvents 引用实现，11 个声音登记值保持真实 registry 身份；自定义构造器保留 null 和传入引用。两项回归先失败后通过，原 jar 越过 SoundType 常量，下一处为 `BlockBehaviour.Properties.of()`（`AEBaseBlock.defaultProps`），仍在构造。证据 `.local/probes/ae2-sound-types.log`；声音播放未执行。
 - Ingredient 的 EMPTY/TagValue/ItemValue/fromValues 保存真实输入和可观察的 Value 数组引用，空 factory 规范化为 EMPTY，枚举 tag 内容和未实现的非空 stack/component 去重明确失败。三项 VM 回归通过（两项在独立临时 harness 先失败），原 Create 越过 TrackMaterialFactory，下一处为 `EnumSet.copyOf(Collection)`（`CommonMetal.<init>`）；仍未完成构造和组合注册，材料匹配/配方玩法未验证。
+- `TagKey.codec/hashedCodec` 执行真实 ResourceLocation/xmap/comapFlatMap，普通名字与必须带 `#` 的 hashed 名字分别验证。static/direct/codec 使用同一 (registry,location) interner，四项回归含静态身份先失败后通过。原 Core+Backpacks 从 47 推进到 **60 项**实际注册，下一处 `ExtraCodecs.NON_NEGATIVE_INT`（`CookingLogic.<clinit>`，注册 `recipes_used`）；setup/tick 未到达，tag 内容没有伪造。
 
 ## 2026-11-17 持续修复增量（进行中）
 

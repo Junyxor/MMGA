@@ -8,6 +8,7 @@
 use mmga_runtime::{Rt, V};
 
 const ITEMS: &str = "net/neoforged/neoforge/common/Tags$Items";
+#[cfg(test)]
 const TAG: &str = "net/minecraft/tags/TagKey";
 
 pub fn get_static_field(rt: &mut Rt, owner: &str, name: &str, desc: &str) -> Option<V> {
@@ -74,7 +75,7 @@ pub fn get_static_field(rt: &mut Rt, owner: &str, name: &str, desc: &str) -> Opt
     if let Some(tag) = rt.get_static(owner, name) {
         return Some(tag);
     }
-    let tag = rt.new_pinned_handle(TAG, "tag_key", 0, format!("minecraft:item|{location}"));
+    let tag = crate::tag_codecs::intern_key(rt, "minecraft:item", location);
     rt.put_static(owner, name, tag);
     Some(tag)
 }

@@ -3410,12 +3410,7 @@ pub fn new_resource_key(rt: &mut Rt, registry: &str, location: &str) -> V {
 }
 
 fn new_tag_key(rt: &mut Rt, registry: &str, location: &str) -> V {
-    rt.new_pinned_handle(
-        "net/minecraft/tags/TagKey",
-        "tag_key",
-        0,
-        format!("{registry}|{location}"),
-    )
+    crate::tag_codecs::intern_key(rt, registry, location)
 }
 
 fn new_rl_handle(rt: &mut Rt, full: &str) -> V {
