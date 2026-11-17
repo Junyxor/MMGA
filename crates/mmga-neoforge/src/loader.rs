@@ -1707,6 +1707,9 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::push_reaction::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
+        if let Some(value) = crate::note_instruments::get_static_field(rt, &mut self.state.registries, owner, name, desc) {
+            return Some(value);
+        }
         if let Some(value) = crate::capabilities::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
@@ -1904,6 +1907,9 @@ impl HostApi for FmlLoader {
             return Some(value);
         }
         if let Some(value) = crate::push_reaction::call(rt, member, is_static, args) {
+            return Some(value);
+        }
+        if let Some(value) = crate::note_instruments::call(rt, &mut self.state.registries, member, is_static, args) {
             return Some(value);
         }
         if let Some(value) = crate::capabilities::call(rt, member, is_static, args) {
@@ -2134,6 +2140,9 @@ impl HostApi for FmlLoader {
             return true;
         }
         if crate::push_reaction::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::note_instruments::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::capabilities::is_subtype(sub_class, super_class) {

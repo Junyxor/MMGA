@@ -4,7 +4,8 @@
 //! official 1.21.1 client bytecode (`SoundEvents` = `avp`, `SoundEvent` = `avo`)
 //! and client mappings. Client SHA-1: 30c73b1c5da787909b2f73340419fdf13b9def88;
 //! mappings SHA-1: 2244b6f072256667bcd9a73df124d6c58de77992.
-//! This is an explicit subset used by Create 6.0.10; unknown fields stay unsupported.
+//! This is an explicit subset used by Create and note-block instruments; unknown
+//! fields stay unsupported.
 
 use crate::{ContentProperties, RegistryStore};
 use mmga_classfile::MemberRef;
@@ -60,6 +61,25 @@ pub fn get_static_field(
         "NOTE_BLOCK_BASS" => ("block.note_block.bass", REFERENCE_DESC),
         "NOTE_BLOCK_BELL" => ("block.note_block.bell", REFERENCE_DESC),
         "NOTE_BLOCK_HAT" => ("block.note_block.hat", REFERENCE_DESC),
+        "NOTE_BLOCK_HARP" => ("block.note_block.harp", REFERENCE_DESC),
+        "NOTE_BLOCK_SNARE" => ("block.note_block.snare", REFERENCE_DESC),
+        "NOTE_BLOCK_FLUTE" => ("block.note_block.flute", REFERENCE_DESC),
+        "NOTE_BLOCK_GUITAR" => ("block.note_block.guitar", REFERENCE_DESC),
+        "NOTE_BLOCK_CHIME" => ("block.note_block.chime", REFERENCE_DESC),
+        "NOTE_BLOCK_XYLOPHONE" => ("block.note_block.xylophone", REFERENCE_DESC),
+        "NOTE_BLOCK_IRON_XYLOPHONE" => ("block.note_block.iron_xylophone", REFERENCE_DESC),
+        "NOTE_BLOCK_COW_BELL" => ("block.note_block.cow_bell", REFERENCE_DESC),
+        "NOTE_BLOCK_DIDGERIDOO" => ("block.note_block.didgeridoo", REFERENCE_DESC),
+        "NOTE_BLOCK_BIT" => ("block.note_block.bit", REFERENCE_DESC),
+        "NOTE_BLOCK_BANJO" => ("block.note_block.banjo", REFERENCE_DESC),
+        "NOTE_BLOCK_PLING" => ("block.note_block.pling", REFERENCE_DESC),
+        "NOTE_BLOCK_IMITATE_ZOMBIE" => ("block.note_block.imitate.zombie", REFERENCE_DESC),
+        "NOTE_BLOCK_IMITATE_SKELETON" => ("block.note_block.imitate.skeleton", REFERENCE_DESC),
+        "NOTE_BLOCK_IMITATE_CREEPER" => ("block.note_block.imitate.creeper", REFERENCE_DESC),
+        "NOTE_BLOCK_IMITATE_ENDER_DRAGON" => ("block.note_block.imitate.ender_dragon", REFERENCE_DESC),
+        "NOTE_BLOCK_IMITATE_WITHER_SKELETON" => ("block.note_block.imitate.wither_skeleton", REFERENCE_DESC),
+        "NOTE_BLOCK_IMITATE_PIGLIN" => ("block.note_block.imitate.piglin", REFERENCE_DESC),
+        "UI_BUTTON_CLICK" => ("ui.button.click", REFERENCE_DESC),
         "SAND_BREAK" => ("block.sand.break", SOUND_DESC),
         "SHULKER_OPEN" => ("entity.shulker.open", SOUND_DESC),
         "SLIME_BLOCK_PLACE" => ("block.slime_block.place", SOUND_DESC),
