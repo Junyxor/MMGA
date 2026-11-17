@@ -1787,6 +1787,9 @@ impl HostApi for FmlLoader {
         ) {
             return Some(value);
         }
+        if let Some(value) = crate::deferred_holders::call(rt, &mut self.state.registries, member, is_static, args) {
+            return Some(value);
+        }
         if let Some(value) = crate::blocks::call(rt, &mut self.state.registries, member, is_static, args) {
             return Some(value);
         }

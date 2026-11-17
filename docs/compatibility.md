@@ -6,6 +6,7 @@
 
 - GuideME 的 `DeferredRegister.Items.registerItem(name, factory, properties)` 已实现真实延迟 supplier，注册阶段才调用工厂，原 properties 引用及其后续修改保留。两个先失败后通过的 VM 测试覆盖时机、注册对象、null 工厂异常。GuideME 构造完成，AE2 自身服务端构造首次进入，当前停在 `ThreadLocal.<init>()`（`AppEngBase.<init>`）；组合注册/setup 尚未到达。
 - Create 使用的 RESPAWN_ANCHOR / TARGET 按官方定义保存真实 registry 值、单方块全部状态（5 / 16 种）、默认状态、charges/power 属性、硬度/抗爆/工具要求/光照。4 项回归验证不可变状态转换和 registry 查找；全局状态 ID、完整方块枚举、未实现形状/世界操作明确失败。原 jar 越过 `Blocks.RESPAWN_ANCHOR`，推进到 Registrate 的 `DeferredHolder.getKey()`；仍在 Create 构造，注册/setup 未到达。
+- DeferredHolder 的 key/id/bound 状态与 factory、受保护构造器已保留真实引用，Registrate 子类不丢自身字段。4 项回归覆盖未绑定元数据、注册后绑定、异常和 subclass 构造。Create 越过 `getKey` 与 `DeferredHolder.<init>(ResourceKey)`，下一个阻塞是 `MarkerManager.getMarker`（Registrate `DebugMarkers.marker`）；仍在构造阶段。
 
 最新验证：**2026-11-17，Windows x86_64，Minecraft 1.21.1 / NeoForge 21.1.266**。实现检查点 `a417383`，Rust `1.98.0`，Java 21。后续文档提交不改变这次探测的代码。三个 crate 仍为 `mmga-classfile`、`mmga-runtime`、`mmga-neoforge`；输入均为官方发布的原始 jar，未修改、未针对桩 API 重编译。
 

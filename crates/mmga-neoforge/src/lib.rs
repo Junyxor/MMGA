@@ -13,6 +13,7 @@ pub mod codecs;
 pub mod common_components;
 pub mod components;
 pub mod direction;
+pub mod deferred_holders;
 pub mod deferred_items;
 pub mod loader;
 pub mod minecraft;
