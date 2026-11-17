@@ -22,6 +22,7 @@ pub mod deferred_items;
 pub mod loader;
 pub mod logging_markers;
 pub mod minecraft;
+pub mod nf_stream_codecs;
 pub mod registries;
 pub mod resource_reload;
 pub mod sounds;

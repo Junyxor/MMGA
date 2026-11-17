@@ -1879,6 +1879,9 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::components::call(rt, linked, self, member, is_static, args) {
             return Some(value);
         }
+        if let Some(value) = crate::nf_stream_codecs::call(rt, linked, self, member, is_static, args) {
+            return Some(value);
+        }
         if let Some(value) = crate::codecs::call(rt, linked, self, member, is_static, args) {
             return Some(value);
         }
