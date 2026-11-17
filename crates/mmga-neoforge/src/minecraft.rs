@@ -3392,12 +3392,21 @@ fn call_guava_multimap(rt: &mut Rt, recv: V, name: &str, args: &[V]) -> Option<V
 }
 
 pub fn new_resource_key(rt: &mut Rt, registry: &str, location: &str) -> V {
-    rt.new_pinned_handle(
+    // Official ResourceKey.create interns the (registry, location) pair. Identity
+    // comparisons are observable through DeferredHolder.is(ResourceKey).
+    // Host API handles are pinned already, so this cache shares their lifetime.
+    let tag = format!("{registry}|{location}");
+    if let Some(key) = rt.get_static("mmga/resource_keys", &tag) {
+        return key;
+    }
+    let key = rt.new_pinned_handle(
         "net/minecraft/resources/ResourceKey",
         "resource_key",
         0,
-        format!("{registry}|{location}"),
-    )
+        &tag,
+    );
+    rt.put_static("mmga/resource_keys", &tag, key);
+    key
 }
 
 fn new_tag_key(rt: &mut Rt, registry: &str, location: &str) -> V {

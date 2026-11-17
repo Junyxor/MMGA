@@ -171,13 +171,7 @@ fn intern_location(rt: &mut Rt, location: &str) -> V {
     value
 }
 fn intern_key(rt: &mut Rt, registry: &str, location: &str) -> V {
-    let tag = format!("{registry}|{location}");
-    if let Some(value) = rt.get_static("mmga/deferred_resource_keys", &tag) {
-        return value;
-    }
-    let value = crate::minecraft::new_resource_key(rt, registry, location);
-    rt.put_static("mmga/deferred_resource_keys", &tag, value);
-    value
+    crate::minecraft::new_resource_key(rt, registry, location)
 }
 fn holder_key(rt: &mut Rt, registries: &RegistryStore, id: u64) -> V {
     if let Some(value) = rt.get_static("mmga/deferred_holder_keys", &id.to_string()) {
@@ -224,7 +218,15 @@ mod tests {
             is_static: bool,
             args: &[V],
         ) -> Option<V> {
-            super::call(rt, &mut self.0, member, is_static, args)
+            super::call(rt, &mut self.0, member, is_static, args).or_else(|| {
+                crate::minecraft::call_keys_authlib_and_libs(
+                    rt,
+                    &mut self.0,
+                    member,
+                    is_static,
+                    args,
+                )
+            })
         }
     }
     fn invoke(ctx: &mut ExecCtx<'_>, owner: &str, name: &str, desc: &str, args: &[V]) -> V {
@@ -421,6 +423,55 @@ mod tests {
             ),
             V::TRUE
         );
+    }
+
+    #[test]
+    fn independently_created_resource_keys_share_canonical_holder_identity() {
+        let mut rt = Rt::new();
+        let linked = LinkedSpace::new();
+        let mut host = HolderHost::default();
+        let registry = new_resource_key(&mut rt, "minecraft:root", "minecraft:item");
+        let location = rt.new_pinned_handle(
+            "net/minecraft/resources/ResourceLocation",
+            "resource_location",
+            0,
+            "example:canonical",
+        );
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        let method=MemberRef::new("net/minecraft/resources/ResourceKey","create","(Lnet/minecraft/resources/ResourceKey;Lnet/minecraft/resources/ResourceLocation;)Lnet/minecraft/resources/ResourceKey;");
+        let first = invoke_member(&mut ctx, op::INVOKESTATIC, &method, &[registry, location]);
+        let second = invoke_member(&mut ctx, op::INVOKESTATIC, &method, &[registry, location]);
+        assert!(ctx.rt.pending_exception.is_none());
+        assert_eq!(
+            first, second,
+            "ResourceKey.create must intern equal registry/location tuples"
+        );
+        let holder=invoke_member(&mut ctx,op::INVOKESTATIC,&MemberRef::new(DEFERRED,"create","(Lnet/minecraft/resources/ResourceKey;Lnet/minecraft/resources/ResourceLocation;)Lnet/neoforged/neoforge/registries/DeferredHolder;"),&[registry,location]);
+        let key = invoke(
+            &mut ctx,
+            DEFERRED,
+            "getKey",
+            "()Lnet/minecraft/resources/ResourceKey;",
+            &[holder],
+        );
+        assert_eq!(key, first);
+        assert_eq!(
+            invoke(
+                &mut ctx,
+                DEFERRED,
+                "is",
+                "(Lnet/minecraft/resources/ResourceKey;)Z",
+                &[holder, second]
+            ),
+            V::TRUE
+        );
+        let other = new_resource_key(ctx.rt, "minecraft:block", "example:canonical");
+        assert_ne!(other, first);
     }
 
     #[test]
