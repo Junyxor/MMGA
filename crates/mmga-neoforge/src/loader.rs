@@ -1675,6 +1675,9 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::dfu::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
+        if let Some(value) = crate::string_representable::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
         if let Some(value) = crate::capabilities::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
@@ -1794,6 +1797,9 @@ impl HostApi for FmlLoader {
             return Some(value);
         }
         if let Some(value) = crate::blocks::call(rt, &mut self.state.registries, member, is_static, args) {
+            return Some(value);
+        }
+        if let Some(value) = crate::string_representable::call(rt, linked, self, member, is_static, args) {
             return Some(value);
         }
         if let Some(value) = crate::dfu::call(rt, linked, self, member, is_static, args) {
@@ -2021,6 +2027,9 @@ impl HostApi for FmlLoader {
             return true;
         }
         if crate::blocks::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::string_representable::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::dfu::is_subtype(sub_class, super_class) {
