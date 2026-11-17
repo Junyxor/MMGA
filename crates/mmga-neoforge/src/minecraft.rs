@@ -2321,6 +2321,18 @@ pub fn call_keys_authlib_and_libs(
     let name = member.name.as_str();
     let desc = member.desc.as_str();
 
+    if let Some(value) = crate::registry_holders::call(rt, registries, member, is_static, args) {
+        return Some(value);
+    }
+    // Registry mutations are delegated completely, so unsupported overloads
+    // cannot fall through to the old argument-count-based registration path.
+    if owner == "net/neoforged/neoforge/registries/RegistryBuilder"
+        || (owner == "net/minecraft/core/Registry" && is_static && matches!(name, "register" | "registerForHolder"))
+        || (!is_static && name == "register" && matches!(owner, "net/minecraft/core/Registry" | "net/minecraft/core/DefaultedRegistry" | "net/minecraft/core/MappedRegistry" | "net/minecraft/core/WritableRegistry"))
+    {
+        return None;
+    }
+
     // 1. `net/minecraft/resources/ResourceKey`
     if owner == "net/minecraft/resources/ResourceKey" {
         if is_static && name == "createRegistryKey" {

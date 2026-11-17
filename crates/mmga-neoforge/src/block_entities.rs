@@ -106,11 +106,6 @@ pub fn get_static_field(
     rt.put_field(value, "factory", factory);
     rt.put_field(value, "$definition", field);
     rt.put_field(value, "$id", id);
-    let holder = rt.new_instance("net/minecraft/core/Holder$Reference", 0);
-    let key = crate::minecraft::new_resource_key(rt, REGISTRY, definition.id);
-    rt.put_field(holder, "$key", key);
-    rt.put_field(holder, "$value", value);
-    rt.put_field(value, "builtInRegistryHolder", holder);
     registries.register_direct(
         rt,
         REGISTRY,
@@ -123,6 +118,9 @@ pub fn get_static_field(
             ..ContentProperties::default()
         },
     );
+    if rt.pending_exception.is_some() { return Some(V::NULL); }
+    let holder = registries.canonical_reference(REGISTRY, definition.id)?;
+    rt.put_field(value, "builtInRegistryHolder", holder);
     rt.put_static(owner, name, value);
     Some(value)
 }

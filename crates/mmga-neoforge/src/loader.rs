@@ -560,8 +560,27 @@ impl FmlLoader {
             self.flush_registry(rt, linked, key)?;
             self.state.registries.finish_registry_event(key);
         }
-        self.state.registries.freeze();
+        self.state.registries.freeze_checked(rt);
+        raise_if_pending(rt, "freezing registries")?;
+        self.drain_registry_callbacks(rt, linked)?;
         Ok(())
+    }
+
+    fn drain_registry_callbacks(&mut self, rt: &mut Rt, linked: &LinkedSpace) -> Result<(), String> {
+        for _ in 0..1024 {
+            if let Some(error) = rt.pending_exception {
+                return Err(format!("dispatching registry callbacks: {}", rt.exception_summary(V::R(error))));
+            }
+            let callbacks = self.state.registries.take_reference_callbacks();
+            if callbacks.is_empty() { return Ok(()); }
+            let mut ctx = ExecCtx { rt, linked, host: self, depth: 0 };
+            crate::registry_holders::execute_callbacks(&mut ctx, callbacks);
+            if let Some(error) = ctx.rt.pending_exception {
+                return Err(format!("dispatching registry callbacks: {}", ctx.rt.exception_summary(V::R(error))));
+            }
+        }
+        rt.throw_exception("java/lang/IllegalStateException", "Registry callback dispatch exceeds VM limit");
+        Err("Registry callback dispatch exceeds VM limit".into())
     }
 
     fn flush_registry(
@@ -608,6 +627,8 @@ impl FmlLoader {
                 value,
                 props,
             );
+            raise_if_pending(rt, &format!("binding registry entry `{}`", item.full_id))?;
+            self.drain_registry_callbacks(rt, linked)?;
         }
         Ok(())
     }
@@ -1739,6 +1760,9 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::dimension_type::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
+        if let Some(value) = crate::registry_holders::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
         if let Some(value) = crate::direction::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
@@ -1968,6 +1992,10 @@ impl HostApi for FmlLoader {
             return Some(value);
         }
         if let Some(value) = crate::data_maps::call(rt, member, is_static, args) {
+            return Some(value);
+        }
+        if let Some(value) = crate::registry_holders::call(rt, &mut self.state.registries, member, is_static, args) {
+            if self.drain_registry_callbacks(rt, linked).is_err() { return Some(V::NULL); }
             return Some(value);
         }
         {
@@ -2290,6 +2318,9 @@ impl HostApi for FmlLoader {
             return true;
         }
         if crate::data_maps::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::registry_holders::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::number_providers::is_subtype(sub_class, super_class) {
@@ -3424,3 +3455,13 @@ side = "BOTH"
         assert!(ctx.rt.pending_exception.is_none());
     }
 }
+    #[test]
+    fn registry_host_errors_keep_the_original_pending_exception_at_the_vm_boundary() {
+        let mut prepared=PreparedLoad::from_jars(Vec::new(),true).unwrap();let mut rt=Rt::new();
+        let registry=rt.new_pinned_handle("net/minecraft/core/DefaultedRegistry","registry",0,"test:unconfigured");
+        let value=rt.new_instance("test/Value",0);
+        let mut ctx=ExecCtx{rt:&mut rt,linked:&prepared.linked,host:&mut prepared.loader,depth:0};
+        invoke_member(&mut ctx,op::INVOKEINTERFACE,&MemberRef::new("net/minecraft/core/DefaultedRegistry","createIntrusiveHolder","(Ljava/lang/Object;)Lnet/minecraft/core/Holder$Reference;"),&[registry,value]);
+        let error=ctx.rt.take_exception().expect("host-call errors must remain pending until Java handles them");
+        assert!(ctx.rt.exception_summary(error).contains("UnsupportedOperationException"));
+    }

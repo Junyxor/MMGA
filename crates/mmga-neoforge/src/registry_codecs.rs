@@ -59,12 +59,15 @@ pub fn call(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: &[
         return None;
     };
     let registry_id = registry_id.to_owned();
-    if member.name == "decodeHolder" {
+    if matches!(member.name.as_str(), "decodeHolder" | "decode") {
         let Some(holder) = get_holder(ctx, registry, value) else {
             return Some(V::NULL);
         };
         if holder.is_null() {
-            if registry_id.starts_with("minecraft:") || registry_id.starts_with("neoforge:") {
+            let location = ctx.rt.handle_of(value)?.2.to_owned();
+            if (registry_id.starts_with("minecraft:") || registry_id.starts_with("neoforge:"))
+                && (location.starts_with("minecraft:") || location.starts_with("neoforge:"))
+            {
                 return Some(ctx.rt.throw_exception(
                     "java/lang/UnsupportedOperationException",
                     &format!(
@@ -72,7 +75,6 @@ pub fn call(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: &[
                     ),
                 ));
             }
-            let location = ctx.rt.handle_of(value)?.2.to_owned();
             return Some(error(ctx, &format!("Unknown registry key in ResourceKey[minecraft:root / {registry_id}]: {location}")));
         }
         let verified = verify_reference(ctx, registry, &registry_id, holder);
@@ -80,92 +82,63 @@ pub fn call(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: &[
             return Some(V::NULL);
         }
         match verified {
-            Ok(_) => return Some(reference_result(ctx, registry, holder, holder)),
+            Ok(_) => {
+                let decoded = if member.name == "decodeHolder" {
+                    holder
+                } else {
+                    invoke_member(
+                        ctx,
+                        mmga_classfile::op::INVOKEINTERFACE,
+                        &MemberRef::new(
+                            "net/minecraft/core/Holder",
+                            "value",
+                            "()Ljava/lang/Object;",
+                        ),
+                        &[holder],
+                    )
+                };
+                if ctx.rt.pending_exception.is_some() {
+                    return Some(V::NULL);
+                }
+                return Some(reference_result(ctx, registry, holder, decoded));
+            }
             Err(message) => return Some(error(ctx, &message)),
         }
     }
-    if member.name == "encodeHolder" {
-        if ctx.rt.class_of(value) != Some("net/minecraft/core/Holder$Reference") {
+    if matches!(member.name.as_str(), "encodeHolder" | "encode") {
+        let reference = if member.name == "encodeHolder" {
+            value
+        } else {
+            invoke_member(
+                ctx,
+                mmga_classfile::op::INVOKEINTERFACE,
+                &MemberRef::new(
+                    REGISTRY,
+                    "wrapAsHolder",
+                    "(Ljava/lang/Object;)Lnet/minecraft/core/Holder;",
+                ),
+                &[registry, value],
+            )
+        };
+        if ctx.rt.pending_exception.is_some() {
+            return Some(V::NULL);
+        }
+        if ctx.rt.class_of(reference) != Some("net/minecraft/core/Holder$Reference") {
             return Some(error(
                 ctx,
                 &format!("Cannot serialize direct holder in registry {registry_id}"),
             ));
         }
-        let verified = verify_reference(ctx, registry, &registry_id, value);
+        let verified = verify_reference(ctx, registry, &registry_id, reference);
         if ctx.rt.pending_exception.is_some() {
             return Some(V::NULL);
         }
         return Some(match verified {
-            Ok(location) => reference_result(ctx, registry, value, location),
+            Ok(location) => reference_result(ctx, registry, reference, location),
             Err(message) => error(ctx, &message),
         });
     }
-    if member.name == "decode" {
-        let ("resource_location", _, location, _) = ctx.rt.handle_of(value)? else {
-            return None;
-        };
-        let location = location.to_owned();
-        let decoded = invoke_member(
-            ctx,
-            mmga_classfile::op::INVOKEINTERFACE,
-            &MemberRef::new(
-                REGISTRY,
-                "get",
-                "(Lnet/minecraft/resources/ResourceLocation;)Ljava/lang/Object;",
-            ),
-            &[registry, value],
-        );
-        if ctx.rt.pending_exception.is_some() {
-            return Some(V::NULL);
-        }
-        if decoded.is_null() {
-            if registry_id.starts_with("minecraft:") || registry_id.starts_with("neoforge:") {
-                return Some(ctx.rt.throw_exception("java/lang/UnsupportedOperationException",&format!("MMGA cannot determine missing entry {location} in incomplete built-in registry {registry_id}")));
-            }
-            return Some(error(ctx,&format!("Unknown registry key in ResourceKey[minecraft:root / {registry_id}]: {location}")));
-        }
-        // A DefaultedRegistry may return its fallback for an absent name; the
-        // official reference-holder codec must still reject that absent name.
-        let actual = invoke_member(
-            ctx,
-            mmga_classfile::op::INVOKEINTERFACE,
-            &MemberRef::new(
-                REGISTRY,
-                "getKey",
-                "(Ljava/lang/Object;)Lnet/minecraft/resources/ResourceLocation;",
-            ),
-            &[registry, decoded],
-        );
-        if ctx.rt.pending_exception.is_some() {
-            return Some(V::NULL);
-        }
-        if !ctx.rt.val_eq(actual, value) {
-            return Some(error(ctx,&format!("Unknown registry key in ResourceKey[minecraft:root / {registry_id}]: {location}")));
-        }
-        return Some(success(ctx, decoded));
-    }
-    if member.name == "encode" {
-        let name = invoke_member(
-            ctx,
-            mmga_classfile::op::INVOKEINTERFACE,
-            &MemberRef::new(
-                REGISTRY,
-                "getKey",
-                "(Ljava/lang/Object;)Lnet/minecraft/resources/ResourceLocation;",
-            ),
-            &[registry, value],
-        );
-        if ctx.rt.pending_exception.is_some() {
-            return Some(V::NULL);
-        }
-        if name.is_null() {
-            return Some(error(
-                ctx,
-                &format!("Unregistered value in registry {registry_id}"),
-            ));
-        }
-        return Some(success(ctx, name));
-    }
+
     None
 }
 fn get_holder(ctx: &mut ExecCtx<'_>, registry: V, location: V) -> Option<V> {
@@ -533,14 +506,35 @@ mod tests {
             "Lcom/mojang/serialization/JsonOps;",
         );
         let input = json(&mut ctx, "\"test:registered\"");
+        let result = invoke(&mut ctx, CODEC, "parse", "(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;", &[codec, ops, input]);
+        assert!(ctx.rt.pending_exception.is_none());
+        assert_eq!(
+            invoke(
+                &mut ctx,
+                "com/mojang/serialization/DataResult",
+                "isError",
+                "()Z",
+                &[result]
+            ),
+            V::TRUE
+        );
+        let builtin = ctx
+            .rt
+            .new_pinned_handle(REGISTRY, "registry", 0, "minecraft:item");
+        let codec = invoke(
+            &mut ctx,
+            REGISTRY,
+            "holderByNameCodec",
+            "()Lcom/mojang/serialization/Codec;",
+            &[builtin],
+        );
+        let input = json(&mut ctx, "\"minecraft:unmodeled\"");
         invoke(&mut ctx, CODEC, "parse", "(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;", &[codec, ops, input]);
         let error = ctx.rt.take_exception().unwrap();
-        let message = ctx.rt.exception_summary(error);
-        assert!(
-            message.contains("UnsupportedOperationException"),
-            "{message}"
-        );
-        assert!(message.contains("getHolder"), "{message}");
+        assert!(ctx
+            .rt
+            .exception_summary(error)
+            .contains("UnsupportedOperationException"));
     }
 
     #[test]

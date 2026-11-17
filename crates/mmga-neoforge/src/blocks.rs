@@ -401,11 +401,6 @@ fn block_constant(rt: &mut Rt, registries: &mut RegistryStore, definition: &Bloc
     };
     rt.put_field(block, "stateDefinition", state_definition);
     rt.put_field(block, "defaultBlockState", first);
-    let holder = rt.new_instance("net/minecraft/core/Holder$Reference", 0);
-    let key = crate::minecraft::new_resource_key(rt, "minecraft:block", definition.id);
-    rt.put_field(holder, "$key", key);
-    rt.put_field(holder, "$value", block);
-    rt.put_field(block, "builtInRegistryHolder", holder);
     registries.register_direct(
         rt,
         "minecraft:block",
@@ -423,6 +418,9 @@ fn block_constant(rt: &mut Rt, registries: &mut RegistryStore, definition: &Bloc
             ..ContentProperties::default()
         },
     );
+    if rt.pending_exception.is_some() { return V::NULL; }
+    let Some(holder) = registries.canonical_reference("minecraft:block", definition.id) else { return V::NULL; };
+    rt.put_field(block, "builtInRegistryHolder", holder);
     rt.put_static(BLOCKS, definition.name, block);
     block
 }

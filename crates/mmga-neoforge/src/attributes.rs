@@ -73,10 +73,8 @@ pub fn get_static_field(
             ..ContentProperties::default()
         },
     );
-    let holder = rt.new_instance("net/minecraft/core/Holder$Reference", 0);
-    let key = crate::minecraft::new_resource_key(rt, REGISTRY, &id);
-    rt.put_field(holder, "$value", attribute);
-    rt.put_field(holder, "$key", key);
+    if rt.pending_exception.is_some() { return Some(V::NULL); }
+    let holder = registries.canonical_reference(REGISTRY, &id)?;
     rt.put_static(owner, name, holder);
     Some(holder)
 }

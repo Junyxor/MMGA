@@ -158,11 +158,7 @@ pub fn get_static_field(
     } else {
         // Match Registry.registerForHolder: the holder owns an actual registered
         // value and resource key, not merely an identifier-shaped placeholder.
-        let holder = rt.new_instance("net/minecraft/core/Holder$Reference", 0);
-        let key = crate::minecraft::new_resource_key(rt, SOUND_REGISTRY, &full_id);
-        rt.put_field(holder, "$key", key);
-        rt.put_field(holder, "$value", sound);
-        holder
+        registries.canonical_reference(SOUND_REGISTRY, &full_id)?
     };
     rt.put_static(owner, name, field_value);
     Some(field_value)

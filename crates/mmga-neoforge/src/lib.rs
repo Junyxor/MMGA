@@ -43,6 +43,7 @@ pub mod guava_multimaps;
 pub mod object_double_maps;
 pub mod registries;
 pub mod registry_codecs;
+pub mod registry_holders;
 pub mod resource_reload;
 pub mod push_reaction;
 pub mod sounds;

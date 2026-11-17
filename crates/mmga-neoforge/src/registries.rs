@@ -124,6 +124,10 @@ pub struct RegistryStore {
     /// Registry event passes already completed, even before the global freeze.
     pub completed_registries: BTreeSet<String>,
     pub frozen: bool,
+    /// Real registered and preregistration intrusive Holder.Reference objects.
+    /// The configuration is present only after the registry builder supplied it.
+    pub reference_states: BTreeMap<String, crate::registry_holders::ReferenceState>,
+    pub reference_callbacks: Vec<crate::registry_holders::RegistryCallbackInvocation>,
 }
 
 impl Default for RegistryStore {
@@ -144,6 +148,8 @@ impl RegistryStore {
             custom_registries: Vec::new(),
             completed_registries: BTreeSet::new(),
             frozen: false,
+            reference_states: BTreeMap::new(),
+            reference_callbacks: Vec::new(),
         };
         store.seed_vanilla_defaults();
         store
@@ -442,24 +448,8 @@ impl RegistryStore {
         val: V,
         props: ContentProperties,
     ) {
-        rt.pin(val);
-        let reg = canonical_registry_key(registry_key);
-        self.entries.entry(reg.clone()).or_default().insert(
-            full_id.to_owned(),
-            RegisteredEntry {
-                registry: reg.clone(),
-                id: full_id.to_owned(),
-                mod_id: mod_id.to_owned(),
-                value: val,
-                properties: props,
-            },
-        );
-        // Resolve any DeferredHolders pointing at `(reg, full_id)`
-        for (_, (h_reg, h_id, slot)) in self.holders.iter_mut() {
-            if h_reg == &reg && h_id == full_id {
-                *slot = Some(val);
-            }
-        }
+        let info = crate::registry_holders::built_in_registration_info(rt);
+        self.register_reference_value(rt, registry_key, full_id, mod_id, val, props, info);
     }
 
     pub fn lookup(&self, registry_key: &str, full_id: &str) -> Option<&RegisteredEntry> {
