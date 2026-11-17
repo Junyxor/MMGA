@@ -19,6 +19,7 @@
 - JDK EnumSet 从真实 `values()` universe 构建，保留常量 identity/ordinal 顺序，空 Collection 与空 EnumSet 的 copy 规则分别验证；不可变 wrapper 保留实时 delegate，addAll 的中途异常保留之前修改。四项回归通过，原始 Create jar 的独立 `CommonMetal.<clinit>` 最小复现已通过（17 种金属，真实 EnumSet copy 路径）；完整 Create 在事件目录补齐后推进到 `Tags.Blocks.RELOCATION_NOT_SUPPORTED`，仍未完成构造。
 - 事件 host 读取实际 linked 类的 Event/IModBusEvent/ICancellableEvent/abstract 关系，保留 supplied event 原对象，正确匹配具体类与祖先 Consumer；Event 构造和默认取消字段按官方执行。三项 VM 回归、七项 bus 回归及 source catalog 唯一性/完整父链/无环约束通过；实际引用的官方外部事件逐项核对。Curios setup 推进至 FML `ModLoader.postEventWrapContainerInModOrder(Event)`。Mekanism/Create/AE2 先前构造路径均复测恢复；额外取消副作用未实现的交互事件明确拒绝。客户端事件能登记监听器不等于客户端运行或渲染支持。
 - BlockBehaviour.Properties 的默认字段、真实 callback/default sound/feature flags、强度与抗爆 clamp、输入 reference、谓词和链式设置按官方 bytecode 实现；MapColor 静态 identity 缺陷经失败回归确认并修复。两个 builder 的状态独立，world predicate 真正调用 state API，不返回猜测结果。两项回归通过，原 AE2 越过 Properties.of 和方块定义，下一处为 `Codec.unboundedMap`（`AEComponents.lambda$static$3`）；仍在构造，注册/setup/tick 未到达。证据 `.local/probes/ae2-block-properties.log`。
+- `Registry.holderByNameCodec` 构造真实 DFU 映射，保留 registry，解码调用真实 getHolder，编码检查引用/key/owner/绑定和 registrationInfo；任何尚未实现的引用操作明确失败，不新造一个假 holder。两个新回归先失败后通过、registry codec 共四项通过；原 Mekanism 越过此 codec 构造，下一处 `DefaultedRegistry.createIntrusiveHolder(Object)`（`Chemical.<init>`），仍未构造完成。
 
 ## 2026-11-17 持续修复增量（进行中）
 
