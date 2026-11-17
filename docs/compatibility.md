@@ -11,6 +11,7 @@
 - StringRepresentable 枚举 codec 已按真实 supplier、名称映射、16 元素阈值、byName 默认值和 compressed ordinal 规则执行，4 项 VM+JSON 回归通过；未知名称返回 DataResult error。Mekanism 越过 `RelativeSide`，推进到 `Function.identity()`（`TransmissionType.<clinit>`）；随后补齐 identity 后再推进至 `DyeColor.BLACK`，仍在构造。
 - JDK `Function.identity` 保持对象/null 原样返回；ThreadLocal 按执行线程保存值并支持 initialValue/withInitial/set/remove，未模拟 Thread.start。两个回归先失败后通过，包括跨原生线程的状态隔离。AE2 越过 ThreadLocal 构造，下一阻塞 `SidedThreadGroups.SERVER`；GuideME 构造已完成，注册/setup 未到达。
 - Log4j 2.22.1 MarkerManager/Marker 按真实缓存、名称、父链、containment 和异常实现，4 项回归通过。Create 越过 DebugMarkers，推进到 Registrate 的 `Collection.forEach(Consumer)`（HashMultimap 返回的 Set）；日志输出格式和日志级别未被伪造为有效。
+- Set 的 `Collection.forEach` 现在实际调用 Consumer，null 消费者、回调异常和结构修改保持真实失败语义，两项回归通过。Create 越过 Registrate.accept 回调分发，下一阻塞为 `BlockEntityType.COMMAND_BLOCK`（`AllDisplaySources.<clinit>`）；仍在构造。
 
 最新验证：**2026-11-17，Windows x86_64，Minecraft 1.21.1 / NeoForge 21.1.266**。实现检查点 `a417383`，Rust `1.98.0`，Java 21。后续文档提交不改变这次探测的代码。三个 crate 仍为 `mmga-classfile`、`mmga-runtime`、`mmga-neoforge`；输入均为官方发布的原始 jar，未修改、未针对桩 API 重编译。
 

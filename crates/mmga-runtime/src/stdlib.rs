@@ -1588,7 +1588,7 @@ fn dispatch_java_util(
 
         match kind_tag {
             1 => return dispatch_list_instance(ctx, recv, name, desc, &args[1..]),
-            2 => return dispatch_set_instance(ctx, recv, name, &args[1..]),
+            2 => return dispatch_set_instance(ctx, recv, name, desc, &args[1..]),
             3 => return dispatch_map_instance(ctx, recv, name, &args[1..]),
             4 => return dispatch_iter_instance(ctx.rt, recv, name),
             5 => return dispatch_stream_instance(ctx, recv, name, &args[1..]),
@@ -1899,7 +1899,13 @@ fn dispatch_list_instance(
     })
 }
 
-fn dispatch_set_instance(ctx: &mut ExecCtx<'_>, recv: V, name: &str, args: &[V]) -> Option<V> {
+fn dispatch_set_instance(
+    ctx: &mut ExecCtx<'_>,
+    recv: V,
+    name: &str,
+    desc: &str,
+    args: &[V],
+) -> Option<V> {
     Some(match name {
         "size" => {
             let n = match ctx.rt.get_obj(recv).map(|o| &o.data) {
@@ -1933,6 +1939,7 @@ fn dispatch_set_instance(ctx: &mut ExecCtx<'_>, recv: V, name: &str, args: &[V])
                 if let Some(Data::Set(v)) = ctx.rt.get_obj_mut(recv).map(|o| &mut o.data) {
                     v.push(args[0]);
                 }
+                bump_set_modification(ctx.rt, recv);
                 V::TRUE
             }
         }
@@ -1945,6 +1952,7 @@ fn dispatch_set_instance(ctx: &mut ExecCtx<'_>, recv: V, name: &str, args: &[V])
                 if let Some(Data::Set(v)) = ctx.rt.get_obj_mut(recv).map(|o| &mut o.data) {
                     v.remove(pos);
                 }
+                bump_set_modification(ctx.rt, recv);
                 V::TRUE
             } else {
                 V::FALSE
@@ -1953,6 +1961,49 @@ fn dispatch_set_instance(ctx: &mut ExecCtx<'_>, recv: V, name: &str, args: &[V])
         "clear" => {
             if let Some(Data::Set(v)) = ctx.rt.get_obj_mut(recv).map(|o| &mut o.data) {
                 v.clear();
+            }
+            bump_set_modification(ctx.rt, recv);
+            V::Void
+        }
+        "forEach" if desc == "(Ljava/util/function/Consumer;)V" => {
+            let consumer = *args.first()?;
+            if consumer.is_null() {
+                return Some(ctx.rt.throw_exception(
+                    "java/lang/NullPointerException",
+                    "Collection.forEach consumer",
+                ));
+            }
+            let items = match ctx.rt.get_obj(recv).map(|o| &o.data) {
+                Some(Data::Set(values)) => values.clone(),
+                _ => return None,
+            };
+            let expected = set_modification(ctx.rt, recv);
+            for item in &items {
+                // HashSet inherits Iterable.forEach: its iterator checks
+                // structural modification on next(), before the next callback.
+                let unchanged = match ctx.rt.get_obj(recv).map(|o| &o.data) {
+                    Some(Data::Set(current)) => current == &items,
+                    _ => false,
+                };
+                if expected != set_modification(ctx.rt, recv) || !unchanged {
+                    return Some(ctx.rt.throw_exception(
+                        "java/util/ConcurrentModificationException",
+                        "Set modified during forEach",
+                    ));
+                }
+                crate::vm::invoke_member(
+                    ctx,
+                    mmga_classfile::op::INVOKEINTERFACE,
+                    &MemberRef::new(
+                        "java/util/function/Consumer",
+                        "accept",
+                        "(Ljava/lang/Object;)V",
+                    ),
+                    &[consumer, *item],
+                );
+                if ctx.rt.pending_exception.is_some() {
+                    return Some(V::NULL);
+                }
             }
             V::Void
         }
@@ -1974,6 +2025,109 @@ fn dispatch_set_instance(ctx: &mut ExecCtx<'_>, recv: V, name: &str, args: &[V])
         }
         _ => return None,
     })
+}
+
+fn set_modification(rt: &Rt, set: V) -> i64 {
+    rt.get_static("mmga/set_modifications", &set.r().to_string())
+        .map_or(0, V::j)
+}
+
+fn bump_set_modification(rt: &mut Rt, set: V) {
+    let next = set_modification(rt, set).wrapping_add(1);
+    rt.put_static("mmga/set_modifications", &set.r().to_string(), V::J(next));
+}
+
+#[cfg(test)]
+mod collection_for_each_tests {
+    use super::*;
+    use crate::{HostApi, LinkedSpace};
+    use mmga_classfile::op;
+
+    #[derive(Default)]
+    struct ConsumerHost {
+        seen: Vec<V>,
+        mode: u8,
+        source: V,
+    }
+    impl HostApi for ConsumerHost {
+        fn get_static_field(
+            &mut self, _rt: &mut Rt, _owner: &str, _name: &str, _desc: &str,
+        ) -> Option<V> {
+            None
+        }
+        fn call_method(
+            &mut self, rt: &mut Rt, linked: &LinkedSpace, member: &MemberRef,
+            _is_static: bool, args: &[V],
+        ) -> Option<V> {
+            if member.owner != "java/util/function/Consumer" || member.name != "accept" {
+                return None;
+            }
+            self.seen.push(args[1]);
+            if self.mode == 1 {
+                return Some(rt.throw_exception("example/CallbackFailure", "stop"));
+            }
+            if self.mode == 2 && self.seen.len() == 1 {
+                let source = self.source;
+                let mut ctx = ExecCtx { rt, linked, host: self, depth: 0 };
+                for name in ["remove", "add"] {
+                    crate::vm::invoke_member(
+                        &mut ctx, op::INVOKEVIRTUAL,
+                        &MemberRef::new("java/util/Set", name, "(Ljava/lang/Object;)Z"),
+                        &[source, args[1]],
+                    );
+                }
+            }
+            Some(V::Void)
+        }
+    }
+    fn for_each(ctx: &mut ExecCtx<'_>, set: V, consumer: V) {
+        crate::vm::invoke_member(
+            ctx, op::INVOKEINTERFACE,
+            &MemberRef::new("java/util/Collection", "forEach", "(Ljava/util/function/Consumer;)V"),
+            &[set, consumer],
+        );
+    }
+
+    #[test]
+    fn registrate_set_for_each_invokes_every_consumer_and_checks_empty_null() {
+        let mut rt = Rt::new();
+        let linked = LinkedSpace::new();
+        let mut host = ConsumerHost::default();
+        let values = vec![rt.intern_str("first"), rt.intern_str("second")];
+        let set = rt.alloc("java/util/LinkedHashSet", 0, Data::Set(values.clone()));
+        let consumer = rt.new_instance("example/Consumer", 0);
+        {
+            let mut ctx = ExecCtx { rt: &mut rt, linked: &linked, host: &mut host, depth: 0 };
+            for_each(&mut ctx, set, consumer);
+            assert!(ctx.rt.pending_exception.is_none());
+        }
+        assert_eq!(host.seen, values);
+        let empty = rt.alloc("java/util/Set", 0, Data::Set(Vec::new()));
+        let mut ctx = ExecCtx { rt: &mut rt, linked: &linked, host: &mut host, depth: 0 };
+        for_each(&mut ctx, empty, V::NULL);
+        let error = ctx.rt.take_exception().unwrap();
+        assert!(ctx.rt.exception_summary(error).contains("NullPointerException"));
+    }
+
+    #[test]
+    fn set_for_each_stops_at_callback_exception_and_structural_mutation() {
+        for mode in [1, 2] {
+            let mut rt = Rt::new();
+            let linked = LinkedSpace::new();
+            let values = vec![rt.intern_str("first"), rt.intern_str("second")];
+            let set = rt.alloc("java/util/LinkedHashSet", 0, Data::Set(values));
+            let consumer = rt.new_instance("example/Consumer", 0);
+            let mut host = ConsumerHost { mode, source: set, ..ConsumerHost::default() };
+            {
+                let mut ctx = ExecCtx { rt: &mut rt, linked: &linked, host: &mut host, depth: 0 };
+                for_each(&mut ctx, set, consumer);
+                let error = ctx.rt.take_exception().unwrap();
+                let expected = if mode == 1 { "CallbackFailure" } else { "ConcurrentModificationException" };
+                assert!(ctx.rt.exception_summary(error).contains(expected));
+            }
+            assert_eq!(host.seen.len(), 1);
+        }
+    }
 }
 
 fn dispatch_map_instance(ctx: &mut ExecCtx<'_>, recv: V, name: &str, args: &[V]) -> Option<V> {
