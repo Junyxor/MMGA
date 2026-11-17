@@ -8,6 +8,7 @@ pub mod armor;
 pub mod attributes;
 pub mod attribute_modifier;
 pub mod blocks;
+pub mod block_entities;
 pub mod bus;
 pub mod capabilities;
 pub mod codecs;
