@@ -24,6 +24,7 @@
 - ExtraCodecs.NON_NEGATIVE_INT/POSITIVE_INT 真实整数边界和官方错误信息、static identity、encode 前验证经过失败后通过回归。事件分类收紧暴露并修复 Core/Backpacks 真实引用的外部事件目录缺项后，原始组合已恢复构造完成和 **60 项**注册，越过 NON_NEGATIVE_INT，下一处为 `Codec.unboundedMap`（`CookingLogic.<clinit>`，注册 `recipes_used`）。证据 `.local/probes/backpacks-integer-codec.log`；未宣称整个注册阶段或 setup 完成。
 - FML ordered post 真实执行“优先级外层、模组顺序内层”，保留 original event、active container 清理和原异常；三项 VM 回归先失败后通过，回调之后 Minecraft context 按官方回退。Curios 已越过 ordered post，执行 common setup 的排队任务后停在 `EntitySelectorOptions.register`；CommonSetup 尚未完成，最后完成阶段仍为 Registered。Core/Backpacks event-handler lambda 描述符按真实 jar 批量核查，新增目录项均核对官方 source。
 - DFU `unboundedMap` 实际执行 key/value codecs，保留不可变 Map、重复解码键错误、partial Map、missed input 和 original remainder，encode 调用真实 Map entries 与子 codec，未知 codec/Java callback 错误继续显式失败。两项新回归先失败后通过，DFU tests 共 20 项通过。Core/Backpacks 已进一步注册 **74 项**，下一处 `BaseFlowingFluid.Properties.<init>`（`xp_still`）；AE2 越过 map 后到 `Codec.dispatchMap`（`AEKey.<clinit>`），仍在构造。
+- VM 回调边界补齐：未知 callback、缺失 NativeLambda、null 不再静默返回 null；常规 user callback 按实际参数个数选择函数并经过 VM/Host 调用，多个含糊候选明确失败。两个回归先失败后通过（原路径一处 Rust index panic、一处错误地“成功”返回），runtime 共 **21 项通过**，避免把未执行的 enqueueWork 当作成功。
 
 ## 2026-11-17 持续修复增量（进行中）
 

@@ -468,25 +468,33 @@ pub fn invoke_closure(ctx: &mut ExecCtx<'_>, closure_v: V, sam_args: &[V]) -> V 
         _ => None,
     }) else {
         // Might be a regular user class implementing `Consumer` / `Supplier` / `Runnable`!
-        if !closure_v.is_null() {
-            if let Some(cls) = ctx.rt.class_of(closure_v).map(str::to_owned) {
-                for (mname, mdesc) in [
-                    ("accept", "(Ljava/lang/Object;)V"),
-                    ("get", "()Ljava/lang/Object;"),
-                    ("run", "()V"),
-                    ("apply", "(Ljava/lang/Object;)Ljava/lang/Object;"),
-                    ("test", "(Ljava/lang/Object;)Z"),
-                ] {
-                    if let Some(res) = ctx.linked.resolve_method(&cls, mname, mdesc) {
-                        let mut full = Vec::with_capacity(1 + sam_args.len());
-                        full.push(closure_v);
-                        full.extend_from_slice(sam_args);
-                        return invoke_resolved(ctx, res, &full);
-                    }
-                }
+        if closure_v.is_null() {
+            return ctx.rt.throw_exception("java/lang/NullPointerException", "null callback");
+        }
+        let Some(cls)=ctx.rt.class_of(closure_v).map(str::to_owned)else{return reject_unmapped(ctx,"callback has no runtime class");};
+        let signatures=[
+            ("java/util/function/Consumer","accept","(Ljava/lang/Object;)V"),
+            ("java/util/function/Supplier","get","()Ljava/lang/Object;"),
+            ("java/lang/Runnable","run","()V"),
+            ("java/util/function/Function","apply","(Ljava/lang/Object;)Ljava/lang/Object;"),
+            ("java/util/function/Predicate","test","(Ljava/lang/Object;)Z"),
+            ("java/util/function/BiFunction","apply","(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;"),
+            ("java/util/function/BiConsumer","accept","(Ljava/lang/Object;Ljava/lang/Object;)V"),
+            ("java/util/function/BiPredicate","test","(Ljava/lang/Object;Ljava/lang/Object;)Z"),
+        ];
+        let mut candidates=Vec::new();
+        for (interface,name,desc) in signatures {
+            if parse_method_descriptor(desc).is_ok_and(|(args,_)|args.len()==sam_args.len())
+                && (ctx.linked.resolve_method(&cls,name,desc).is_some() || ctx.linked.is_subtype(&cls,interface,ctx.host)){
+                candidates.push((name,desc));
             }
         }
-        return V::NULL;
+        if candidates.len()!=1 {
+            return reject_unmapped(ctx,&format!("callback {cls} has {} matching functional methods for {} arguments",candidates.len(),sam_args.len()));
+        }
+        let (name,desc)=candidates[0];
+        let mut full=Vec::with_capacity(sam_args.len()+1);full.push(closure_v);full.extend_from_slice(sam_args);
+        return invoke_member(ctx,op::INVOKEVIRTUAL,&MemberRef::new(cls,name,desc),&full);
     };
 
     match &closure.target {
@@ -497,7 +505,7 @@ pub fn invoke_closure(ctx: &mut ExecCtx<'_>, closure_v: V, sam_args: &[V]) -> V 
                 full.extend_from_slice(sam_args);
                 return lfn(ctx, &full);
             }
-            V::NULL
+            reject_unmapped(ctx, &format!("native lambda {lid}"))
         }
         ClosureTarget::MethodHandle {
             handle_kind,
@@ -2050,4 +2058,45 @@ fn alloc_multi_array(rt: &mut Rt, desc: &str, sizes: &[usize]) -> V {
         outer.push(alloc_multi_array(rt, sub_desc, &sizes[1..]));
     }
     rt.alloc(desc, 0, Data::Array(outer))
+}
+
+#[cfg(test)]
+mod callback_tests {
+    use super::*;
+    use crate::{HostApi, LinkedSpace, NativeClassDef, NativeModuleRegistry};
+
+    #[test]
+    fn unknown_callbacks_and_missing_native_lambdas_fail_instead_of_null_success() {
+        let mut rt=Rt::new();let linked=LinkedSpace::new();let mut host=crate::NullHost;
+        let unknown=rt.new_instance("test/MissingRunnable",0);
+        let missing=rt.alloc("java/lang/Runnable",0,Data::Closure(Box::new(ClosureData{interface_class:"java/lang/Runnable".into(),sam_name:"run".into(),sam_desc:"()V".into(),instantiated_desc:"()V".into(),captures:vec![],target:ClosureTarget::NativeLambda(999)})));
+        let mut ctx=ExecCtx{rt:&mut rt,linked:&linked,host:&mut host,depth:0};
+        for value in [unknown,missing] {
+            invoke_closure(&mut ctx,value,&[]);
+            let error=ctx.rt.take_exception().expect("unresolved work must not count as successful");
+            assert!(ctx.rt.exception_summary(error).contains("UnsupportedOperationException"));
+        }
+        invoke_closure(&mut ctx,V::NULL,&[]);
+        let error=ctx.rt.take_exception().unwrap();assert!(ctx.rt.exception_summary(error).contains("NullPointerException"));
+    }
+
+    #[test]
+    fn callbacks_select_the_actual_argument_count_and_host_functional_interface() {
+        fn accept(ctx:&mut ExecCtx<'_>,args:&[V])->V{ctx.rt.put_field(args[0],"seen",args[1]);V::Void}
+        fn get(ctx:&mut ExecCtx<'_>,args:&[V])->V{ctx.rt.get_field(args[0],"value")}
+        struct SupplierHost;
+        impl HostApi for SupplierHost {
+            fn get_static_field(&mut self,_rt:&mut Rt,_owner:&str,_name:&str,_desc:&str)->Option<V>{None}
+            fn call_method(&mut self,rt:&mut Rt,_linked:&LinkedSpace,member:&MemberRef,is_static:bool,args:&[V])->Option<V>{
+                if !is_static&&member.owner=="test/HostSupplier"&&member.name=="get"&&member.desc=="()Ljava/lang/Object;"{Some(rt.get_field(args[0],"value"))}else{None}
+            }
+            fn is_api_subtype(&self,sub:&str,sup:&str)->bool{sub=="test/HostSupplier"&&sup=="java/util/function/Supplier"}
+        }
+        let mut rt=Rt::new();let mut linked=LinkedSpace::new();linked.register_native_module(NativeModuleRegistry{classes:&[NativeClassDef{name:"test/DualCallback",superclass:Some("java/lang/Object"),interfaces:&["java/util/function/Consumer","java/util/function/Supplier"],is_interface:false,methods:&[("accept.(Ljava/lang/Object;)V",accept,false,false),("get.()Ljava/lang/Object;",get,false,false)]}],lambdas:&[]});
+        let callback=rt.new_instance("test/DualCallback",0);let supplier=rt.new_instance("test/HostSupplier",0);let expected=rt.intern_str("actual");rt.put_field(callback,"value",expected);rt.put_field(supplier,"value",expected);let mut host=SupplierHost;
+        let mut ctx=ExecCtx{rt:&mut rt,linked:&linked,host:&mut host,depth:0};
+        assert_eq!(invoke_closure(&mut ctx,callback,&[]),expected);assert!(ctx.rt.pending_exception.is_none());
+        assert_eq!(invoke_closure(&mut ctx,callback,&[expected]),V::Void);assert_eq!(ctx.rt.get_field(callback,"seen"),expected);
+        assert_eq!(invoke_closure(&mut ctx,supplier,&[]),expected);assert!(ctx.rt.pending_exception.is_none());
+    }
 }
