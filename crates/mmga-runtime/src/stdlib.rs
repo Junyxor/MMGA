@@ -583,7 +583,20 @@ pub fn stdlib_call(
         }
     }
 
-    // 9. Fallback `Object.equals` / `Object.toString` / `Object.hashCode` on heap objects
+    None
+}
+
+/// Object defaults are used only after the host has had a chance to implement
+/// the receiver's override. Otherwise external value types silently get identity
+/// equality or an Object string instead of their actual methods.
+pub(crate) fn object_fallback(
+    ctx: &mut ExecCtx<'_>,
+    member: &MemberRef,
+    is_static: bool,
+    args: &[V],
+) -> Option<V> {
+    let name = member.name.as_str();
+    let desc = member.desc.as_str();
     if !is_static {
         match (name, desc) {
             ("equals", "(Ljava/lang/Object;)Z") => {

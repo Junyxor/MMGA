@@ -322,12 +322,28 @@ pub fn invoke_member(ctx: &mut ExecCtx<'_>, opcode: u8, member: &MemberRef, args
         return v;
     }
 
-    // 3. External Host API (NeoForge / Horizon engine)
+    // 3. External Host API (NeoForge / Horizon engine). Object methods must
+    // resolve against the receiver even when bytecode names java/lang/Object.
     ctx.rt.telemetry.host_calls += 1;
+    if !is_static && matches!(
+        (member.name.as_str(), member.desc.as_str()),
+        ("equals", "(Ljava/lang/Object;)Z") | ("hashCode", "()I") | ("toString", "()Ljava/lang/String;")
+    ) {
+        if let Some(class) = lookup_class.as_deref().filter(|class| *class != member.owner) {
+            let dynamic = MemberRef::new(class, &member.name, &member.desc);
+            if let Some(value) = ctx.host.call_method(ctx.rt, ctx.linked, &dynamic, false, args) {
+                return value;
+            }
+        }
+    }
     if let Some(v) = ctx
         .host
         .call_method(ctx.rt, ctx.linked, member, is_static, args)
     {
+        return v;
+    }
+
+    if let Some(v) = crate::stdlib::object_fallback(ctx, member, is_static, args) {
         return v;
     }
 

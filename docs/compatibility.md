@@ -14,6 +14,8 @@ StreamCodec 检查点：移除旧实现中丢弃 `map`/`composite` 参数、原�
 
 CommonComponents 检查点：`space()` 每次构造独立的单空格 MutableComponent，两项测试验证内容、修改隔离和未知签名。Create 原 jar 继续推进到 `AllDisplaySources.<clinit>` 的 `Blocks.RESPAWN_ANCHOR`；Ponder 构造完成、Create 构造仍未完成，组合注册/setup/tick 未到达，显示源玩法和渲染未验证。
 
+运行时审查修复：Object 的通用 equals/hashCode/toString 回退移到 host override 之后，并按接收者类型分派，避免 TextColor 的值相等/序列化和 Direction 的小写字符串被对象身份回退截获。新增测试通过实际 `invoke_member` 调用 TextColor 与 Object 两种声明类型，不只直接调用 helper。
+
 ## 2026-11-17 继续推进（Linux，基线仍是 1.21.1 / NeoForge 21.1.266）
 
 本轮在 `12472a2`（ARGB32）之上实现了 Create 实际读取的原版 `SoundEvents`（按 jar 里的字段类型返回 `SoundEvent` 或 `Holder`）、Mekanism 用到的 `Attributes` 默认值、`TextColor.fromRgb`、`ArmorMaterial` 数据、`ArmorItem.Type.values`，以及 Java 21 的 `List.getFirst` / `getLast`。`DeferredHolder.create(ResourceKey, ResourceLocation)` 会登记一个尚未绑定的 holder，注册同名条目后才能 `get()`。没有为了过探针填默认返回值。
