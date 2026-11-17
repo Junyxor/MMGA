@@ -7,6 +7,7 @@
 pub mod armor;
 pub mod attributes;
 pub mod bus;
+pub mod capabilities;
 pub mod codecs;
 pub mod common_components;
 pub mod components;

@@ -1669,6 +1669,9 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::direction::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
+        if let Some(value) = crate::capabilities::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
         if let Some(value) = crate::codecs::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
@@ -1807,6 +1810,9 @@ impl HostApi for FmlLoader {
             if let Some(value) = crate::armor::call(&mut ctx, member, is_static, args) {
                 return Some(value);
             }
+        }
+        if let Some(value) = crate::capabilities::call(rt, member, is_static, args) {
+            return Some(value);
         }
         if let Some(value) = crate::components::call(rt, linked, self, member, is_static, args) {
             return Some(value);
@@ -1991,6 +1997,9 @@ impl HostApi for FmlLoader {
                 | "net/minecraft/world/entity/EquipmentSlot")
             && super_class == "net/minecraft/util/StringRepresentable"
         {
+            return true;
+        }
+        if crate::capabilities::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::components::is_subtype(sub_class, super_class) {
