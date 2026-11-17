@@ -30,6 +30,7 @@
 - Canonical registry reference 状态保存真实 intrusive prereference identity、注册绑定、alias/shadow、default/frozen flags，static attribute/sound/block/type holder 与 getHolder 使用同一路径。八项引用回归、四项 codec 回归、七项既有 registry 回归通过，实际 onAdd/onBake 回调保留对象/时机/异常。host 调用不会消费 pending exception，相关 VM 集成回归先失败后通过。Mekanism 越过 intrusive holder，下一处 `Class.getClassLoader()`（`MekanismAPI.<clinit>`），仍在构造。RegistrationInfo 字段保留真实 lifecycle；最终 DFU DataResult 的完整 lifecycle 传播尚未证明与官方完全一致。
 - `Codec.dispatchMap` 实际调用类型 getter、MapCodec selector 与字段 codec；encode 按官方两次求 type 的顺序，partial/errors、未知 selector 与 compressed 未实现错误均明确保留。`MapCodec.mapResult` 保留并实际调用原 ResultFunction，通过真实 Json MapLike/RecordBuilder 子集读写条目，encode/decode 都不能绕过 callback。三项回归先失败后通过；AE2 越过 AEKey 初始化，下一处 `Codec.mapResult`（`GenericStack.<clinit>`），仍在构造。
 - EntitySelectorOptions 的真实 custom register 保留 modifier/canUse/description，允许官方的覆盖和 null 行为；canUse 只在真实 custom lookup 时执行。四项回归先失败后通过（包括 direct ctor），完整 vanilla option catalog、实体查询和未知 parser 路径明确失败。Curios 越过 selector register，实际完成 **CommonSetup**，下一阶段 InterModProcess 停在 `getIMCStream(Predicate)`；tick/饰品玩法未验证。
+- WoodType 的 11 个官方名称与静态身份、registration map 和传入完整 record 构造器字段已验证；builtin 未解析的 BlockSetType/sound/fence 字段和依赖 hash 明确失败。两个回归先失败后通过，原 Create 越过 WoodType 名称初始化，下一处 WeatheringCopper.WeatherState.values；不代表木材声音、世界或渲染已实现。
 
 ## 2026-11-17 持续修复增量（进行中）
 

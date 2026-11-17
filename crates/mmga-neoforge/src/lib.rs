@@ -58,6 +58,7 @@ pub mod util_values;
 pub mod vanilla_block_tags;
 pub mod vanilla_item_tags;
 pub mod world;
+pub mod wood_types;
 
 pub use bus::{
     dispatch_event_on_bus, find_builtin_event, is_mod_bus_event_class, BuiltinEventSpec, BusId,
