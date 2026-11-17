@@ -19,6 +19,7 @@ pub mod common_components;
 pub mod components;
 pub mod container_items;
 pub mod custom_data;
+pub mod data_maps;
 pub mod item_stack;
 pub mod fluid_content;
 pub mod ingredients;

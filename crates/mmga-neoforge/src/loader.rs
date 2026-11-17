@@ -1754,6 +1754,9 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::block_entities::get_static_field(rt, &mut self.state.registries, owner, name, desc) {
             return Some(value);
         }
+        if let Some(value) = crate::data_maps::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
         if let Some(value) = crate::string_representable::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
@@ -1959,6 +1962,9 @@ impl HostApi for FmlLoader {
             return Some(value);
         }
         if let Some(value) = crate::sound_types::call(rt, member, is_static, args) {
+            return Some(value);
+        }
+        if let Some(value) = crate::data_maps::call(rt, member, is_static, args) {
             return Some(value);
         }
         {
@@ -2278,6 +2284,9 @@ impl HostApi for FmlLoader {
             return true;
         }
         if crate::ingredients::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::data_maps::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::number_providers::is_subtype(sub_class, super_class) {

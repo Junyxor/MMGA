@@ -25,6 +25,7 @@
 - FML ordered post 真实执行“优先级外层、模组顺序内层”，保留 original event、active container 清理和原异常；三项 VM 回归先失败后通过，回调之后 Minecraft context 按官方回退。Curios 已越过 ordered post，执行 common setup 的排队任务后停在 `EntitySelectorOptions.register`；CommonSetup 尚未完成，最后完成阶段仍为 Registered。Core/Backpacks event-handler lambda 描述符按真实 jar 批量核查，新增目录项均核对官方 source。
 - DFU `unboundedMap` 实际执行 key/value codecs，保留不可变 Map、重复解码键错误、partial Map、missed input 和 original remainder，encode 调用真实 Map entries 与子 codec，未知 codec/Java callback 错误继续显式失败。两项新回归先失败后通过，DFU tests 共 20 项通过。Core/Backpacks 已进一步注册 **74 项**，下一处 `BaseFlowingFluid.Properties.<init>`（`xp_still`）；AE2 越过 map 后到 `Codec.dispatchMap`（`AEKey.<clinit>`），仍在构造。
 - VM 回调边界补齐：未知 callback、缺失 NativeLambda、null 不再静默返回 null；常规 user callback 按实际参数个数选择函数并经过 VM/Host 调用，多个含糊候选明确失败。两个回归先失败后通过（原路径一处 Rust index panic、一处错误地“成功”返回），runtime 共 **21 项通过**，避免把未执行的 enqueueWork 当作成功。
+- NeoForgeDataMaps.FURNACE_FUELS 的 DataMapType metadata 保存真实 id/item registry/persistent-network codec/mandatory=false，FurnaceFuel 构造和正值校验分别按 record/codec 执行。JSON `{burn_time:n}` 与裸整数都实际可读，persistent 写对象、sync 写裸整数；三项回归先失败后通过，未实现数据映射世界/数据生成明确失败。原始 AllItems 最小 loop 已越过 burnTime，完整 Create 在 callback 修复后也越过该点，后续阻塞见增量。
 
 ## 2026-11-17 持续修复增量（进行中）
 
