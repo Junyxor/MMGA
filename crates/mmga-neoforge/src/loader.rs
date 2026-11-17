@@ -25,6 +25,8 @@ const REGISTER_EVENT: &str = "net/neoforged/neoforge/registries/RegisterEvent";
 
 #[path = "fml_post.rs"]
 mod fml_post;
+#[path = "imc_events.rs"]
+mod imc_events;
 
 /// Minecraft and NeoForge versions this host claims when checking `versionRange`.
 ///
@@ -111,6 +113,8 @@ pub struct ImcEntry {
     pub mod_id: String,
     pub method: String,
     pub supplier: V,
+    pub message: V,
+    pub node: V,
 }
 
 /// NeoForge `FML` / `ModLoader` host. Owns [`NeoForgeState`] and the bus handles mods see.
@@ -694,28 +698,6 @@ impl FmlLoader {
         Ok(())
     }
 
-    fn drain_imc_stream(&mut self, rt: &mut Rt, target_mod_id: &str) -> V {
-        let mut delivered = Vec::new();
-        let mut kept = Vec::new();
-        for msg in std::mem::take(&mut self.imc_messages) {
-            if msg.mod_id == target_mod_id {
-                let obj = rt.new_instance("net/neoforged/fml/InterModComms$IMCMessage", 0);
-                let s_v = rt.new_str(msg.sender_mod_id);
-                let m_v = rt.new_str(msg.mod_id);
-                let meth_v = rt.new_str(msg.method);
-                rt.put_field(obj, "senderModId", s_v);
-                rt.put_field(obj, "modId", m_v);
-                rt.put_field(obj, "method", meth_v);
-                rt.put_field(obj, "messageSupplier", msg.supplier);
-                delivered.push(obj);
-            } else {
-                kept.push(msg);
-            }
-        }
-        self.imc_messages = kept;
-        rt.alloc("java/util/stream/Stream", 0, Data::Stream(delivered))
-    }
-
     fn post_game(
         &mut self,
         rt: &mut Rt,
@@ -736,6 +718,7 @@ impl FmlLoader {
         let event = rt.new_instance(event_class, 0);
         rt.put_field(event, "$canceled", V::I(0));
         rt.put_field(event, "isCanceled", V::FALSE);
+        if let BusId::Mod(mod_id)=bus {let container=self.mod_container_handle(rt,mod_id);rt.put_field(event,"container",container);}
         decorate(rt, event);
         let listeners = self.state.bus.matching_listeners_with_linked(bus,event_class,linked,self);
         let (ran, _) = {
@@ -848,7 +831,7 @@ impl FmlLoader {
             }?;
             let id = rt.str_of(id_value).unwrap_or("").to_owned();
             let loaded = self.version_of(&id).is_some()
-                || matches!(id.as_str(), "minecraft" | "neoforge" | "forge" | "fml");
+                || matches!(id.as_str(), "minecraft" | "neoforge");
             return Some(V::bool(loaded));
         }
         if is_static && owner == "net/neoforged/fml/ModLoadingContext" && name == "get" {
@@ -928,38 +911,14 @@ impl FmlLoader {
             return Some(V::Void);
         }
         if is_static && owner == "net/neoforged/fml/InterModComms" && name == "sendTo" {
-            let (sender, target_id, method_name, supplier) = if args.len() == 4 {
-                (
-                    rt.str_of(args[0])?.to_owned(),
-                    rt.str_of(args[1])?.to_owned(),
-                    rt.str_of(args[2])?.to_owned(),
-                    args[3],
-                )
+            let (sender, recipient, method, supplier) = if args.len() == 4 {
+                (args[0],args[1],args[2],args[3])
             } else {
-                (
-                    self.constructing.clone().unwrap_or_default(),
-                    rt.str_of(*args.first()?)?.to_owned(),
-                    rt.str_of(*args.get(1)?)?.to_owned(),
-                    *args.get(2)?,
-                )
+                let sender=self.constructing.clone().unwrap_or_else(||"minecraft".into());
+                let sender=rt.intern_str(&sender);
+                (sender,*args.first()?,*args.get(1)?,*args.get(2)?)
             };
-            let is_loaded = self.version_of(&target_id).is_some()
-                || matches!(target_id.as_str(), "minecraft" | "neoforge" | "forge" | "fml");
-            if !is_loaded {
-                return Some(V::FALSE);
-            }
-            rt.pin(supplier);
-            self.imc_messages.push(ImcEntry {
-                sender_mod_id: sender,
-                mod_id: target_id,
-                method: method_name,
-                supplier,
-            });
-            return Some(V::TRUE);
-        }
-        if is_static && owner == "net/neoforged/fml/InterModComms" && name == "getMessages" {
-            let target_id = rt.str_of(*args.first()?)?.to_owned();
-            return Some(self.drain_imc_stream(rt, &target_id));
+            return Some(imc_events::send(self,rt,sender,recipient,method,supplier));
         }
         if is_static && owner == "net/neoforged/fml/loading/FMLPaths" && name == "getOrCreateGameRelativePath" {
             let rel = path_text(rt, *args.first()?)?;
@@ -1123,24 +1082,6 @@ impl FmlLoader {
                         rt.put_field(args[0], "$cause", cause);
                     }
                     return Some(args[0]);
-                }
-                ("net/neoforged/fml/event/lifecycle/InterModProcessEvent", "getIMCStream")
-                    if args.len() == 1 =>
-                {
-                    let target = self.constructing.clone().unwrap_or_default();
-                    return Some(self.drain_imc_stream(rt, &target));
-                }
-                ("net/neoforged/fml/InterModComms$IMCMessage", "senderModId") => {
-                    return Some(rt.get_field(args[0], "senderModId"));
-                }
-                ("net/neoforged/fml/InterModComms$IMCMessage", "modId") => {
-                    return Some(rt.get_field(args[0], "modId"));
-                }
-                ("net/neoforged/fml/InterModComms$IMCMessage", "method") => {
-                    return Some(rt.get_field(args[0], "method"));
-                }
-                ("net/neoforged/fml/InterModComms$IMCMessage", "messageSupplier") => {
-                    return Some(rt.get_field(args[0], "messageSupplier"));
                 }
                 (
                     "net/neoforged/fml/event/lifecycle/ParallelDispatchEvent"
@@ -1864,6 +1805,7 @@ impl HostApi for FmlLoader {
         is_static: bool,
         args: &[V],
     ) -> Option<V> {
+        if let Some(value)=imc_events::call(self,rt,linked,member,is_static,args) {return Some(value);}
         if is_static && member.owner == "net/neoforged/fml/ModLoader" && member.name == "postEventWrapContainerInModOrder"
             && member.desc == "(Lnet/neoforged/bus/api/Event;)V" {
             return Some(fml_post::post_wrapped_in_mod_order(self,rt,linked,*args.first()?));
@@ -2279,6 +2221,7 @@ impl HostApi for FmlLoader {
         if sub_class == super_class {
             return true;
         }
+        if imc_events::is_subtype(sub_class,super_class) {return true;}
         if let Some(spec) = crate::find_builtin_event(sub_class) {
             if (spec.is_mod_bus && super_class == "net/neoforged/fml/event/IModBusEvent")
                 || (spec.is_cancellable && super_class == "net/neoforged/bus/api/ICancellableEvent") { return true; }
