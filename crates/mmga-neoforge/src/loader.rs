@@ -1672,6 +1672,9 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::blocks::get_static_field(rt, &mut self.state.registries, owner, name, desc) {
             return Some(value);
         }
+        if let Some(value) = crate::dfu::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
         if let Some(value) = crate::capabilities::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
@@ -1791,6 +1794,9 @@ impl HostApi for FmlLoader {
             return Some(value);
         }
         if let Some(value) = crate::blocks::call(rt, &mut self.state.registries, member, is_static, args) {
+            return Some(value);
+        }
+        if let Some(value) = crate::dfu::call(rt, linked, self, member, is_static, args) {
             return Some(value);
         }
         if let Some(value) = crate::minecraft::call_keys_authlib_and_libs(
@@ -2015,6 +2021,9 @@ impl HostApi for FmlLoader {
             return true;
         }
         if crate::blocks::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::dfu::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::capabilities::is_subtype(sub_class, super_class) {

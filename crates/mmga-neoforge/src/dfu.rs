@@ -1,0 +1,1715 @@
+//! Executable DataFixerUpper 8.0.16 codecs for Minecraft 1.21.1.
+//! Graphs retain their mappings and callbacks; unsupported DynamicOps fail explicitly.
+
+mod json;
+mod result;
+
+use mmga_classfile::{op, MemberRef};
+use mmga_runtime::{box_primitive, invoke_member, Data, ExecCtx, HostApi, LinkedSpace, Rt, V};
+
+const CODEC: &str = "com/mojang/serialization/Codec";
+const PRIMITIVE: &str = "com/mojang/serialization/codecs/PrimitiveCodec";
+const MAP: &str = "com/mojang/serialization/MapCodec";
+const BUILDER: &str = "com/mojang/serialization/codecs/RecordCodecBuilder";
+const INSTANCE: &str = "com/mojang/serialization/codecs/RecordCodecBuilder$Instance";
+const RESULT: &str = "com/mojang/serialization/DataResult";
+const JSON_OPS: &str = "com/mojang/serialization/JsonOps";
+const ENUM_CODEC: &str = "net/minecraft/util/StringRepresentable$EnumCodec";
+const VALUE_CODEC: &str = "net/minecraft/util/StringRepresentable$StringRepresentableCodec";
+
+pub fn is_subtype(sub: &str, sup: &str) -> bool {
+    (matches!(sub, CODEC | PRIMITIVE | ENUM_CODEC | VALUE_CODEC)
+        && matches!(
+            sup,
+            CODEC | "com/mojang/serialization/Encoder" | "com/mojang/serialization/Decoder"
+        ))
+        || (sub == ENUM_CODEC && sup == VALUE_CODEC)
+        || (sub == MAP
+            && matches!(
+                sup,
+                "com/mojang/serialization/MapEncoder"
+                    | "com/mojang/serialization/MapDecoder"
+                    | "com/mojang/serialization/CompressorHolder"
+            ))
+        || (sub == BUILDER && sup == "com/mojang/datafixers/kinds/App")
+        || (sub == INSTANCE
+            && matches!(
+                sup,
+                "com/mojang/datafixers/kinds/Applicative"
+                    | "com/mojang/datafixers/kinds/Functor"
+                    | "com/mojang/datafixers/kinds/Kind1"
+            ))
+        || (matches!(
+            sub,
+            "com/mojang/serialization/DataResult$Success"
+                | "com/mojang/serialization/DataResult$Error"
+        ) && matches!(sup, RESULT | "com/mojang/datafixers/kinds/App"))
+        || (sub == JSON_OPS && sup == "com/mojang/serialization/DynamicOps")
+        || (matches!(
+            sub,
+            "com/google/gson/JsonPrimitive"
+                | "com/google/gson/JsonObject"
+                | "com/google/gson/JsonArray"
+                | "com/google/gson/JsonNull"
+        ) && sup == "com/google/gson/JsonElement")
+}
+
+fn graph(rt: &mut Rt, class: &str, kind: &str, args: &[V]) -> V {
+    let value = rt.new_instance(class, 0);
+    let kind = rt.intern_str(kind);
+    let args = rt.alloc("[Ljava/lang/Object;", 0, Data::Array(args.to_vec()));
+    rt.put_field(value, "$dfu_kind", kind);
+    rt.put_field(value, "$dfu_args", args);
+    value
+}
+
+fn graph_parts(rt: &Rt, value: V) -> Option<(String, Vec<V>)> {
+    let kind = rt.str_of(rt.get_field(value, "$dfu_kind"))?.to_owned();
+    Some((kind, array(rt, rt.get_field(value, "$dfu_args"))?))
+}
+
+fn array(rt: &Rt, value: V) -> Option<Vec<V>> {
+    match rt.get_obj(value).map(|o| &o.data) {
+        Some(Data::Array(values) | Data::List(values)) => Some(values.clone()),
+        _ => None,
+    }
+}
+
+/// The enum host supplies real name lookup and ordinal callbacks, including mapped names.
+pub fn enum_codec(rt: &mut Rt, values: V, resolver: V, id_getter: V) -> V {
+    graph(rt, ENUM_CODEC, "enum", &[values, resolver, id_getter])
+}
+
+/// A field graph and retained record getter have the same representation as forGetter/group/apply.
+pub fn field_codec(rt: &mut Rt, codec: V, name: &str) -> V {
+    let name = rt.intern_str(name);
+    graph(rt, MAP, "field", &[codec, name])
+}
+pub fn record_map_codec(rt: &mut Rt, fields: &[(V, V)], constructor: V) -> V {
+    let fields = fields
+        .iter()
+        .map(|(codec, getter)| {
+            let builder = rt.new_instance(BUILDER, 0);
+            rt.put_field(builder, "$builder_codec", *codec);
+            rt.put_field(builder, "$builder_getter", *getter);
+            builder
+        })
+        .collect();
+    let fields = rt.alloc("[Ljava/lang/Object;", 0, Data::Array(fields));
+    graph(rt, MAP, "record", &[fields, constructor])
+}
+pub fn codec_from_map(rt: &mut Rt, map: V) -> V {
+    graph(rt, CODEC, "map_codec", &[map])
+}
+
+pub fn get_static_field(rt: &mut Rt, owner: &str, name: &str, desc: &str) -> Option<V> {
+    if let Some(value) = json::get_static(rt, owner, name, desc) {
+        return Some(value);
+    }
+    if owner == CODEC
+        && desc == "Lcom/mojang/serialization/codecs/PrimitiveCodec;"
+        && matches!(
+            name,
+            "BOOL" | "BYTE" | "SHORT" | "INT" | "LONG" | "FLOAT" | "DOUBLE" | "STRING"
+        )
+    {
+        if let Some(value) = rt.get_static(owner, name) {
+            return Some(value);
+        }
+        let value = graph(rt, PRIMITIVE, name, &[]);
+        rt.put_static(owner, name, value);
+        return Some(value);
+    }
+    if owner == "net/minecraft/resources/ResourceLocation"
+        && name == "CODEC"
+        && desc == "Lcom/mojang/serialization/Codec;"
+    {
+        if let Some(value) = rt.get_static(owner, name) {
+            return Some(value);
+        }
+        let value = graph(rt, CODEC, "resource_location", &[]);
+        rt.put_static(owner, name, value);
+        return Some(value);
+    }
+    if owner == "net/minecraft/core/UUIDUtil"
+        && name == "CODEC"
+        && desc == "Lcom/mojang/serialization/Codec;"
+    {
+        if let Some(value) = rt.get_static(owner, name) {
+            return Some(value);
+        }
+        let value = graph(rt, CODEC, "uuid_int_array", &[]);
+        rt.put_static(owner, name, value);
+        return Some(value);
+    }
+    None
+}
+
+pub fn call(
+    rt: &mut Rt,
+    linked: &LinkedSpace,
+    host: &mut dyn HostApi,
+    member: &MemberRef,
+    is_static: bool,
+    args: &[V],
+) -> Option<V> {
+    let mut ctx = ExecCtx {
+        rt,
+        linked,
+        host,
+        depth: 0,
+    };
+    if let Some(value) = json::call(&mut ctx, member, is_static, args) {
+        return Some(value);
+    }
+    if let Some(value) = result::call(&mut ctx, member, is_static, args) {
+        return Some(value);
+    }
+    call_codec(&mut ctx, member, is_static, args)
+}
+
+fn call_codec(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: &[V]) -> Option<V> {
+    let (owner, name, desc) = (
+        member.owner.as_str(),
+        member.name.as_str(),
+        member.desc.as_str(),
+    );
+    if owner == BUILDER
+        && is_static
+        && matches!(
+            (name, desc),
+            (
+                "create",
+                "(Ljava/util/function/Function;)Lcom/mojang/serialization/Codec;"
+            ) | (
+                "mapCodec",
+                "(Ljava/util/function/Function;)Lcom/mojang/serialization/MapCodec;"
+            )
+        )
+    {
+        let instance = ctx.rt.new_instance(INSTANCE, 0);
+        let built = function(ctx, args[0], &[instance]);
+        if ctx.rt.pending_exception.is_some() {
+            return Some(V::NULL);
+        }
+        let map = ctx.rt.get_field(built, "$builder_codec");
+        if map.is_null() {
+            return Some(ctx.rt.throw_exception(
+                "java/lang/ClassCastException",
+                "RecordCodecBuilder function did not return a record builder",
+            ));
+        }
+        return Some(if name == "mapCodec" {
+            map
+        } else {
+            graph(ctx.rt, CODEC, "map_codec", &[map])
+        });
+    }
+    if !is_static
+        && matches!(
+            owner,
+            INSTANCE
+                | "com/mojang/datafixers/kinds/Applicative"
+                | "com/mojang/datafixers/kinds/Kind1"
+        )
+        && name == "group"
+    {
+        let n = args.len().checked_sub(1)?;
+        if !(1..=16).contains(&n)
+            || desc
+                != format!(
+                    "({})Lcom/mojang/datafixers/Products$P{n};",
+                    "Lcom/mojang/datafixers/kinds/App;".repeat(n)
+                )
+        {
+            return None;
+        }
+        let group = ctx
+            .rt
+            .new_instance(format!("com/mojang/datafixers/Products$P{n}"), 0);
+        let fields = ctx
+            .rt
+            .alloc("[Ljava/lang/Object;", 0, Data::Array(args[1..].to_vec()));
+        ctx.rt.put_field(group, "$group_fields", fields);
+        return Some(group);
+    }
+    if !is_static && name == "apply" && owner.starts_with("com/mojang/datafixers/Products$P") {
+        let n = owner
+            .strip_prefix("com/mojang/datafixers/Products$P")?
+            .parse::<usize>()
+            .ok()?;
+        let function_desc = match n {
+            1 => "Ljava/util/function/Function;".to_owned(),
+            2 => "Ljava/util/function/BiFunction;".to_owned(),
+            n => format!("Lcom/mojang/datafixers/util/Function{n};"),
+        };
+        if desc!=format!("(Lcom/mojang/datafixers/kinds/Applicative;{function_desc})Lcom/mojang/datafixers/kinds/App;"){return None;}
+        let fields = ctx.rt.get_field(args[0], "$group_fields");
+        if array(ctx.rt, fields)?.len() != n {
+            return None;
+        }
+        let codec = graph(ctx.rt, MAP, "record", &[fields, args[2]]);
+        let builder = ctx.rt.new_instance(BUILDER, 0);
+        ctx.rt.put_field(builder, "$builder_codec", codec);
+        return Some(builder);
+    }
+    let is_codec = matches!(
+        owner,
+        CODEC
+            | PRIMITIVE
+            | ENUM_CODEC
+            | VALUE_CODEC
+            | "com/mojang/serialization/Encoder"
+            | "com/mojang/serialization/Decoder"
+    );
+    if owner == MAP && is_static && name == "unit" {
+        return match desc {
+            "(Ljava/lang/Object;)Lcom/mojang/serialization/MapCodec;" => {
+                Some(graph(ctx.rt, MAP, "unit", args))
+            }
+            "(Ljava/util/function/Supplier;)Lcom/mojang/serialization/MapCodec;" => {
+                Some(graph(ctx.rt, MAP, "unit_supplier", args))
+            }
+            _ => None,
+        };
+    }
+    if owner == CODEC && is_static {
+        return match (name,desc){
+            ("withAlternative","(Lcom/mojang/serialization/Codec;Lcom/mojang/serialization/Codec;)Lcom/mojang/serialization/Codec;"|"(Lcom/mojang/serialization/Codec;Lcom/mojang/serialization/Codec;Ljava/util/function/Function;)Lcom/mojang/serialization/Codec;")=>Some(graph(ctx.rt,CODEC,"alternative",args)),
+            ("list","(Lcom/mojang/serialization/Codec;)Lcom/mojang/serialization/Codec;")=>Some(graph(ctx.rt,CODEC,"list",&[args[0],V::I(0),V::I(i32::MAX)])),
+            ("list","(Lcom/mojang/serialization/Codec;II)Lcom/mojang/serialization/Codec;")=>Some(graph(ctx.rt,CODEC,"list",args)),
+            ("intRange","(II)Lcom/mojang/serialization/Codec;") | ("floatRange","(FF)Lcom/mojang/serialization/Codec;") | ("doubleRange","(DD)Lcom/mojang/serialization/Codec;")=>{let kind=match name{"intRange"=>"INT","floatRange"=>"FLOAT",_=>"DOUBLE"};let base=graph(ctx.rt,PRIMITIVE,kind,&[]);Some(graph(ctx.rt,CODEC,"range",&[base,args[0],args[1]]))},
+            ("unit","(Ljava/lang/Object;)Lcom/mojang/serialization/Codec;")=>{let map=graph(ctx.rt,MAP,"unit",args);Some(graph(ctx.rt,CODEC,"map_codec",&[map]))},
+            ("unit","(Ljava/util/function/Supplier;)Lcom/mojang/serialization/Codec;")=>{let map=graph(ctx.rt,MAP,"unit_supplier",args);Some(graph(ctx.rt,CODEC,"map_codec",&[map]))},
+            _=>None,
+        };
+    }
+    if !is_static && (is_codec || owner == MAP) {
+        let recv = *args.first()?;
+        let class = if owner == MAP { MAP } else { CODEC };
+        let returns = |parameters: &str, ret: &str| desc == format!("({parameters})L{ret};");
+        if matches!(name, "xmap" | "comapFlatMap" | "flatComapMap" | "flatXmap")
+            && returns(
+                "Ljava/util/function/Function;Ljava/util/function/Function;",
+                class,
+            )
+        {
+            return Some(graph(ctx.rt, class, name, args));
+        }
+        if name == "listOf" && desc == "()Lcom/mojang/serialization/Codec;" {
+            return Some(graph(
+                ctx.rt,
+                CODEC,
+                "list",
+                &[recv, V::I(0), V::I(i32::MAX)],
+            ));
+        }
+        if name == "listOf" && desc == "(II)Lcom/mojang/serialization/Codec;" {
+            return Some(graph(ctx.rt, CODEC, "list", args));
+        }
+        if name == "fieldOf" && returns("Ljava/lang/String;", MAP) {
+            return Some(graph(ctx.rt, MAP, "field", args));
+        }
+        if matches!(name, "optionalFieldOf" | "lenientOptionalFieldOf")
+            && matches!(
+                desc,
+                "(Ljava/lang/String;)Lcom/mojang/serialization/MapCodec;"
+                    | "(Ljava/lang/String;Ljava/lang/Object;)Lcom/mojang/serialization/MapCodec;"
+            )
+        {
+            let kind = match (name, args.len()) {
+                ("optionalFieldOf", 2) => "optional_field",
+                ("optionalFieldOf", _) => "default_field",
+                (_, 2) => "lenient_optional_field",
+                _ => "lenient_default_field",
+            };
+            return Some(graph(ctx.rt, MAP, kind, args));
+        }
+        if owner == MAP && name == "forGetter" && returns("Ljava/util/function/Function;", BUILDER)
+        {
+            let builder = ctx.rt.new_instance(BUILDER, 0);
+            ctx.rt.put_field(builder, "$builder_codec", recv);
+            ctx.rt.put_field(builder, "$builder_getter", args[1]);
+            return Some(builder);
+        }
+        if owner == MAP && name == "codec" && desc == "()Lcom/mojang/serialization/Codec;" {
+            return Some(graph(ctx.rt, CODEC, "map_codec", &[recv]));
+        }
+        if matches!(name, "encodeStart" | "parse" | "decode" | "encode") {
+            let (ops,input,prefix,decode_pair)=match (name,desc){
+                ("encodeStart","(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;")=>(args[1],args[2],None,false),
+                ("encode","(Ljava/lang/Object;Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;")=>(args[2],args[1],Some(args[3]),false),
+                ("parse"|"decode","(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;")=>(args[1],args[2],None,name=="decode"),
+                _=>return None,
+            };
+            let Some(compressed) = json::compressed(ctx.rt, ops) else {
+                return Some(ctx.rt.throw_exception(
+                    "java/lang/UnsupportedOperationException",
+                    "MMGA DFU supports JsonOps only; this DynamicOps is not implemented",
+                ));
+            };
+            if name == "parse" || name == "decode" {
+                let Some(json) = json::to_value(ctx.rt, input) else {
+                    return Some(ctx.rt.throw_exception(
+                        "java/lang/ClassCastException",
+                        "JsonOps input must be a JsonElement",
+                    ));
+                };
+                let decoded = decode_value(ctx, recv, ops, &json, compressed, 0);
+                if ctx.rt.pending_exception.is_some() {
+                    return Some(V::NULL);
+                }
+                return Some(match decoded {
+                    Ok(value) => {
+                        let value = if decode_pair {
+                            let rest = decode_remainder(ctx.rt, recv, &json);
+                            let empty = json::from_value(ctx.rt, rest);
+                            let pair = ctx.rt.new_instance("com/mojang/datafixers/util/Pair", 0);
+                            ctx.rt.put_field(pair, "left", value);
+                            ctx.rt.put_field(pair, "right", empty);
+                            pair
+                        } else {
+                            value
+                        };
+                        result::success(ctx.rt, value)
+                    }
+                    Err(error) => {
+                        let partial = error.partial.map(|value| {
+                            if !decode_pair {
+                                return value;
+                            }
+                            let remainder = error
+                                .remainder
+                                .clone()
+                                .unwrap_or_else(|| decode_remainder(ctx.rt, recv, &json));
+                            let remainder = json::from_value(ctx.rt, remainder);
+                            let pair = ctx.rt.new_instance("com/mojang/datafixers/util/Pair", 0);
+                            ctx.rt.put_field(pair, "left", value);
+                            ctx.rt.put_field(pair, "right", remainder);
+                            pair
+                        });
+                        result::error(ctx.rt, &error.message, partial)
+                    }
+                });
+            }
+            let encoded = encode_value(ctx, recv, ops, input, compressed, 0);
+            if ctx.rt.pending_exception.is_some() {
+                return Some(V::NULL);
+            }
+            return Some(
+                match encoded
+                    .and_then(|value| merge_prefix(ctx.rt, prefix, value).map_err(Into::into))
+                {
+                    Ok(json) => {
+                        let value = json::from_value(ctx.rt, json);
+                        result::success(ctx.rt, value)
+                    }
+                    Err(error) => {
+                        let partial = error
+                            .partial
+                            .and_then(|json| merge_prefix(ctx.rt, prefix, json).ok())
+                            .map(|json| json::from_value(ctx.rt, json));
+                        result::error(ctx.rt, &error.message, partial)
+                    }
+                },
+            );
+        }
+    }
+    None
+}
+
+fn merge_prefix(
+    rt: &Rt,
+    prefix: Option<V>,
+    value: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let Some(prefix) = prefix else {
+        return Ok(value);
+    };
+    let prefix = json::to_value(rt, prefix).ok_or_else(|| "Invalid JsonOps prefix".to_owned())?;
+    match (prefix, value) {
+        (serde_json::Value::Null, value) => Ok(value),
+        (serde_json::Value::Object(mut prefix), serde_json::Value::Object(value)) => {
+            prefix.extend(value);
+            Ok(serde_json::Value::Object(prefix))
+        }
+        (serde_json::Value::Array(mut prefix), serde_json::Value::Array(value)) => {
+            prefix.extend(value);
+            Ok(serde_json::Value::Array(prefix))
+        }
+        (prefix, _) => Err(format!("Cannot merge value into prefix: {prefix}")),
+    }
+}
+
+#[derive(Debug)]
+struct DecodeError {
+    message: String,
+    partial: Option<V>,
+    remainder: Option<serde_json::Value>,
+}
+
+#[derive(Debug)]
+struct EncodeError {
+    message: String,
+    partial: Option<serde_json::Value>,
+}
+impl From<String> for EncodeError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            partial: None,
+        }
+    }
+}
+impl From<&str> for EncodeError {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+impl From<String> for DecodeError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            partial: None,
+            remainder: None,
+        }
+    }
+}
+impl From<&str> for DecodeError {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+impl std::fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+fn flatten_decoded_result(ctx: &mut ExecCtx<'_>, value: V) -> Result<V, DecodeError> {
+    if let Some(value) = result::value(ctx.rt, value) {
+        return Ok(value);
+    }
+    let partial = ctx.rt.get_field(value, "$partial");
+    Err(DecodeError {
+        message: result::message(ctx, value),
+        partial: (!partial.is_null()).then_some(partial),
+        remainder: None,
+    })
+}
+
+fn decode_remainder(rt: &Rt, codec: V, input: &serde_json::Value) -> serde_json::Value {
+    let Some((kind, args)) = graph_parts(rt, codec) else {
+        return serde_json::Value::Null;
+    };
+    match kind.as_str() {
+        "map_codec" => input.clone(),
+        "list" => serde_json::json!([]),
+        "xmap" | "comapFlatMap" | "flatComapMap" | "flatXmap" | "range" => {
+            decode_remainder(rt, args[0], input)
+        }
+        _ => serde_json::Value::Null,
+    }
+}
+
+fn decode_value(
+    ctx: &mut ExecCtx<'_>,
+    codec: V,
+    ops: V,
+    input: &serde_json::Value,
+    compressed: bool,
+    depth: usize,
+) -> Result<V, DecodeError> {
+    if ctx.rt.pending_exception.is_some() {
+        return Err("Java callback failed".into());
+    }
+    if depth >= 128 {
+        return Err("Codec nesting exceeds 128".into());
+    }
+    let Some((kind, args)) = graph_parts(ctx.rt, codec) else {
+        ctx.rt.throw_exception(
+            "java/lang/UnsupportedOperationException",
+            "MMGA cannot execute unknown DFU codec",
+        );
+        return Err("Unknown codec".into());
+    };
+    match kind.as_str() {
+        "BOOL" | "BYTE" | "SHORT" | "INT" | "LONG" | "FLOAT" | "DOUBLE" | "STRING" => {
+            json::primitive_read(ctx.rt, &kind, input, compressed).map_err(Into::into)
+        }
+        "uuid_int_array" => {
+            let values = input
+                .as_array()
+                .ok_or_else(|| format!("Not a list: {input}"))?;
+            let mut ints = Vec::new();
+            for value in values {
+                let number = json::primitive_read(ctx.rt, "INT", value, compressed)?;
+                ints.push(ctx.rt.get_field(number, "$value").i());
+            }
+            if ints.len() < 4 {
+                return Err(format!("Input is not a list of 4 ints: {input}").into());
+            }
+            let most = ((ints[0] as i64) << 32) | (ints[1] as u32 as i64);
+            let least = ((ints[2] as i64) << 32) | (ints[3] as u32 as i64);
+            let uuid = ctx.rt.new_instance("java/util/UUID", 0);
+            invoke_member(
+                ctx,
+                op::INVOKESPECIAL,
+                &MemberRef::new("java/util/UUID", "<init>", "(JJ)V"),
+                &[uuid, V::J(most), V::J(least)],
+            );
+            if ints.len() > 4 {
+                Err(DecodeError {
+                    message: format!("Input is not a list of 4 ints: {input}"),
+                    partial: Some(uuid),
+                    remainder: None,
+                })
+            } else {
+                Ok(uuid)
+            }
+        }
+        "resource_location" => {
+            let raw = json::primitive_read(ctx.rt, "STRING", input, compressed)?;
+            let text = ctx.rt.str_of(raw).unwrap();
+            let (ns, path) = text.split_once(':').unwrap_or(("minecraft", text));
+            let ns = if ns.is_empty() { "minecraft" } else { ns };
+            if !ns
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b))
+                || !path
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"/_.-".contains(&b))
+            {
+                return Err(format!("Not a valid resource location: {text}").into());
+            }
+            let id = format!("{ns}:{path}");
+            Ok(ctx.rt.new_pinned_handle(
+                "net/minecraft/resources/ResourceLocation",
+                "resource_location",
+                0,
+                id,
+            ))
+        }
+        "enum" => {
+            if compressed {
+                let index = json::primitive_read(ctx.rt, "INT", input, true)?;
+                let index = ctx.rt.get_field(index, "$value").i();
+                array(ctx.rt, args[0])
+                    .and_then(|values| values.get(index as usize).copied())
+                    .filter(|v| !v.is_null())
+                    .ok_or_else(|| format!("Unknown element id: {index}").into())
+            } else {
+                let name = json::primitive_read(ctx.rt, "STRING", input, false)?;
+                let value = function(ctx, args[1], &[name]);
+                if value.is_null() {
+                    Err(format!("Unknown element name: {}", ctx.rt.value_to_string(name)).into())
+                } else {
+                    Ok(value)
+                }
+            }
+        }
+        "xmap" | "comapFlatMap" | "flatComapMap" | "flatXmap" => {
+            let base = decode_value(ctx, args[0], ops, input, compressed, depth + 1);
+            let (base, first_error) = match base {
+                Ok(value) => (value, None),
+                Err(error) => match error.partial {
+                    Some(value) => (value, Some(error)),
+                    None => return Err(error),
+                },
+            };
+            let value = function(ctx, args[1], &[base]);
+            let mapped = if matches!(kind.as_str(), "comapFlatMap" | "flatXmap") {
+                flatten_decoded_result(ctx, value)
+            } else {
+                Ok(value)
+            };
+            if let Some(mut error) = first_error {
+                match mapped {
+                    Ok(value) => error.partial = Some(value),
+                    Err(next) => {
+                        error.message.push_str("; ");
+                        error.message.push_str(&next.message);
+                        error.partial = next.partial;
+                    }
+                }
+                Err(error)
+            } else {
+                mapped
+            }
+        }
+        "list" => {
+            let values = input
+                .as_array()
+                .ok_or_else(|| format!("Not a list: {input}"))?;
+            let min = args[1].i().max(0) as usize;
+            let max = args[2].i().max(0) as usize;
+            let mut elements = Vec::new();
+            let mut failed = Vec::new();
+            let mut messages = Vec::new();
+            for value in values {
+                if elements.len() >= max {
+                    failed.push(value.clone());
+                    continue;
+                }
+                match decode_value(ctx, args[0], ops, value, compressed, depth + 1) {
+                    Ok(value) => elements.push(value),
+                    Err(error) => {
+                        failed.push(value.clone());
+                        messages.push(error.message);
+                        if let Some(partial) = error.partial {
+                            elements.push(partial);
+                        }
+                    }
+                }
+                if ctx.rt.pending_exception.is_some() {
+                    return Err("Java callback failed".into());
+                }
+            }
+            if elements.len() < min {
+                return Err(format!(
+                    "List is too short: {}, expected range [{min}-{max}]",
+                    elements.len()
+                )
+                .into());
+            }
+            let partial = ctx.rt.alloc(
+                "java/util/ImmutableCollections$ListN",
+                0,
+                Data::List(elements),
+            );
+            if values.len() > max {
+                messages = vec![format!(
+                    "List is too long: {}, expected range [{min}-{max}]",
+                    values.len()
+                )];
+            }
+            if messages.is_empty() {
+                Ok(partial)
+            } else {
+                Err(DecodeError {
+                    message: messages.join("; "),
+                    partial: Some(partial),
+                    remainder: Some(serde_json::Value::Array(failed)),
+                })
+            }
+        }
+        "map_codec" => {
+            if !input.is_object() && !compressed {
+                return Err(format!("Not a map: {input}").into());
+            }
+            decode_value(ctx, args[0], ops, input, compressed, depth + 1)
+        }
+        "field"
+        | "optional_field"
+        | "default_field"
+        | "lenient_optional_field"
+        | "lenient_default_field" => {
+            if compressed {
+                ctx.rt.throw_exception(
+                    "java/lang/UnsupportedOperationException",
+                    "Compressed MapCodec fields require a key compressor",
+                );
+                return Err("Unsupported compressed map".into());
+            }
+            let map = input
+                .as_object()
+                .ok_or_else(|| format!("Not a map: {input}"))?;
+            let key = ctx.rt.str_of(args[1]).unwrap_or("").to_owned();
+            let entry = map.get(&key).filter(|v| !v.is_null());
+            if let Some(entry) = entry {
+                let parsed = decode_value(ctx, args[0], ops, entry, compressed, depth + 1);
+                if parsed.is_ok() || !kind.starts_with("lenient") {
+                    return match parsed {
+                        Ok(value) => Ok(if kind.ends_with("optional_field") {
+                            ctx.rt
+                                .alloc("java/util/Optional", 0, Data::Optional(Some(value)))
+                        } else {
+                            value
+                        }),
+                        Err(mut error) => {
+                            if kind != "field" {
+                                error.partial = Some(if kind.ends_with("optional_field") {
+                                    ctx.rt.alloc(
+                                        "java/util/Optional",
+                                        0,
+                                        Data::Optional(error.partial),
+                                    )
+                                } else {
+                                    error.partial.unwrap_or(args[2])
+                                });
+                            }
+                            Err(error)
+                        }
+                    };
+                }
+            }
+            match kind.as_str() {
+                "field" => Err(format!("No key {key} in {input}").into()),
+                "optional_field" | "lenient_optional_field" => {
+                    Ok(ctx.rt.alloc("java/util/Optional", 0, Data::Optional(None)))
+                }
+                _ => Ok(args[2]),
+            }
+        }
+        "record" => {
+            let fields =
+                array(ctx.rt, args[0]).ok_or_else(|| "Invalid record fields".to_owned())?;
+            let mut values = Vec::new();
+            let mut errors = Vec::new();
+            let mut complete_partial = true;
+            for field in fields {
+                match decode_value(
+                    ctx,
+                    ctx.rt.get_field(field, "$builder_codec"),
+                    ops,
+                    input,
+                    compressed,
+                    depth + 1,
+                ) {
+                    Ok(v) => values.push(v),
+                    Err(e) => {
+                        errors.push(e.message);
+                        if let Some(value) = e.partial {
+                            values.push(value)
+                        } else {
+                            complete_partial = false;
+                        }
+                    }
+                }
+                if ctx.rt.pending_exception.is_some() {
+                    return Err("Java callback failed".into());
+                }
+            }
+            if !errors.is_empty() {
+                let partial = complete_partial.then(|| function(ctx, args[1], &values));
+                return Err(DecodeError {
+                    message: errors.join("; "),
+                    partial,
+                    remainder: Some(input.clone()),
+                });
+            }
+            Ok(function(ctx, args[1], &values))
+        }
+        "alternative" => match decode_value(ctx, args[0], ops, input, compressed, depth + 1) {
+            Ok(v) => Ok(v),
+            Err(first) => {
+                let value = decode_value(ctx, args[1], ops, input, compressed, depth + 1)
+                    .map_err(|second| format!("{first}; {second}"))?;
+                Ok(if args.len() > 2 {
+                    function(ctx, args[2], &[value])
+                } else {
+                    value
+                })
+            }
+        },
+        "range" => {
+            let value = decode_value(ctx, args[0], ops, input, compressed, depth + 1)?;
+            let raw = json::numeric_json(ctx.rt, value).unwrap();
+            let n = raw.as_f64().unwrap();
+            let min = json::numeric_json(ctx.rt, args[1])
+                .unwrap()
+                .as_f64()
+                .unwrap();
+            let max = json::numeric_json(ctx.rt, args[2])
+                .unwrap()
+                .as_f64()
+                .unwrap();
+            if n < min || n > max {
+                Err(format!("Value {n} outside of range [{min}:{max}]").into())
+            } else {
+                Ok(value)
+            }
+        }
+        "unit" => Ok(args[0]),
+        "unit_supplier" => Ok(function(ctx, args[0], &[])),
+        _ => {
+            ctx.rt.throw_exception(
+                "java/lang/UnsupportedOperationException",
+                &format!("MMGA cannot decode DFU node {kind}"),
+            );
+            Err(format!("Unknown codec {kind}").into())
+        }
+    }
+}
+
+fn encode_value(
+    ctx: &mut ExecCtx<'_>,
+    codec: V,
+    ops: V,
+    value: V,
+    compressed: bool,
+    depth: usize,
+) -> Result<serde_json::Value, EncodeError> {
+    use serde_json::Value as Json;
+    if ctx.rt.pending_exception.is_some() {
+        return Err("Java callback failed".into());
+    }
+    if depth >= 128 {
+        return Err("Codec nesting exceeds 128".into());
+    }
+    let Some((kind, args)) = graph_parts(ctx.rt, codec) else {
+        ctx.rt.throw_exception(
+            "java/lang/UnsupportedOperationException",
+            "MMGA cannot execute unknown DFU codec",
+        );
+        return Err("Unknown codec".into());
+    };
+    let expected = match kind.as_str() {
+        "BOOL" => Some("java/lang/Boolean"),
+        "BYTE" => Some("java/lang/Byte"),
+        "SHORT" => Some("java/lang/Short"),
+        "INT" => Some("java/lang/Integer"),
+        "LONG" => Some("java/lang/Long"),
+        "FLOAT" => Some("java/lang/Float"),
+        "DOUBLE" => Some("java/lang/Double"),
+        "STRING" => Some("java/lang/String"),
+        _ => None,
+    };
+    if let Some(expected) = expected {
+        if value.is_null() {
+            ctx.rt.throw_exception(
+                "java/lang/NullPointerException",
+                "Codec cannot encode null primitive",
+            );
+            return Err("Null primitive".into());
+        }
+        if ctx.rt.class_of(value) != Some(expected) {
+            ctx.rt.throw_exception(
+                "java/lang/ClassCastException",
+                &format!("{kind} codec requires {expected}"),
+            );
+            return Err("Wrong primitive wrapper".into());
+        }
+    }
+    match kind.as_str() {
+        "BOOL" => {
+            if ctx.rt.class_of(value) != Some("java/lang/Boolean") {
+                return Err("Not a Boolean".into());
+            }
+            Ok(Json::Bool(ctx.rt.get_field(value, "$value").i() != 0))
+        }
+        "STRING" => ctx
+            .rt
+            .str_of(value)
+            .map(|s| Json::String(s.into()))
+            .ok_or_else(|| "Not a String".into()),
+        "BYTE" | "SHORT" | "INT" | "LONG" | "FLOAT" | "DOUBLE" => {
+            json::numeric_json(ctx.rt, value).ok_or_else(|| "Not a finite number".into())
+        }
+        "resource_location" => ctx
+            .rt
+            .handle_of(value)
+            .filter(|(kind, ..)| *kind == "resource_location")
+            .map(|(_, _, id, _)| Json::String(id.into()))
+            .ok_or_else(|| "Not a ResourceLocation".into()),
+        "uuid_int_array" => {
+            let Some(("uuid", _, _, bits)) = ctx.rt.handle_of(value) else {
+                return Err("Not a UUID".into());
+            };
+            Ok(serde_json::json!([
+                (bits[0] >> 32) as i32,
+                bits[0] as i32,
+                (bits[1] >> 32) as i32,
+                bits[1] as i32
+            ]))
+        }
+        "enum" => {
+            if compressed {
+                let id = invoke_member(
+                    ctx,
+                    op::INVOKEINTERFACE,
+                    &MemberRef::new(
+                        "java/util/function/ToIntFunction",
+                        "applyAsInt",
+                        "(Ljava/lang/Object;)I",
+                    ),
+                    &[args[2], value],
+                );
+                if id.i() == -1 {
+                    Err(format!("Unknown element: {}", ctx.rt.value_to_string(value)).into())
+                } else {
+                    Ok(Json::from(id.i()))
+                }
+            } else {
+                let name = invoke_member(
+                    ctx,
+                    op::INVOKEINTERFACE,
+                    &MemberRef::new(
+                        "net/minecraft/util/StringRepresentable",
+                        "getSerializedName",
+                        "()Ljava/lang/String;",
+                    ),
+                    &[value],
+                );
+                ctx.rt
+                    .str_of(name)
+                    .map(|s| Json::String(s.into()))
+                    .ok_or_else(|| "Enum has no serialized name".into())
+            }
+        }
+        "xmap" | "comapFlatMap" | "flatComapMap" | "flatXmap" => {
+            let mapped = function(ctx, args[2], &[value]);
+            if ctx.rt.pending_exception.is_some() {
+                return Err("Java callback failed".into());
+            }
+            if matches!(kind.as_str(), "flatComapMap" | "flatXmap") {
+                match flatten_decoded_result(ctx, mapped) {
+                    Ok(value) => encode_value(ctx, args[0], ops, value, compressed, depth + 1),
+                    Err(error) => {
+                        let mut out = EncodeError {
+                            message: error.message,
+                            partial: None,
+                        };
+                        if let Some(value) = error.partial {
+                            match encode_value(ctx, args[0], ops, value, compressed, depth + 1) {
+                                Ok(json) => out.partial = Some(json),
+                                Err(next) => {
+                                    out.message.push_str("; ");
+                                    out.message.push_str(&next.message);
+                                    out.partial = next.partial;
+                                }
+                            }
+                        }
+                        Err(out)
+                    }
+                }
+            } else {
+                encode_value(ctx, args[0], ops, mapped, compressed, depth + 1)
+            }
+        }
+        "list" => {
+            let values = array(ctx.rt, value).ok_or_else(|| "Not a list".to_owned())?;
+            if values.len() < args[1].i().max(0) as usize
+                || values.len() > args[2].i().max(0) as usize
+            {
+                return Err(format!(
+                    "List length {} outside [{}, {}]",
+                    values.len(),
+                    args[1].i(),
+                    args[2].i()
+                )
+                .into());
+            }
+            let mut encoded = Vec::new();
+            let mut messages = Vec::new();
+            let mut complete_partial = true;
+            for value in values {
+                match encode_value(ctx, args[0], ops, value, compressed, depth + 1) {
+                    Ok(json) => encoded.push(json),
+                    Err(error) => {
+                        messages.push(error.message);
+                        if let Some(json) = error.partial {
+                            encoded.push(json)
+                        } else {
+                            complete_partial = false;
+                        }
+                    }
+                }
+                if ctx.rt.pending_exception.is_some() {
+                    return Err("Java callback failed".into());
+                }
+            }
+            if messages.is_empty() {
+                Ok(Json::Array(encoded))
+            } else {
+                Err(EncodeError {
+                    message: messages.join("; "),
+                    partial: complete_partial.then_some(Json::Array(encoded)),
+                })
+            }
+        }
+        "map_codec" => encode_value(ctx, args[0], ops, value, compressed, depth + 1),
+        "field"
+        | "optional_field"
+        | "default_field"
+        | "lenient_optional_field"
+        | "lenient_default_field" => {
+            if compressed {
+                ctx.rt.throw_exception(
+                    "java/lang/UnsupportedOperationException",
+                    "Compressed MapCodec fields require a key compressor",
+                );
+                return Err("Unsupported compressed map".into());
+            }
+            let key = ctx.rt.str_of(args[1]).unwrap_or("").to_owned();
+            let value = if kind.ends_with("optional_field") {
+                match ctx.rt.get_obj(value).map(|o| &o.data) {
+                    Some(Data::Optional(Some(v))) => *v,
+                    Some(Data::Optional(None)) => return Ok(Json::Object(Default::default())),
+                    _ => return Err("Optional field needs Optional".into()),
+                }
+            } else {
+                value
+            };
+            if kind.ends_with("default_field") && ctx.rt.val_eq(value, args[2]) {
+                return Ok(Json::Object(Default::default()));
+            }
+            match encode_value(ctx, args[0], ops, value, compressed, depth + 1) {
+                Ok(val) => {
+                    let mut map = serde_json::Map::new();
+                    map.insert(key, val);
+                    Ok(Json::Object(map))
+                }
+                Err(mut error) => {
+                    error.partial = error.partial.map(|value| {
+                        let mut map = serde_json::Map::new();
+                        map.insert(key, value);
+                        Json::Object(map)
+                    });
+                    Err(error)
+                }
+            }
+        }
+        "record" => {
+            let fields =
+                array(ctx.rt, args[0]).ok_or_else(|| "Invalid record fields".to_owned())?;
+            let mut output = serde_json::Map::new();
+            let mut messages = Vec::new();
+            let mut complete_partial = true;
+            for field in fields {
+                let getter = ctx.rt.get_field(field, "$builder_getter");
+                let part = function(ctx, getter, &[value]);
+                if ctx.rt.pending_exception.is_some() {
+                    return Err("Record getter failed".into());
+                }
+                let encoded = encode_value(
+                    ctx,
+                    ctx.rt.get_field(field, "$builder_codec"),
+                    ops,
+                    part,
+                    compressed,
+                    depth + 1,
+                );
+                let encoded = match encoded {
+                    Ok(value) => value,
+                    Err(error) => {
+                        messages.push(error.message);
+                        if let Some(value) = error.partial {
+                            value
+                        } else {
+                            complete_partial = false;
+                            continue;
+                        }
+                    }
+                };
+                let Json::Object(fields) = encoded else {
+                    return Err("Record field did not produce a map".into());
+                };
+                output.extend(fields);
+            }
+            if messages.is_empty() {
+                Ok(Json::Object(output))
+            } else {
+                Err(EncodeError {
+                    message: messages.join("; "),
+                    partial: complete_partial.then_some(Json::Object(output)),
+                })
+            }
+        }
+        "alternative" => encode_value(ctx, args[0], ops, value, compressed, depth + 1),
+        "range" => {
+            let encoded = encode_value(ctx, args[0], ops, value, compressed, depth + 1)?;
+            let n = encoded.as_f64().ok_or_else(|| "Not a number".to_owned())?;
+            let min = json::numeric_json(ctx.rt, args[1])
+                .unwrap()
+                .as_f64()
+                .unwrap();
+            let max = json::numeric_json(ctx.rt, args[2])
+                .unwrap()
+                .as_f64()
+                .unwrap();
+            if n < min || n > max {
+                Err(format!("Value {n} outside of range [{min}:{max}]").into())
+            } else {
+                Ok(encoded)
+            }
+        }
+        "unit" | "unit_supplier" => Ok(Json::Object(Default::default())),
+        _ => {
+            ctx.rt.throw_exception(
+                "java/lang/UnsupportedOperationException",
+                &format!("MMGA cannot encode DFU node {kind}"),
+            );
+            Err(format!("Unknown codec {kind}").into())
+        }
+    }
+}
+
+fn function(ctx: &mut ExecCtx<'_>, callback: V, args: &[V]) -> V {
+    let owner = match args.len() {
+        0 => "java/util/function/Supplier".to_owned(),
+        1 => "java/util/function/Function".to_owned(),
+        2 => "java/util/function/BiFunction".to_owned(),
+        n => format!("com/mojang/datafixers/util/Function{n}"),
+    };
+    let desc = format!(
+        "({})Ljava/lang/Object;",
+        "Ljava/lang/Object;".repeat(args.len())
+    );
+    let mut all = vec![callback];
+    all.extend_from_slice(args);
+    invoke_member(
+        ctx,
+        op::INVOKEINTERFACE,
+        &MemberRef::new(&owner, if args.is_empty() { "get" } else { "apply" }, &desc),
+        &all,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mmga_runtime::NullHost;
+    fn invoke(
+        ctx: &mut ExecCtx<'_>,
+        owner: &str,
+        name: &str,
+        desc: &str,
+        is_static: bool,
+        args: &[V],
+    ) -> V {
+        call(
+            ctx.rt,
+            ctx.linked,
+            ctx.host,
+            &MemberRef::new(owner, name, desc),
+            is_static,
+            args,
+        )
+        .expect("implemented DFU call")
+    }
+    #[test]
+    fn primitive_json_codecs_roundtrip_values_and_report_wrong_types() {
+        let mut rt = Rt::new();
+        let linked = LinkedSpace::new();
+        let mut host = NullHost;
+        let ops = get_static_field(
+            &mut rt,
+            JSON_OPS,
+            "INSTANCE",
+            "Lcom/mojang/serialization/JsonOps;",
+        )
+        .unwrap();
+        let codec = get_static_field(
+            &mut rt,
+            CODEC,
+            "INT",
+            "Lcom/mojang/serialization/codecs/PrimitiveCodec;",
+        )
+        .unwrap();
+        let input = box_primitive(&mut rt, "java/lang/Integer", V::I(129));
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        let encoded = invoke(&mut ctx, CODEC, "encodeStart", "(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;", false, &[codec, ops, input]);
+        let encoded = invoke(
+            &mut ctx,
+            RESULT,
+            "getOrThrow",
+            "()Ljava/lang/Object;",
+            false,
+            &[encoded],
+        );
+        assert_eq!(
+            json::to_value(ctx.rt, encoded).unwrap(),
+            serde_json::json!(129)
+        );
+        let decoded = invoke(&mut ctx, CODEC, "parse", "(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;", false, &[codec, ops, encoded]);
+        let decoded = invoke(
+            &mut ctx,
+            RESULT,
+            "getOrThrow",
+            "()Ljava/lang/Object;",
+            false,
+            &[decoded],
+        );
+        assert_eq!(ctx.rt.get_field(decoded, "$value"), V::I(129));
+        let wrong = json::from_value(ctx.rt, serde_json::json!("129"));
+        let failed = invoke(&mut ctx, CODEC, "parse", "(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;", false, &[codec, ops, wrong]);
+        assert_eq!(
+            invoke(&mut ctx, RESULT, "isError", "()Z", false, &[failed]),
+            V::TRUE
+        );
+        invoke(
+            &mut ctx,
+            RESULT,
+            "getOrThrow",
+            "()Ljava/lang/Object;",
+            false,
+            &[failed],
+        );
+        let error = ctx.rt.take_exception().unwrap();
+        assert!(ctx.rt.exception_summary(error).contains("Not a number"));
+    }
+
+    fn closure(rt: &mut Rt, id: u32, captures: Vec<V>) -> V {
+        rt.alloc(
+            "java/util/function/Function",
+            0,
+            Data::Closure(Box::new(mmga_runtime::ClosureData {
+                interface_class: "java/util/function/Function".into(),
+                sam_name: "apply".into(),
+                sam_desc: "(Ljava/lang/Object;)Ljava/lang/Object;".into(),
+                instantiated_desc: "(Ljava/lang/Object;)Ljava/lang/Object;".into(),
+                captures,
+                target: mmga_runtime::ClosureTarget::NativeLambda(id),
+            })),
+        )
+    }
+    fn field_a(ctx: &mut ExecCtx<'_>, args: &[V]) -> V {
+        ctx.rt.get_field(args[0], "a")
+    }
+    fn field_b(ctx: &mut ExecCtx<'_>, args: &[V]) -> V {
+        ctx.rt.get_field(args[0], "b")
+    }
+    fn construct(ctx: &mut ExecCtx<'_>, args: &[V]) -> V {
+        let value = ctx.rt.new_instance("example/Record", 0);
+        ctx.rt.put_field(value, "a", args[0]);
+        ctx.rt.put_field(value, "b", args[1]);
+        value
+    }
+    fn build_record(ctx: &mut ExecCtx<'_>, args: &[V]) -> V {
+        let primitive = get_static_field(
+            ctx.rt,
+            CODEC,
+            "INT",
+            "Lcom/mojang/serialization/codecs/PrimitiveCodec;",
+        )
+        .unwrap();
+        let string = get_static_field(
+            ctx.rt,
+            CODEC,
+            "STRING",
+            "Lcom/mojang/serialization/codecs/PrimitiveCodec;",
+        )
+        .unwrap();
+        let a = ctx.rt.intern_str("a");
+        let b = ctx.rt.intern_str("b");
+        let default = ctx.rt.intern_str("default");
+        let field = invoke(
+            ctx,
+            CODEC,
+            "fieldOf",
+            "(Ljava/lang/String;)Lcom/mojang/serialization/MapCodec;",
+            false,
+            &[primitive, a],
+        );
+        let optional = invoke(
+            ctx,
+            CODEC,
+            "optionalFieldOf",
+            "(Ljava/lang/String;Ljava/lang/Object;)Lcom/mojang/serialization/MapCodec;",
+            false,
+            &[string, b, default],
+        );
+        let ga = closure(ctx.rt, 1, vec![]);
+        let gb = closure(ctx.rt, 2, vec![]);
+        let ctor = closure(ctx.rt, 3, vec![]);
+        let ba = invoke(
+            ctx,
+            MAP,
+            "forGetter",
+            "(Ljava/util/function/Function;)Lcom/mojang/serialization/codecs/RecordCodecBuilder;",
+            false,
+            &[field, ga],
+        );
+        let bb = invoke(
+            ctx,
+            MAP,
+            "forGetter",
+            "(Ljava/util/function/Function;)Lcom/mojang/serialization/codecs/RecordCodecBuilder;",
+            false,
+            &[optional, gb],
+        );
+        let grouped=invoke(ctx,INSTANCE,"group","(Lcom/mojang/datafixers/kinds/App;Lcom/mojang/datafixers/kinds/App;)Lcom/mojang/datafixers/Products$P2;",false,&[args[0],ba,bb]);
+        invoke(ctx,"com/mojang/datafixers/Products$P2","apply","(Lcom/mojang/datafixers/kinds/Applicative;Ljava/util/function/BiFunction;)Lcom/mojang/datafixers/kinds/App;",false,&[grouped,args[0],ctor])
+    }
+    fn increment(ctx: &mut ExecCtx<'_>, args: &[V]) -> V {
+        let n = ctx.rt.get_field(args[0], "$value").i() + 1;
+        box_primitive(ctx.rt, "java/lang/Integer", V::I(n))
+    }
+    fn decrement(ctx: &mut ExecCtx<'_>, args: &[V]) -> V {
+        let n = ctx.rt.get_field(args[0], "$value").i() - 1;
+        box_primitive(ctx.rt, "java/lang/Integer", V::I(n))
+    }
+    fn positive(ctx: &mut ExecCtx<'_>, args: &[V]) -> V {
+        if ctx.rt.get_field(args[0], "$value").i() > 0 {
+            result::success(ctx.rt, args[0])
+        } else {
+            result::error(ctx.rt, "must be positive", None)
+        }
+    }
+    fn identity(_ctx: &mut ExecCtx<'_>, args: &[V]) -> V {
+        args[0]
+    }
+    fn unit_supplier(ctx: &mut ExecCtx<'_>, args: &[V]) -> V {
+        let n = ctx.rt.get_field(args[0], "calls").i() + 1;
+        ctx.rt.put_field(args[0], "calls", V::I(n));
+        args[1]
+    }
+    fn partial_negative(ctx: &mut ExecCtx<'_>, args: &[V]) -> V {
+        let value = box_primitive(
+            ctx.rt,
+            "java/lang/Integer",
+            V::I(-ctx.rt.get_field(args[0], "$value").i()),
+        );
+        result::error(ctx.rt, "negated with warning", Some(value))
+    }
+    fn test_linked() -> LinkedSpace {
+        let mut linked = LinkedSpace::new();
+        linked.register_native_module(mmga_runtime::NativeModuleRegistry {
+            classes: &[],
+            lambdas: &[
+                (1, field_a),
+                (2, field_b),
+                (3, construct),
+                (4, build_record),
+                (5, increment),
+                (6, decrement),
+                (7, positive),
+                (8, identity),
+                (9, unit_supplier),
+                (10, partial_negative),
+            ],
+        });
+        linked
+    }
+
+    #[test]
+    fn record_builder_executes_getters_constructor_defaults_and_rejects_invalid_fields() {
+        let mut rt = Rt::new();
+        let linked = test_linked();
+        let mut host = NullHost;
+        let ops = get_static_field(
+            &mut rt,
+            JSON_OPS,
+            "INSTANCE",
+            "Lcom/mojang/serialization/JsonOps;",
+        )
+        .unwrap();
+        let builder = closure(&mut rt, 4, vec![]);
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        let codec = invoke(
+            &mut ctx,
+            BUILDER,
+            "create",
+            "(Ljava/util/function/Function;)Lcom/mojang/serialization/Codec;",
+            true,
+            &[builder],
+        );
+        let json = json::from_value(ctx.rt, serde_json::json!({"a":7}));
+        let parsed=invoke(&mut ctx,CODEC,"parse","(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;",false,&[codec,ops,json]);
+        let record = invoke(
+            &mut ctx,
+            RESULT,
+            "getOrThrow",
+            "()Ljava/lang/Object;",
+            false,
+            &[parsed],
+        );
+        assert_eq!(
+            ctx.rt.get_field(ctx.rt.get_field(record, "a"), "$value"),
+            V::I(7)
+        );
+        assert_eq!(
+            ctx.rt.str_of(ctx.rt.get_field(record, "b")),
+            Some("default")
+        );
+        let encoded=invoke(&mut ctx,CODEC,"encodeStart","(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;",false,&[codec,ops,record]);
+        assert_eq!(
+            json::to_value(ctx.rt, result::value(ctx.rt, encoded).unwrap()),
+            Some(serde_json::json!({"a":7}))
+        );
+        for malformed in [serde_json::json!({}), serde_json::json!({"a":7,"b":false})] {
+            let malformed = json::from_value(ctx.rt, malformed);
+            let failed=invoke(&mut ctx,CODEC,"parse","(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;",false,&[codec,ops,malformed]);
+            assert!(result::value(ctx.rt, failed).is_none());
+            assert!(!result::message(&mut ctx, failed).is_empty());
+        }
+        assert!(ctx.rt.pending_exception.is_none());
+    }
+
+    #[test]
+    fn mapped_list_codecs_execute_both_directions_and_flat_mapping_reports_errors() {
+        let mut rt = Rt::new();
+        let linked = test_linked();
+        let mut host = NullHost;
+        let ops = get_static_field(
+            &mut rt,
+            JSON_OPS,
+            "INSTANCE",
+            "Lcom/mojang/serialization/JsonOps;",
+        )
+        .unwrap();
+        let base = get_static_field(
+            &mut rt,
+            CODEC,
+            "INT",
+            "Lcom/mojang/serialization/codecs/PrimitiveCodec;",
+        )
+        .unwrap();
+        let forward = closure(&mut rt, 5, vec![]);
+        let back = closure(&mut rt, 6, vec![]);
+        let positive = closure(&mut rt, 7, vec![]);
+        let identity = closure(&mut rt, 8, vec![]);
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        let mapped=invoke(&mut ctx,CODEC,"xmap","(Ljava/util/function/Function;Ljava/util/function/Function;)Lcom/mojang/serialization/Codec;",false,&[base,forward,back]);
+        let list = invoke(
+            &mut ctx,
+            CODEC,
+            "listOf",
+            "()Lcom/mojang/serialization/Codec;",
+            false,
+            &[mapped],
+        );
+        let decoded =
+            decode_value(&mut ctx, list, ops, &serde_json::json!([1, 2]), false, 0).unwrap();
+        let values = array(ctx.rt, decoded).unwrap();
+        assert_eq!(ctx.rt.get_field(values[0], "$value"), V::I(2));
+        assert_eq!(
+            encode_value(&mut ctx, list, ops, decoded, false, 0).unwrap(),
+            serde_json::json!([1, 2])
+        );
+        let checked=invoke(&mut ctx,CODEC,"comapFlatMap","(Ljava/util/function/Function;Ljava/util/function/Function;)Lcom/mojang/serialization/Codec;",false,&[base,positive,identity]);
+        assert_eq!(
+            decode_value(&mut ctx, checked, ops, &serde_json::json!(-1), false, 0)
+                .unwrap_err()
+                .message,
+            "must be positive"
+        );
+        assert!(ctx.rt.pending_exception.is_none());
+    }
+
+    #[test]
+    fn map_unit_supplier_is_lazy_and_runs_each_decode_with_empty_encoding() {
+        let mut rt = Rt::new();
+        let linked = test_linked();
+        let mut host = NullHost;
+        let counter = rt.new_instance("example/Counter", 0);
+        let value = rt.new_str("payload");
+        let supplier = closure(&mut rt, 9, vec![counter, value]);
+        let ops = get_static_field(
+            &mut rt,
+            JSON_OPS,
+            "INSTANCE",
+            "Lcom/mojang/serialization/JsonOps;",
+        )
+        .unwrap();
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        let map = invoke(
+            &mut ctx,
+            MAP,
+            "unit",
+            "(Ljava/util/function/Supplier;)Lcom/mojang/serialization/MapCodec;",
+            true,
+            &[supplier],
+        );
+        assert_eq!(ctx.rt.get_field(counter, "calls").i(), 0);
+        let codec = invoke(
+            &mut ctx,
+            MAP,
+            "codec",
+            "()Lcom/mojang/serialization/Codec;",
+            false,
+            &[map],
+        );
+        assert_eq!(
+            encode_value(&mut ctx, codec, ops, value, false, 0).unwrap(),
+            serde_json::json!({})
+        );
+        assert_eq!(ctx.rt.get_field(counter, "calls").i(), 0);
+        for _ in 0..2 {
+            assert_eq!(
+                decode_value(&mut ctx, codec, ops, &serde_json::json!({}), false, 0).unwrap(),
+                value
+            );
+        }
+        assert_eq!(ctx.rt.get_field(counter, "calls"), V::I(2));
+    }
+
+    #[test]
+    fn invalid_list_elements_remain_errors_with_partial_values_and_failed_remainder() {
+        let mut rt = Rt::new();
+        let linked = test_linked();
+        let mut host = NullHost;
+        let ops = get_static_field(
+            &mut rt,
+            JSON_OPS,
+            "INSTANCE",
+            "Lcom/mojang/serialization/JsonOps;",
+        )
+        .unwrap();
+        let base = get_static_field(
+            &mut rt,
+            CODEC,
+            "INT",
+            "Lcom/mojang/serialization/codecs/PrimitiveCodec;",
+        )
+        .unwrap();
+        let codec = graph(&mut rt, CODEC, "list", &[base, V::I(0), V::I(10)]);
+        let input = json::from_value(&mut rt, serde_json::json!([1, "bad", 3]));
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        let decoded=invoke(&mut ctx,CODEC,"decode","(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;",false,&[codec,ops,input]);
+        assert_eq!(
+            invoke(&mut ctx, RESULT, "isError", "()Z", false, &[decoded]),
+            V::TRUE
+        );
+        let pair = invoke(
+            &mut ctx,
+            RESULT,
+            "getPartialOrThrow",
+            "()Ljava/lang/Object;",
+            false,
+            &[decoded],
+        );
+        let values = array(ctx.rt, ctx.rt.get_field(pair, "left")).unwrap();
+        assert_eq!(
+            values
+                .iter()
+                .map(|v| ctx.rt.get_field(*v, "$value").i())
+                .collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+        assert_eq!(
+            json::to_value(ctx.rt, ctx.rt.get_field(pair, "right")),
+            Some(serde_json::json!(["bad"]))
+        );
+        invoke(
+            &mut ctx,
+            RESULT,
+            "getOrThrow",
+            "()Ljava/lang/Object;",
+            false,
+            &[decoded],
+        );
+        assert!(ctx.rt.take_exception().is_some());
+    }
+
+    #[test]
+    fn uuid_codec_preserves_signed_int_order_and_length_error_partial() {
+        let mut rt = Rt::new();
+        let linked = test_linked();
+        let mut host = NullHost;
+        let ops = get_static_field(
+            &mut rt,
+            JSON_OPS,
+            "INSTANCE",
+            "Lcom/mojang/serialization/JsonOps;",
+        )
+        .unwrap();
+        let codec = get_static_field(
+            &mut rt,
+            "net/minecraft/core/UUIDUtil",
+            "CODEC",
+            "Lcom/mojang/serialization/Codec;",
+        )
+        .unwrap();
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        let input = serde_json::json!([-1, 1, i32::MIN, 42]);
+        let uuid = decode_value(&mut ctx, codec, ops, &input, false, 0).unwrap();
+        assert_eq!(
+            ctx.rt.handle_of(uuid).unwrap().3,
+            [-4294967295, i64::MIN + 42]
+        );
+        assert_eq!(
+            encode_value(&mut ctx, codec, ops, uuid, false, 0).unwrap(),
+            input
+        );
+        assert!(decode_value(
+            &mut ctx,
+            codec,
+            ops,
+            &serde_json::json!([1, 2, 3]),
+            false,
+            0
+        )
+        .unwrap_err()
+        .partial
+        .is_none());
+        let overlong = decode_value(
+            &mut ctx,
+            codec,
+            ops,
+            &serde_json::json!([-1, 1, i32::MIN, 42, 9]),
+            false,
+            0,
+        )
+        .unwrap_err();
+        assert!(ctx.rt.val_eq(overlong.partial.unwrap(), uuid));
+        assert!(ctx.rt.pending_exception.is_none());
+    }
+
+    #[test]
+    fn flat_encode_keeps_partial_payload_but_never_marks_it_successful() {
+        let mut rt = Rt::new();
+        let linked = test_linked();
+        let mut host = NullHost;
+        let ops = get_static_field(
+            &mut rt,
+            JSON_OPS,
+            "INSTANCE",
+            "Lcom/mojang/serialization/JsonOps;",
+        )
+        .unwrap();
+        let base = get_static_field(
+            &mut rt,
+            CODEC,
+            "INT",
+            "Lcom/mojang/serialization/codecs/PrimitiveCodec;",
+        )
+        .unwrap();
+        let decoder = closure(&mut rt, 8, vec![]);
+        let encoder = closure(&mut rt, 10, vec![]);
+        let value = box_primitive(&mut rt, "java/lang/Integer", V::I(5));
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        let mapped=invoke(&mut ctx,CODEC,"flatComapMap","(Ljava/util/function/Function;Ljava/util/function/Function;)Lcom/mojang/serialization/Codec;",false,&[base,decoder,encoder]);
+        let encoded=invoke(&mut ctx,CODEC,"encodeStart","(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;",false,&[mapped,ops,value]);
+        assert_eq!(
+            invoke(&mut ctx, RESULT, "isSuccess", "()Z", false, &[encoded]),
+            V::FALSE
+        );
+        let partial = invoke(
+            &mut ctx,
+            RESULT,
+            "getPartialOrThrow",
+            "()Ljava/lang/Object;",
+            false,
+            &[encoded],
+        );
+        assert_eq!(json::to_value(ctx.rt, partial), Some(serde_json::json!(-5)));
+        assert_eq!(result::message(&mut ctx, encoded), "negated with warning");
+        assert!(ctx.rt.pending_exception.is_none());
+    }
+}
