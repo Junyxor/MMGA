@@ -22,6 +22,13 @@ pub fn get_static_field(rt: &mut Rt, owner: &str, name: &str, desc: &str) -> Opt
         "CLIMBABLE" => "climbable",
         "RAILS" => "rails",
         "BEACON_BASE_BLOCKS" => "beacon_base_blocks",
+        // BuilderTransformers tablecloth/door fields, verified as awe.bp/bo/q/Q/h
+        // in the official mapping and their literal names in awe.<clinit>.
+        "COMBINATION_STEP_SOUND_BLOCKS" => "combination_step_sound_blocks",
+        "INSIDE_STEP_SOUND_BLOCKS" => "inside_step_sound_blocks",
+        "DOORS" => "doors",
+        "TRAPDOORS" => "trapdoors",
+        "WOODEN_DOORS" => "wooden_doors",
         _ => return None,
     };
     if let Some(value) = rt.get_static(owner, name) {
@@ -52,12 +59,31 @@ mod tests {
         fn call_method(
             &mut self,
             rt: &mut Rt,
-            _linked: &LinkedSpace,
+            linked: &LinkedSpace,
             member: &MemberRef,
             is_static: bool,
             args: &[V],
         ) -> Option<V> {
-            crate::minecraft::call_keys_authlib_and_libs(rt, &mut self.0, member, is_static, args)
+            crate::tag_codecs::call(
+                &mut ExecCtx {
+                    rt,
+                    linked,
+                    host: self,
+                    depth: 0,
+                },
+                member,
+                is_static,
+                args,
+            )
+            .or_else(|| {
+                crate::minecraft::call_keys_authlib_and_libs(
+                    rt,
+                    &mut self.0,
+                    member,
+                    is_static,
+                    args,
+                )
+            })
         }
     }
     #[test]
@@ -82,6 +108,14 @@ mod tests {
             ("CLIMBABLE", "climbable"),
             ("RAILS", "rails"),
             ("BEACON_BASE_BLOCKS", "beacon_base_blocks"),
+            (
+                "COMBINATION_STEP_SOUND_BLOCKS",
+                "combination_step_sound_blocks",
+            ),
+            ("INSIDE_STEP_SOUND_BLOCKS", "inside_step_sound_blocks"),
+            ("DOORS", "doors"),
+            ("TRAPDOORS", "trapdoors"),
+            ("WOODEN_DOORS", "wooden_doors"),
         ] {
             let tag = read_static_field(&mut ctx, OWNER, name, "Lnet/minecraft/tags/TagKey;");
             assert!(ctx.rt.pending_exception.is_none(), "{name}");
@@ -112,6 +146,12 @@ mod tests {
             assert_eq!(
                 crate::minecraft::resource_key_parts(ctx.rt, key),
                 Some(("minecraft:root".into(), "minecraft:block".into()))
+            );
+            let same=invoke_member(&mut ctx,op::INVOKESTATIC,&MemberRef::new(TAG,"create",
+                "(Lnet/minecraft/resources/ResourceKey;Lnet/minecraft/resources/ResourceLocation;)Lnet/minecraft/tags/TagKey;"),&[key,location]);
+            assert_eq!(
+                same, tag,
+                "static block tag must share TagKey factory identity"
             );
         }
         assert!(ctx.rt.pending_exception.is_none());

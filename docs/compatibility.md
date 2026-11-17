@@ -20,6 +20,7 @@
 - 事件 host 读取实际 linked 类的 Event/IModBusEvent/ICancellableEvent/abstract 关系，保留 supplied event 原对象，正确匹配具体类与祖先 Consumer；Event 构造和默认取消字段按官方执行。三项 VM 回归、七项 bus 回归及 source catalog 唯一性/完整父链/无环约束通过；实际引用的官方外部事件逐项核对。Curios setup 推进至 FML `ModLoader.postEventWrapContainerInModOrder(Event)`。Mekanism/Create/AE2 先前构造路径均复测恢复；额外取消副作用未实现的交互事件明确拒绝。客户端事件能登记监听器不等于客户端运行或渲染支持。
 - BlockBehaviour.Properties 的默认字段、真实 callback/default sound/feature flags、强度与抗爆 clamp、输入 reference、谓词和链式设置按官方 bytecode 实现；MapColor 静态 identity 缺陷经失败回归确认并修复。两个 builder 的状态独立，world predicate 真正调用 state API，不返回猜测结果。两项回归通过，原 AE2 越过 Properties.of 和方块定义，下一处为 `Codec.unboundedMap`（`AEComponents.lambda$static$3`）；仍在构造，注册/setup/tick 未到达。证据 `.local/probes/ae2-block-properties.log`。
 - `Registry.holderByNameCodec` 构造真实 DFU 映射，保留 registry，解码调用真实 getHolder，编码检查引用/key/owner/绑定和 registrationInfo；任何尚未实现的引用操作明确失败，不新造一个假 holder。两个新回归先失败后通过、registry codec 共四项通过；原 Mekanism 越过此 codec 构造，下一处 `DefaultedRegistry.createIntrusiveHolder(Object)`（`Chemical.<init>`），仍未构造完成。
+- Create 新增的 NeoForge Blocks/Items 和 vanilla BuilderTransformers tag 常量按官方字面量映射，静态/direct 身份一致，不含 tag membership 猜测；四项 tag 回归通过。原 jar 越过 AllBlocks/TagGen，进入 AllItems，下一处 `NeoForgeDataMaps.FURNACE_FUELS`（`ItemBuilder.burnTime`），仍在构造，组合注册/setup 未到达。
 
 ## 2026-11-17 持续修复增量（进行中）
 
