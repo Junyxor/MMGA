@@ -144,17 +144,20 @@ pub(super) fn call(
         ("error", "()Ljava/util/Optional;") => {
             Some(optional(ctx.rt, (!successful).then_some(recv)))
         }
-        ("partialValue", "()Ljava/util/Optional;") => Some(if successful && value.is_null() {
-            ctx.rt
-                .throw_exception("java/lang/NullPointerException", "Optional.of(null)")
-        } else {
-            optional(ctx.rt, (!value.is_null()).then_some(value))
-        }),
+        ("partialValue", "()Ljava/util/Optional;") if !successful => {
+            Some(optional(ctx.rt, (!value.is_null()).then_some(value)))
+        }
         ("hasResultOrPartial", "()Z") => Some(V::bool(successful || !value.is_null())),
         (
             "resultOrPartial",
             "()Ljava/util/Optional;" | "(Ljava/util/function/Consumer;)Ljava/util/Optional;",
         ) => {
+            if successful && value.is_null() {
+                return Some(
+                    ctx.rt
+                        .throw_exception("java/lang/NullPointerException", "Optional.of(null)"),
+                );
+            }
             if !successful && args.len() == 2 {
                 let msg = message(ctx, recv);
                 let msg = ctx.rt.new_str(msg);

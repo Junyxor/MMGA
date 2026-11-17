@@ -1,6 +1,7 @@
 //! Executable DataFixerUpper 8.0.16 codecs for Minecraft 1.21.1.
 //! Graphs retain their mappings and callbacks; unsupported DynamicOps fail explicitly.
 
+mod chat;
 mod json;
 mod result;
 
@@ -103,6 +104,9 @@ pub fn codec_from_map(rt: &mut Rt, map: V) -> V {
 }
 
 pub fn get_static_field(rt: &mut Rt, owner: &str, name: &str, desc: &str) -> Option<V> {
+    if let Some(value) = chat::get_static(rt, owner, name, desc) {
+        return Some(value);
+    }
     if let Some(value) = json::get_static(rt, owner, name, desc) {
         return Some(value);
     }
@@ -396,23 +400,32 @@ fn call_codec(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: 
             if ctx.rt.pending_exception.is_some() {
                 return Some(V::NULL);
             }
-            return Some(
-                match encoded
-                    .and_then(|value| merge_prefix(ctx.rt, prefix, value).map_err(Into::into))
-                {
-                    Ok(json) => {
-                        let value = json::from_value(ctx.rt, json);
-                        result::success(ctx.rt, value)
+            let encoded = match encoded {
+                Ok(json) => merge_prefix(ctx.rt, prefix, json),
+                Err(mut error) => {
+                    if let Some(json) = error.partial.take() {
+                        match merge_prefix(ctx.rt, prefix, json) {
+                            Ok(json) => error.partial = Some(json),
+                            Err(merge) => {
+                                error.message.push_str("; ");
+                                error.message.push_str(&merge.message);
+                                error.partial = merge.partial;
+                            }
+                        }
                     }
-                    Err(error) => {
-                        let partial = error
-                            .partial
-                            .and_then(|json| merge_prefix(ctx.rt, prefix, json).ok())
-                            .map(|json| json::from_value(ctx.rt, json));
-                        result::error(ctx.rt, &error.message, partial)
-                    }
-                },
-            );
+                    Err(error)
+                }
+            };
+            return Some(match encoded {
+                Ok(json) => {
+                    let value = json::from_value(ctx.rt, json);
+                    result::success(ctx.rt, value)
+                }
+                Err(error) => {
+                    let partial = error.partial.map(|json| json::from_value(ctx.rt, json));
+                    result::error(ctx.rt, &error.message, partial)
+                }
+            });
         }
     }
     None
@@ -422,7 +435,7 @@ fn merge_prefix(
     rt: &Rt,
     prefix: Option<V>,
     value: serde_json::Value,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, EncodeError> {
     let Some(prefix) = prefix else {
         return Ok(value);
     };
@@ -437,7 +450,13 @@ fn merge_prefix(
             prefix.extend(value);
             Ok(serde_json::Value::Array(prefix))
         }
-        (prefix, _) => Err(format!("Cannot merge value into prefix: {prefix}")),
+        (prefix, value) => {
+            let primitive = !value.is_object() && !value.is_array();
+            Err(EncodeError {
+                message: format!("Cannot merge value into prefix: {prefix}"),
+                partial: Some(if primitive { value } else { prefix }),
+            })
+        }
     }
 }
 
@@ -533,6 +552,7 @@ fn decode_value(
         return Err("Unknown codec".into());
     };
     match kind.as_str() {
+        "component" => chat::decode(ctx, ops, input, compressed, depth),
         "BOOL" | "BYTE" | "SHORT" | "INT" | "LONG" | "FLOAT" | "DOUBLE" | "STRING" => {
             json::primitive_read(ctx.rt, &kind, input, compressed).map_err(Into::into)
         }
@@ -791,15 +811,28 @@ fn decode_value(
         }
         "alternative" => match decode_value(ctx, args[0], ops, input, compressed, depth + 1) {
             Ok(v) => Ok(v),
-            Err(first) => {
-                let value = decode_value(ctx, args[1], ops, input, compressed, depth + 1)
-                    .map_err(|second| format!("{first}; {second}"))?;
-                Ok(if args.len() > 2 {
+            Err(first) => match decode_value(ctx, args[1], ops, input, compressed, depth + 1) {
+                Ok(value) => Ok(if args.len() > 2 {
                     function(ctx, args[2], &[value])
                 } else {
                     value
-                })
-            }
+                }),
+                Err(mut second) => {
+                    if first.partial.is_some() {
+                        Err(first)
+                    } else if let Some(partial) = second.partial {
+                        if args.len() > 2 {
+                            second.partial = Some(function(ctx, args[2], &[partial]));
+                        }
+                        Err(second)
+                    } else {
+                        Err(
+                            format!("Failed to parse either. First: {first}; Second: {second}")
+                                .into(),
+                        )
+                    }
+                }
+            },
         },
         "range" => {
             let value = decode_value(ctx, args[0], ops, input, compressed, depth + 1)?;
@@ -881,6 +914,7 @@ fn encode_value(
         }
     }
     match kind.as_str() {
+        "component" => chat::encode(ctx, ops, value, compressed, depth),
         "BOOL" => {
             if ctx.rt.class_of(value) != Some("java/lang/Boolean") {
                 return Err("Not a Boolean".into());
@@ -1711,5 +1745,114 @@ mod tests {
         assert_eq!(json::to_value(ctx.rt, partial), Some(serde_json::json!(-5)));
         assert_eq!(result::message(&mut ctx, encoded), "negated with warning");
         assert!(ctx.rt.pending_exception.is_none());
+    }
+
+    #[test]
+    fn alternative_prefers_first_partial_and_bad_prefix_preserves_correct_partial() {
+        let mut rt = Rt::new();
+        let linked = test_linked();
+        let mut host = NullHost;
+        let ops = get_static_field(
+            &mut rt,
+            JSON_OPS,
+            "INSTANCE",
+            "Lcom/mojang/serialization/JsonOps;",
+        )
+        .unwrap();
+        let int = get_static_field(
+            &mut rt,
+            CODEC,
+            "INT",
+            "Lcom/mojang/serialization/codecs/PrimitiveCodec;",
+        )
+        .unwrap();
+        let string = get_static_field(
+            &mut rt,
+            CODEC,
+            "STRING",
+            "Lcom/mojang/serialization/codecs/PrimitiveCodec;",
+        )
+        .unwrap();
+        let ints = graph(&mut rt, CODEC, "list", &[int, V::I(0), V::I(8)]);
+        let strings = graph(&mut rt, CODEC, "list", &[string, V::I(0), V::I(8)]);
+        let alternative = graph(&mut rt, CODEC, "alternative", &[ints, strings]);
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        let failed = decode_value(
+            &mut ctx,
+            alternative,
+            ops,
+            &serde_json::json!([1, "x"]),
+            false,
+            0,
+        )
+        .unwrap_err();
+        let partial = array(ctx.rt, failed.partial.unwrap()).unwrap();
+        assert_eq!(partial.len(), 1);
+        assert_eq!(ctx.rt.get_field(partial[0], "$value"), V::I(1));
+        let prefix = json::from_value(ctx.rt, serde_json::json!({"existing":true}));
+        let wrong = merge_prefix(ctx.rt, Some(prefix), serde_json::json!(5)).unwrap_err();
+        assert_eq!(wrong.partial, Some(serde_json::json!(5)));
+        let scalar = json::from_value(ctx.rt, serde_json::json!(42));
+        let wrong = merge_prefix(ctx.rt, Some(scalar), serde_json::json!([1])).unwrap_err();
+        assert_eq!(wrong.partial, Some(serde_json::json!(42)));
+    }
+
+    #[test]
+    fn unrepresentable_json_numbers_and_null_optional_results_do_not_fake_values() {
+        let mut rt = Rt::new();
+        let linked = LinkedSpace::new();
+        let mut host = NullHost;
+        let ops = get_static_field(
+            &mut rt,
+            JSON_OPS,
+            "INSTANCE",
+            "Lcom/mojang/serialization/JsonOps;",
+        )
+        .unwrap();
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        invoke(
+            &mut ctx,
+            JSON_OPS,
+            "createDouble",
+            "(D)Ljava/lang/Object;",
+            false,
+            &[ops, V::D(f64::NAN)],
+        );
+        let error = ctx.rt.take_exception().unwrap();
+        assert!(ctx
+            .rt
+            .exception_summary(error)
+            .contains("UnsupportedOperationException"));
+        let success = invoke(
+            &mut ctx,
+            RESULT,
+            "success",
+            "(Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;",
+            true,
+            &[V::NULL],
+        );
+        invoke(
+            &mut ctx,
+            RESULT,
+            "resultOrPartial",
+            "()Ljava/util/Optional;",
+            false,
+            &[success],
+        );
+        let error = ctx.rt.take_exception().unwrap();
+        assert!(ctx
+            .rt
+            .exception_summary(error)
+            .contains("NullPointerException"));
     }
 }

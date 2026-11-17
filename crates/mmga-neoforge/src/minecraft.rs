@@ -1604,7 +1604,7 @@ fn new_style(rt: &mut Rt) -> V {
 fn copy_style(rt: &mut Rt, style: V) -> V {
     let next = new_style(rt);
     if !style.is_null() {
-        for key in ["color", "Bold", "Italic", "Underlined", "Strikethrough", "Obfuscated"] {
+        for key in ["color", "$color_name", "$named_color_rgb", "Bold", "Italic", "Underlined", "Strikethrough", "Obfuscated", "font", "insertion", "clickEvent", "hoverEvent"] {
             let v = rt.get_field(style, key);
             if !v.is_null() {
                 rt.put_field(next, key, v);

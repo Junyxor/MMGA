@@ -137,17 +137,30 @@ pub(super) fn call(
             ("createBoolean", "(Z)Ljava/lang/Object;" | "(Z)Lcom/google/gson/JsonElement;") => {
                 Some(from_value(ctx.rt, Json::Bool(args.get(1)?.i() != 0)))
             }
-            (
-                "createByte" | "createShort" | "createInt",
-                "(B)Ljava/lang/Object;" | "(S)Ljava/lang/Object;" | "(I)Ljava/lang/Object;",
-            ) => Some(from_value(ctx.rt, Json::from(args.get(1)?.i()))),
+            ("createByte", "(B)Ljava/lang/Object;")
+            | ("createShort", "(S)Ljava/lang/Object;")
+            | ("createInt", "(I)Ljava/lang/Object;") => {
+                Some(from_value(ctx.rt, Json::from(args.get(1)?.i())))
+            }
             ("createLong", "(J)Ljava/lang/Object;") => {
                 Some(from_value(ctx.rt, Json::from(args.get(1)?.j())))
             }
             ("createFloat", "(F)Ljava/lang/Object;") => {
+                if !args.get(1)?.f().is_finite() {
+                    return Some(ctx.rt.throw_exception(
+                        "java/lang/UnsupportedOperationException",
+                        "Nonfinite JsonPrimitive numbers are not implemented",
+                    ));
+                }
                 Some(from_value(ctx.rt, Json::from(args.get(1)?.f())))
             }
             ("createDouble", "(D)Ljava/lang/Object;") => {
+                if !args.get(1)?.d().is_finite() {
+                    return Some(ctx.rt.throw_exception(
+                        "java/lang/UnsupportedOperationException",
+                        "Nonfinite JsonPrimitive numbers are not implemented",
+                    ));
+                }
                 Some(from_value(ctx.rt, Json::from(args.get(1)?.d())))
             }
             (
@@ -370,7 +383,10 @@ pub(super) fn primitive_read(
     let double = number
         .as_f64()
         .ok_or_else(|| format!("Not a number: {input}"))?;
-    let long = number.as_i64().unwrap_or(double as i64);
+    // Gson's LazilyParsedNumber uses BigDecimal.intValue/longValue for exponent,
+    // decimal and overflowing tokens: truncate the fraction, then retain low bits.
+    // Rust's float-to-int saturating cast would silently give different values.
+    let long = decimal_low_bits(&number.to_string()) as i64;
     let (class, raw) = match kind {
         "BYTE" => ("java/lang/Byte", V::I(long as i8 as i32)),
         "SHORT" => ("java/lang/Short", V::I(long as i16 as i32)),
@@ -388,4 +404,62 @@ pub(super) fn primitive_read(
         _ => return Err(format!("Unsupported primitive {kind}")),
     };
     Ok(box_primitive(rt, class, raw))
+}
+
+fn decimal_low_bits(text: &str) -> u64 {
+    let (negative, text) = text
+        .strip_prefix('-')
+        .map_or((false, text), |rest| (true, rest));
+    let (mantissa, exponent) = text
+        .split_once(['e', 'E'])
+        .map_or((text, 0i32), |(base, exponent)| {
+            (base, exponent.parse::<i32>().unwrap_or(0))
+        });
+    let integer_digits = mantissa.find('.').unwrap_or(mantissa.len()) as i32;
+    let keep = integer_digits.saturating_add(exponent);
+    if keep <= 0 {
+        return 0;
+    }
+    let digits = mantissa
+        .bytes()
+        .filter(|b| b.is_ascii_digit())
+        .collect::<Vec<_>>();
+    let mut result = 0u64;
+    for digit in digits.iter().take(keep as usize) {
+        result = result
+            .wrapping_mul(10)
+            .wrapping_add(u64::from(*digit - b'0'));
+    }
+    for _ in digits.len()..keep as usize {
+        result = result.wrapping_mul(10);
+    }
+    if negative {
+        result.wrapping_neg()
+    } else {
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn parsed_json_integer_conversion_truncates_and_wraps_like_gson_big_decimal() {
+        let mut rt = Rt::new();
+        for (text, expected) in [
+            ("4294967297", 1),
+            ("1e30", 1073741824),
+            ("-1e30", -1073741824),
+            ("3.99", 3),
+            ("-3.99", -3),
+            ("1.23e-2", 0),
+        ] {
+            let json = serde_json::from_str(text).unwrap();
+            let value = primitive_read(&mut rt, "INT", &json, false).unwrap();
+            assert_eq!(rt.get_field(value, "$value"), V::I(expected), "{text}");
+        }
+        let json = serde_json::from_str("18446744073709551615").unwrap();
+        let value = primitive_read(&mut rt, "LONG", &json, false).unwrap();
+        assert_eq!(rt.get_field(value, "$value"), V::J(-1));
+    }
 }
