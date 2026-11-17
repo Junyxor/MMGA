@@ -64,7 +64,8 @@ pub struct ModJar {
     pub mixin_configs: BTreeMap<String, MixinConfig>,
     /// `META-INF/services/<spi>` -> implementation internal class names.
     pub services: BTreeMap<String, Vec<String>>,
-    /// Non-class resources (`assets/...`, `data/...`, configs, etc.).
+    /// Original classpath resource bytes, including `.class` files. Class parsing
+    /// does not remove resources; the loader can expose the exact original bytes.
     pub resources: BTreeMap<String, Vec<u8>>,
     /// Nested jar paths unpacked from `META-INF/jarjar/`.
     pub nested_jars: Vec<String>,
@@ -177,14 +178,16 @@ impl ModJar {
             .unwrap_or_default();
 
         for (entry_path, data) in raw_entries {
-            if entry_path.ends_with(".class") && entry_path != "module-info.class" {
-                // Skip multi-release Java 22+ duplicates if base class exists unless needed
-                if entry_path.starts_with("META-INF/versions/") {
-                    continue;
+            if entry_path.ends_with(".class") {
+                // Multi-release entries and module-info remain raw resources even
+                // when this class-space does not link them. Root class bytes have
+                // the same precedence as the parsed root class definitions.
+                if entry_path != "module-info.class" && !entry_path.starts_with("META-INF/versions/") {
+                    let cf = ClassFile::parse(&data)
+                        .map_err(|e| format!("{}:{entry_path}: {e}", self.source_name))?;
+                    self.classes.insert(cf.name.clone(), cf);
                 }
-                let cf = ClassFile::parse(&data)
-                    .map_err(|e| format!("{}:{entry_path}: {e}", self.source_name))?;
-                self.classes.insert(cf.name.clone(), cf);
+                self.resources.insert(entry_path, data);
                 continue;
             }
 
@@ -322,6 +325,42 @@ impl ModJar {
             });
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod resource_tests {
+    use super::*;
+    use std::io::Write;
+    fn class_bytes(name:&str,flags:u16)->Vec<u8>{
+        let mut out=vec![0xca,0xfe,0xba,0xbe,0,0,0,65,0,5];
+        for text in [name,"java/lang/Object"]{
+            out.push(1);out.extend_from_slice(&(text.len() as u16).to_be_bytes());out.extend_from_slice(text.as_bytes());
+            out.push(7);out.extend_from_slice(&(if text==name{1u16}else{3u16}).to_be_bytes());
+        }
+        for value in [flags,2,4,0,0,0,0]{out.extend_from_slice(&value.to_be_bytes());}out
+    }
+    fn jar(entries:&[(&str,Vec<u8>)])->Vec<u8>{
+        let mut writer=zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for(name,bytes)in entries{writer.start_file(*name,zip::write::SimpleFileOptions::default()).unwrap();writer.write_all(bytes).unwrap();}
+        writer.finish().unwrap().into_inner()
+    }
+    #[test]
+    fn linked_classes_remain_available_as_their_original_resource_bytes(){
+        let bytes=class_bytes("example/Resource",0x21);let jar=jar(&[("example/Resource.class",bytes.clone())]);let parsed=ModJar::from_bytes("resource.jar",&jar).unwrap();
+        assert!(parsed.classes.contains_key("example/Resource"));
+        assert_eq!(parsed.resources.get("example/Resource.class"),Some(&bytes));
+    }
+    #[test]
+    fn root_class_resources_match_root_precedence_and_skipped_entries_remain_readable(){
+        let nested=class_bytes("example/Resource",0x21);let root=class_bytes("example/Resource",0x31);let future=class_bytes("example/Future",0x21);
+        let nested_jar=jar(&[("example/Resource.class",nested)]);
+        let jar=jar(&[("META-INF/jarjar/library.jar",nested_jar),("example/Resource.class",root.clone()),("META-INF/versions/22/example/Future.class",future.clone()),("module-info.class",vec![1,2,3])]);
+        let parsed=ModJar::from_bytes("root.jar",&jar).unwrap();
+        assert_eq!(parsed.classes["example/Resource"].access,0x31);
+        assert_eq!(parsed.resources.get("example/Resource.class"),Some(&root));
+        assert_eq!(parsed.resources.get("META-INF/versions/22/example/Future.class"),Some(&future));
+        assert_eq!(parsed.resources.get("module-info.class"),Some(&vec![1,2,3]));assert!(!parsed.classes.contains_key("example/Future"));
     }
 }
 
