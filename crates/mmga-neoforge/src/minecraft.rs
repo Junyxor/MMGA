@@ -13,6 +13,23 @@ const MUTABLE_COMPONENT: &str = "net/minecraft/network/chat/MutableComponent";
 const STYLE_CLASS: &str = "net/minecraft/network/chat/Style";
 const CHAT_FORMATTING: &str = "net/minecraft/ChatFormatting";
 
+/// Minecraft 1.21.1's packed ARGB operations, including Java's unmasked shifts.
+pub fn call_fast_color(member: &MemberRef, is_static: bool, args: &[V]) -> Option<V> {
+    if !is_static || member.owner != "net/minecraft/util/FastColor$ARGB32" {
+        return None;
+    }
+    let value = match (member.name.as_str(), member.desc.as_str()) {
+        ("color", "(III)I") => (255 << 24) | (args[0].i() << 16) | (args[1].i() << 8) | args[2].i(),
+        ("color", "(IIII)I") => (args[0].i() << 24) | (args[1].i() << 16) | (args[2].i() << 8) | args[3].i(),
+        ("alpha", "(I)I") => ((args[0].i() as u32) >> 24) as i32,
+        ("red", "(I)I") => (args[0].i() >> 16) & 255,
+        ("green", "(I)I") => (args[0].i() >> 8) & 255,
+        ("blue", "(I)I") => args[0].i() & 255,
+        _ => return None,
+    };
+    Some(V::I(value))
+}
+
 /// Extracts `en_us.json` key-value translation entries from a jar's resource map.
 pub fn extract_lang_entries(
     resources: &BTreeMap<String, Vec<u8>>,
@@ -3593,6 +3610,52 @@ fn map_color_constant(rt: &mut Rt, name: &str) -> Option<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn argb32_keeps_mekanism_tier_rgb_and_java_bit_packing() {
+        let mut prepared = crate::PreparedLoad::from_jars(Vec::new(), true).unwrap();
+        let mut rt = Rt::new();
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &prepared.linked,
+            host: &mut prepared.loader,
+            depth: 0,
+        };
+        let owner = "net/minecraft/util/FastColor$ARGB32";
+        for (rgb, packed) in [
+            ([95, 255, 184], 0xff5fffb8u32),
+            ([255, 128, 106], 0xffff806a),
+            ([75, 248, 255], 0xff4bf8ff),
+            ([247, 135, 255], 0xfff787ff),
+            ([88, 88, 88], 0xff585858),
+        ] {
+            let value = mmga_runtime::invoke_member(
+                &mut ctx,
+                mmga_classfile::op::INVOKESTATIC,
+                &MemberRef::new(owner, "color", "(III)I"),
+                &rgb.map(V::I),
+            );
+            assert!(ctx.rt.pending_exception.is_none(), "{:?}", ctx.rt.pending_exception);
+            assert_eq!(value.i() as u32, packed);
+        }
+        // Vanilla uses shifts/OR, without clamping or masking input channels.
+        let packed = mmga_runtime::invoke_member(
+            &mut ctx,
+            mmga_classfile::op::INVOKESTATIC,
+            &MemberRef::new(owner, "color", "(IIII)I"),
+            &[V::I(0x12), V::I(0x134), V::I(0x56), V::I(0x78)],
+        );
+        assert_eq!(packed.i(), 0x13345678);
+        for (name, expected) in [("alpha", 0x13), ("red", 0x34), ("green", 0x56), ("blue", 0x78)] {
+            let value = mmga_runtime::invoke_member(
+                &mut ctx,
+                mmga_classfile::op::INVOKESTATIC,
+                &MemberRef::new(owner, name, "(I)I"),
+                &[packed],
+            );
+            assert_eq!(value.i(), expected);
+        }
+    }
 
     #[test]
     fn translatable_component_resolves_lang_table_positional_args_and_siblings() {

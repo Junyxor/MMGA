@@ -1772,6 +1772,9 @@ impl HostApi for FmlLoader {
         ) {
             return Some(value);
         }
+        if let Some(value) = crate::minecraft::call_fast_color(member, is_static, args) {
+            return Some(value);
+        }
         if let Some(value) = crate::minecraft::call_network_and_codecs(
             rt,
             linked,
