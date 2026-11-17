@@ -17,6 +17,7 @@ pub mod dfu;
 pub mod deferred_holders;
 pub mod deferred_items;
 pub mod loader;
+pub mod logging_markers;
 pub mod minecraft;
 pub mod registries;
 pub mod sounds;

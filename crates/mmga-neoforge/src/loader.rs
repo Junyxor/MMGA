@@ -1796,6 +1796,9 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::deferred_holders::call(rt, &mut self.state.registries, member, is_static, args) {
             return Some(value);
         }
+        if let Some(value) = crate::logging_markers::call(rt, member, is_static, args) {
+            return Some(value);
+        }
         if let Some(value) = crate::blocks::call(rt, &mut self.state.registries, member, is_static, args) {
             return Some(value);
         }
@@ -2033,6 +2036,9 @@ impl HostApi for FmlLoader {
             return true;
         }
         if crate::dfu::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::logging_markers::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::capabilities::is_subtype(sub_class, super_class) {
