@@ -1961,6 +1961,9 @@ impl HostApi for FmlLoader {
         }
         {
             let mut ctx = ExecCtx { rt, linked, host: self, depth: 0 };
+            if let Some(value) = crate::range_checks::call(&mut ctx, member, is_static, args) {
+                return Some(value);
+            }
             if let Some(value) = crate::entity_selector_options::call(&mut ctx, member, is_static, args) {
                 return Some(value);
             }

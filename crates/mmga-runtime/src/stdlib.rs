@@ -82,6 +82,9 @@ pub fn stdlib_call(
     if let Some(value) = crate::class_loading::call(ctx, member, is_static, args) {
         return Some(value);
     }
+    if let Some(value) = crate::numeric_compare::call(ctx, member, is_static, args) {
+        return Some(value);
+    }
 
     if let Some(value) = crate::jdk_state::call(ctx, member, is_static, args) {
         return Some(value);

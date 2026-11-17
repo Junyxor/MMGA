@@ -10,6 +10,7 @@ mod array_utils;
 mod jdk_state;
 mod reflection;
 mod class_loading;
+mod numeric_compare;
 pub mod linked;
 pub mod stdlib;
 pub mod value;

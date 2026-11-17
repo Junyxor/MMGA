@@ -41,6 +41,7 @@
 - Create CopperBlockSet 的 vanilla SLABS/STAIRS tag 常量按官方 `minecraft:slabs/stairs` block keys 映射，回归先失败后通过。原 Create 越过该处到 ArrayUtils.contains(Object[],Object)；仍未完成构造/注册。
 - Commons Lang ArrayUtils.contains/indexOf 执行 wanted.equals(element)，保留 null、start index、live array mutation 和 callback 异常，不使用猜测的 equality。两项回归先失败后通过，原 Create 越过 CopperBlockSet.hasVariant，到 StringUtils.capitalize（Registrate toEnglishName）。
 - StringUtils.capitalize 使用固定 OpenJDK 21 Unicode 15.0 的简单 titlecase 映射，不把 Unicode uppercase 的多字符扩展误当 Java titlecase。两个回归先失败后通过，保留 null/空值/未改变引用及非 BMP code point；工具 `tools/GenerateJava21Titlecase.java` 校验官方文件 SHA-256 并验证全部 code points 的重现数据。原 Create 越过 capitalize 到 Collectors.joining；未声称 Rt 已能保存 lone UTF-16 surrogate。
+- `Codec.checkRange` 保留真实 min/max，并调用值的 Comparable；lazy错误消息/no partial、exact Long precision、NaN/负零和自定义比较异常由四项 VM 回归加一项 numeric bridge 回归验证。原 Mekanism 越过范围工厂，下一处 Codec.validate(Function)（SerializerHelper）；仍在构造。
 - ClassLoader 使用真实 linked class-space identity、解析类和 host classpath bytes；ServiceLoader 改为 metadata/iterator 延迟 provider 构造，检查请求 loader、provider cache/reload 和 constructor cause，不再提前运行所有 provider。八项回归通过，Class.isEnum 区分真实 enum 与匿名 constant body。Mekanism 已越过 MekanismAPI，下一处 `Codec.checkRange(Number,Number)`（SerializerHelper），构造尚未完成。
 - 本机工具版本核实：Rust 1.98.0；PATH java/javac 为 17.0.12，javap 及 `D:/MC launcher/Java/21` 中的实际 JDK 为 Microsoft 25.0.3（目录名不是版本证据）。模组输入仍为官方 Java 21 classfile，已由 Rust VM 解析/执行；JDK 21 专有语义依据固定官方源数据，未把本机 Java 工具说成 Java 21，也未在本机运行官方 NeoForge 对照。
 
