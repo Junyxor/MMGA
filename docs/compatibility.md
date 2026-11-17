@@ -32,6 +32,7 @@
 - EntitySelectorOptions 的真实 custom register 保留 modifier/canUse/description，允许官方的覆盖和 null 行为；canUse 只在真实 custom lookup 时执行。四项回归先失败后通过（包括 direct ctor），完整 vanilla option catalog、实体查询和未知 parser 路径明确失败。Curios 越过 selector register，实际完成 **CommonSetup**，下一阶段 InterModProcess 停在 `getIMCStream(Predicate)`；tick/饰品玩法未验证。
 - WoodType 的 11 个官方名称与静态身份、registration map 和传入完整 record 构造器字段已验证；builtin 未解析的 BlockSetType/sound/fence 字段和依赖 hash 明确失败。两个回归先失败后通过，原 Create 越过 WoodType 名称初始化，下一处 WeatheringCopper.WeatherState.values；不代表木材声音、世界或渲染已实现。
 - WeatherState 的四个 canonical 枚举值、名称/serializedName/ordinal、values 独立数组和 valueOf 异常按官方验证，两项回归先失败后通过。Create 继续推进 sprite metadata，下一处 ItemTags.DOORS（`BuilderTransformers.slidingDoor`）；铜的实际氧化过程未实现。
+- `Codec.mapResult` 的原 ResultFunction 现在接收真实 decoded Pair/DataResult、原始 input 和已合并 prefix 的编码结果，unknown callback 明确失败。两个回归先失败后通过，另一个回归复现了 callback 的 stable lifecycle 被丢弃，并修复 top-level codec result 的 lifecycle/input identity 保留。AE2 越过 GenericStack，下一处 ItemStack.SINGLE_ITEM_CODEC（`AECodecs.<clinit>`），仍在构造。
 
 ## 2026-11-17 持续修复增量（进行中）
 

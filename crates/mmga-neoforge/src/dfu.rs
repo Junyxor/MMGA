@@ -2,6 +2,7 @@
 //! Graphs retain their mappings and callbacks; unsupported DynamicOps fail explicitly.
 
 mod chat;
+mod codec_result;
 mod json;
 mod map_result;
 mod result;
@@ -578,6 +579,9 @@ fn call_codec(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: 
         {
             return Some(graph(ctx.rt, CODEC, "or_else_get", args));
         }
+        if class == CODEC && name == "mapResult" && desc == "(Lcom/mojang/serialization/Codec$ResultFunction;)Lcom/mojang/serialization/Codec;" {
+            return Some(graph(ctx.rt,CODEC,"codec_result",args));
+        }
         if name == "listOf" && desc == "(II)Lcom/mojang/serialization/Codec;" {
             return Some(graph(ctx.rt, CODEC, "list", args));
         }
@@ -631,6 +635,30 @@ fn call_codec(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: 
                         "JsonOps input must be a JsonElement",
                     ));
                 };
+                if let Some((_, args)) =
+                    graph_parts(ctx.rt, recv).filter(|(kind, _)| kind == "codec_result")
+                {
+                    let result = codec_result::decode_result(
+                        ctx,
+                        &args,
+                        ops,
+                        &json,
+                        compressed,
+                        0,
+                        Some(input),
+                    );
+                    if ctx.rt.pending_exception.is_some() {
+                        return Some(V::NULL);
+                    }
+                    return Some(match result {
+                        Ok(result) if decode_pair => result,
+                        Ok(result) => match codec_result::parsed_result(ctx, result) {
+                            Ok(result) => result,
+                            Err(error) => result::error(ctx.rt, &error.message, error.partial),
+                        },
+                        Err(error) => result::error(ctx.rt, &error.message, error.partial),
+                    });
+                }
                 let decoded = decode_with_remainder(ctx, recv, ops, &json, compressed, 0);
                 if ctx.rt.pending_exception.is_some() {
                     return Some(V::NULL);
@@ -663,6 +691,22 @@ fn call_codec(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: 
                             ctx.rt.put_field(pair, "second", remainder);
                             pair
                         });
+                        result::error(ctx.rt, &error.message, partial)
+                    }
+                });
+            }
+            if let Some((_, args)) =
+                graph_parts(ctx.rt, recv).filter(|(kind, _)| kind == "codec_result")
+            {
+                let result =
+                    codec_result::encode_result(ctx, &args, ops, input, compressed, 0, prefix);
+                if ctx.rt.pending_exception.is_some() {
+                    return Some(V::NULL);
+                }
+                return Some(match result {
+                    Ok(result) => result,
+                    Err(error) => {
+                        let partial = error.partial.map(|json| json::from_value(ctx.rt, json));
                         result::error(ctx.rt, &error.message, partial)
                     }
                 });
@@ -862,6 +906,9 @@ fn decode_with_remainder(
         return Err("Codec nesting exceeds128".into());
     }
     if let Some((kind, args)) = graph_parts(ctx.rt, codec) {
+        if kind == "codec_result" {
+            return codec_result::decode(ctx, &args, ops, input, compressed, depth);
+        }
         if kind == "nonempty_list" {
             let decoded = decode_with_remainder(ctx, args[0], ops, input, compressed, depth + 1);
             return match decoded {
@@ -1435,6 +1482,9 @@ fn decode_value(
         return Err("Unknown codec".into());
     };
     match kind.as_str() {
+        "codec_result" => {
+            codec_result::decode(ctx, &args, ops, input, compressed, depth).map(|(value, _)| value)
+        }
         "map_result" => map_result::decode(ctx, &args, ops, input, compressed, depth),
         "dispatch_map" => decode_dispatch_map(ctx, &args, ops, input, compressed, depth),
         "unbounded_map" => decode_unbounded_map(ctx, &args, ops, input, compressed, depth),
@@ -1837,6 +1887,7 @@ fn encode_value(
         }
     }
     match kind.as_str() {
+        "codec_result" => codec_result::encode(ctx, &args, ops, value, compressed, depth, None),
         "map_result" => map_result::encode(ctx, &args, ops, value, compressed, depth),
         "dispatch_map" => encode_dispatch_map(ctx, &args, ops, value, compressed, depth),
         "unbounded_map" => encode_unbounded_map(ctx, &args, ops, value, compressed, depth),
