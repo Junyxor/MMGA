@@ -229,6 +229,7 @@ impl PreparedLoad {
         }
 
         let mut linked = LinkedSpace::new();
+        crate::direction::register_types(&mut linked);
         linked.services = services;
         linked.add_bytecode_classes(classes);
         let mut loader = FmlLoader {
@@ -1625,9 +1626,6 @@ impl HostApi for FmlLoader {
     fn classpath_resource(&self, path: &str) -> Result<Option<Vec<u8>>, String> {
         Ok(self.jar_resources.get(path).cloned())
     }
-    fn classpath_resource(&self, path: &str) -> Result<Option<Vec<u8>>, String> {
-        Ok(self.jar_resources.get(path).cloned())
-    }
     fn get_static_field(&mut self, rt: &mut Rt, owner: &str, name: &str, desc: &str) -> Option<V> {
         if owner == "net/neoforged/neoforge/common/NeoForge" && name == "EVENT_BUS" {
             return Some(self.game_bus_handle(rt));
@@ -2287,13 +2285,13 @@ impl HostApi for FmlLoader {
         if crate::data_maps::is_subtype(sub_class, super_class) {
             return true;
         }
-        if crate::wood_types::is_subtype(sub_class, super_class) {
+        if crate::entity_selector_options::is_subtype(sub_class, super_class) || crate::wood_types::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::weathering_copper::is_subtype(sub_class, super_class) {
             return true;
         }
-        if crate::entity_selector_options::is_subtype(sub_class, super_class) {
+        if crate::direction::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::registry_holders::is_subtype(sub_class, super_class) {

@@ -398,8 +398,12 @@ fn declaring_enum(ctx: &mut ExecCtx<'_>, value: V) -> Result<String, V> {
     Ok(class)
 }
 fn new_set(ctx: &mut ExecCtx<'_>, class: &str) -> Result<V, V> {
-    let direct_enum = ctx.linked.superclass_of(class) == Some("java/lang/Enum")
-        || ctx.host.is_api_subtype(class, "java/lang/Enum");
+    // Assignability also holds for enum constant-body subclasses. When actual
+    // superclass metadata exists, only the declaring enum is a legal element type.
+    let direct_enum = match ctx.linked.superclass_of(class) {
+        Some(parent) => parent == "java/lang/Enum",
+        None => ctx.host.is_api_subtype(class, "java/lang/Enum"),
+    };
     if !direct_enum {
         return Err(
             if ctx.linked.superclass_of(class).is_some()
