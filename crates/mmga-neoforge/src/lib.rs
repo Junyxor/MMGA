@@ -6,6 +6,7 @@
 
 pub mod bus;
 pub mod codecs;
+pub mod components;
 pub mod loader;
 pub mod minecraft;
 pub mod registries;

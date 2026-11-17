@@ -1787,6 +1787,9 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::minecraft::call_armor_layer(rt, member, is_static, args) {
             return Some(value);
         }
+        if let Some(value) = crate::components::call(rt, linked, self, member, is_static, args) {
+            return Some(value);
+        }
         if let Some(value) = crate::codecs::call(rt, linked, self, member, is_static, args) {
             return Some(value);
         }
@@ -1936,6 +1939,9 @@ impl HostApi for FmlLoader {
 
     fn is_api_subtype(&self, sub_class: &str, super_class: &str) -> bool {
         if sub_class == super_class {
+            return true;
+        }
+        if crate::components::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::minecraft::is_subtype(sub_class, super_class) {
