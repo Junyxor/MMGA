@@ -542,6 +542,12 @@ fn jdk_supertypes(cls: &str) -> &'static [&'static str] {
             &["java/lang/Comparable", "java/io/Serializable"]
         }
         "java/util/Collection" => &["java/lang/Iterable"],
+        "java/util/AbstractCollection" => &["java/util/Collection"],
+        "java/util/AbstractSet" => &["java/util/AbstractCollection", "java/util/Set"],
+        "java/util/EnumSet" => &["java/util/AbstractSet", "java/lang/Cloneable", "java/io/Serializable"],
+        "java/util/RegularEnumSet" | "java/util/JumboEnumSet" => &["java/util/EnumSet"],
+        "java/util/RegularEnumSet$EnumSetIterator" => &["java/util/Iterator"],
+        "java/util/Collections$UnmodifiableSet" => &["java/util/Set"],
         "java/util/SequencedCollection" => &["java/util/Collection"],
         "java/util/List" | "java/util/Set" | "java/util/Queue" => {
             &["java/util/SequencedCollection", "java/util/Collection"]

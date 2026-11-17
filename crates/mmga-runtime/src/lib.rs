@@ -4,6 +4,7 @@
 pub mod fxhash;
 pub mod heap;
 mod guava_views;
+mod enum_sets;
 mod jdk_state;
 mod reflection;
 pub mod linked;
