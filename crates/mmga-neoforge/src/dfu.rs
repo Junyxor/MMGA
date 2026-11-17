@@ -148,6 +148,34 @@ pub fn get_static_field(rt: &mut Rt, owner: &str, name: &str, desc: &str) -> Opt
     if let Some(value) = json::get_static(rt, owner, name, desc) {
         return Some(value);
     }
+    if owner == "net/minecraft/util/ExtraCodecs"
+        && desc == "Lcom/mojang/serialization/Codec;"
+        && matches!(name, "NON_NEGATIVE_INT" | "POSITIVE_INT")
+    {
+        if let Some(value) = rt.get_static(owner, name) {
+            return Some(value);
+        }
+        let base = get_static_field(
+            rt,
+            CODEC,
+            "INT",
+            "Lcom/mojang/serialization/codecs/PrimitiveCodec;",
+        )?;
+        let minimum = if name == "NON_NEGATIVE_INT" { 0 } else { 1 };
+        let message = rt.new_str(if minimum == 0 {
+            "Value must be non-negative"
+        } else {
+            "Value must be positive"
+        });
+        let value = graph(
+            rt,
+            CODEC,
+            "extra_int_range",
+            &[base, V::I(minimum), V::I(i32::MAX), message],
+        );
+        rt.put_static(owner, name, value);
+        return Some(value);
+    }
     if owner == CODEC
         && desc == "Lcom/mojang/serialization/codecs/PrimitiveCodec;"
         && matches!(
@@ -666,7 +694,7 @@ fn decode_remainder(rt: &Rt, codec: V, input: &serde_json::Value) -> serde_json:
     match kind.as_str() {
         "map_codec" | "item_stack" | "fluid_stack" => input.clone(),
         "list" => serde_json::json!([]),
-        "xmap" | "comapFlatMap" | "flatComapMap" | "flatXmap" | "range" => {
+        "xmap" | "comapFlatMap" | "flatComapMap" | "flatXmap" | "range" | "extra_int_range" => {
             decode_remainder(rt, args[0], input)
         }
         _ => serde_json::Value::Null,
@@ -1203,6 +1231,15 @@ fn decode_value(
                 }
             },
         },
+        "extra_int_range" => {
+            let value = decode_value(ctx, args[0], ops, input, compressed, depth + 1)?;
+            let input = ctx.rt.get_field(value, "$value").i();
+            if input < args[1].i() || input > args[2].i() {
+                Err(format!("{}: {input}", ctx.rt.value_to_string(args[3])).into())
+            } else {
+                Ok(value)
+            }
+        }
         "range" => {
             let value = decode_value(ctx, args[0], ops, input, compressed, depth + 1)?;
             let raw = json::numeric_json(ctx.rt, value).unwrap();
@@ -1565,6 +1602,30 @@ fn encode_value(
             }
         }
         "alternative" => encode_value(ctx, args[0], ops, value, compressed, depth + 1),
+        "extra_int_range" => {
+            // Validate before the underlying encoder, matching Codec.validate's
+            // flatComapMap: invalid values have no encoded partial or prefix.
+            if value.is_null() {
+                ctx.rt.throw_exception(
+                    "java/lang/NullPointerException",
+                    "ExtraCodecs integer validator",
+                );
+                return Err("Null integer".into());
+            }
+            if ctx.rt.class_of(value) != Some("java/lang/Integer") {
+                ctx.rt.throw_exception(
+                    "java/lang/ClassCastException",
+                    "ExtraCodecs integer validator requires Integer",
+                );
+                return Err("Wrong integer wrapper".into());
+            }
+            let input = ctx.rt.get_field(value, "$value").i();
+            if input < args[1].i() || input > args[2].i() {
+                Err(format!("{}: {input}", ctx.rt.value_to_string(args[3])).into())
+            } else {
+                encode_value(ctx, args[0], ops, value, compressed, depth + 1)
+            }
+        }
         "range" => {
             let encoded = encode_value(ctx, args[0], ops, value, compressed, depth + 1)?;
             let n = encoded.as_f64().ok_or_else(|| "Not a number".to_owned())?;
@@ -1618,6 +1679,80 @@ fn function(ctx: &mut ExecCtx<'_>, callback: V, args: &[V]) -> V {
 mod tests {
     use super::*;
     use mmga_runtime::NullHost;
+
+    #[test]
+    fn extra_codecs_integer_bounds_validate_encode_and_decode_without_partial_defaults() {
+        let mut rt = Rt::new();
+        let linked = test_linked();
+        let mut host = NullHost;
+        let owner = "net/minecraft/util/ExtraCodecs";
+        let ops = get_static_field(
+            &mut rt,
+            JSON_OPS,
+            "INSTANCE",
+            "Lcom/mojang/serialization/JsonOps;",
+        )
+        .unwrap();
+        for (name, minimum, message) in [
+            ("NON_NEGATIVE_INT", 0, "Value must be non-negative"),
+            ("POSITIVE_INT", 1, "Value must be positive"),
+        ] {
+            let codec =
+                get_static_field(&mut rt, owner, name, "Lcom/mojang/serialization/Codec;").unwrap();
+            assert_eq!(
+                get_static_field(&mut rt, owner, name, "Lcom/mojang/serialization/Codec;"),
+                Some(codec)
+            );
+            let mut ctx = ExecCtx {
+                rt: &mut rt,
+                linked: &linked,
+                host: &mut host,
+                depth: 0,
+            };
+            for input in [minimum, i32::MAX] {
+                let json = json::from_value(ctx.rt, serde_json::json!(input));
+                let decoded = invoke(&mut ctx, CODEC, "parse", "(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;", false, &[codec, ops, json]);
+                let value = result::value(ctx.rt, decoded).unwrap();
+                assert_eq!(ctx.rt.get_field(value, "$value"), V::I(input));
+                let encoded = invoke(&mut ctx, CODEC, "encodeStart", "(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;", false, &[codec, ops, value]);
+                assert_eq!(
+                    json::to_value(ctx.rt, result::value(ctx.rt, encoded).unwrap()),
+                    Some(serde_json::json!(input))
+                );
+            }
+            for input in [i32::MIN, minimum - 1] {
+                let json = json::from_value(ctx.rt, serde_json::json!(input));
+                let decoded = invoke(&mut ctx, CODEC, "parse", "(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;", false, &[codec, ops, json]);
+                assert!(result::value(ctx.rt, decoded).is_none());
+                assert!(ctx.rt.get_field(decoded, "$partial").is_null());
+                assert_eq!(
+                    result::message(&mut ctx, decoded),
+                    format!("{message}: {input}")
+                );
+                let input = box_primitive(ctx.rt, "java/lang/Integer", V::I(input));
+                let encoded = invoke(&mut ctx, CODEC, "encodeStart", "(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;", false, &[codec, ops, input]);
+                assert!(result::value(ctx.rt, encoded).is_none());
+                assert!(ctx.rt.get_field(encoded, "$partial").is_null());
+                assert_eq!(
+                    result::message(&mut ctx, encoded),
+                    format!("{message}: {}", ctx.rt.get_field(input, "$value").i())
+                );
+            }
+            let input = json::from_value(ctx.rt, serde_json::json!("1"));
+            let result = invoke(&mut ctx, CODEC, "parse", "(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;", false, &[codec, ops, input]);
+            assert!(result::value(ctx.rt, result).is_none());
+            assert!(ctx.rt.pending_exception.is_none());
+        }
+        assert!(get_static_field(&mut rt, owner, "NON_NEGATIVE_INT", "I").is_none());
+        assert!(get_static_field(
+            &mut rt,
+            owner,
+            "MADE_UP",
+            "Lcom/mojang/serialization/Codec;"
+        )
+        .is_none());
+    }
+
     #[test]
     fn product_p1_and_p2_preserves_getter_and_constructor_argument_order() {
         let mut rt = Rt::new();
