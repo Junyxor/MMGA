@@ -23,6 +23,7 @@
 - NeoForgeStreamCodecs.enumCodec 保留 Class 并按真实 VarInt ordinal 编解码，decode 使用真实 enum constants，越界/null/non-enum 异常经过回归。Core 越过 enum codec，下一阻塞 ImmutableMap.Builder 构造，修复该构造后已推进到第 12 项之后的 `CustomData.CODEC`。
 - Guava ImmutableMap.Builder 保存 builder 自身状态而非误当 Map，build 的 duplicate/null/keepingLast 和独立快照规则经过两项 VM 回归；生成的 immutable map 拒绝 mutator，未完成的 immutable view 显式拒绝。Core 已注册 12 项，当前 `CustomData.CODEC` 阻塞已继续推进中。
 - FML SidedThreadGroups 保存真实 side 元数据与稳定 group 身份；当前线程保持实际 native-thread 身份，未将 loader 主线程假标成 server，未实现 Thread.start。ThreadLocal 子类继承 get/set/remove 也按真实 receiver subtype 调用 initialValue。AE2 越过 SidedThreadGroups，推进到真实 classfile 的反射元数据需求 `Class.getConstructors`。
+- IMenuTypeExtension/MenuType 保存真实 factory 和 default FeatureFlagSet，create 才转发 windowId/inventory/buffer；IContainerFactory 的两参默认方法转三参 null 数据不会错误吞参。3 项 VM 回归通过。Curios 现注册 2 项，下一阻塞 `AttachmentType.serializable(Supplier)`；未打开实际菜单或渲染。
 
 最新验证：**2026-11-17，Windows x86_64，Minecraft 1.21.1 / NeoForge 21.1.266**。实现检查点 `a417383`，Rust `1.98.0`，Java 21。后续文档提交不改变这次探测的代码。三个 crate 仍为 `mmga-classfile`、`mmga-runtime`、`mmga-neoforge`；输入均为官方发布的原始 jar，未修改、未针对桩 API 重编译。
 

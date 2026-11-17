@@ -24,6 +24,7 @@ pub mod logging_markers;
 pub mod minecraft;
 pub mod nf_stream_codecs;
 pub mod guava_builders;
+pub mod menu_types;
 pub mod registries;
 pub mod resource_reload;
 pub mod sounds;

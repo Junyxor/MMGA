@@ -1695,6 +1695,9 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::sided_threads::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
+        if let Some(value) = crate::menu_types::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
         if let Some(value) = crate::capabilities::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
@@ -1880,6 +1883,9 @@ impl HostApi for FmlLoader {
             return Some(value);
         }
         if let Some(value) = crate::sided_threads::call(rt, member, is_static, args) {
+            return Some(value);
+        }
+        if let Some(value) = crate::menu_types::call(rt, linked, self, member, is_static, args) {
             return Some(value);
         }
         if let Some(value) = crate::capabilities::call(rt, member, is_static, args) {
@@ -2095,6 +2101,9 @@ impl HostApi for FmlLoader {
             return true;
         }
         if crate::sided_threads::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::menu_types::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::capabilities::is_subtype(sub_class, super_class) {

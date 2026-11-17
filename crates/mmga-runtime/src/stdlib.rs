@@ -88,7 +88,14 @@ pub fn stdlib_call(
     if !is_static {
         if let Some(&recv) = args.first() {
             let is_closure = matches!(ctx.rt.get_obj(recv).map(|o| &o.data), Some(Data::Closure(_)));
-            if is_closure && name != "getClass" && name != "hashCode" && name != "toString" && name != "equals" {
+            // This inherited default method is not the three-argument SAM:
+            // NeoForge's host supplies the null extra-data argument before
+            // invoking the IContainerFactory closure.
+            let container_default = name == "create"
+                && desc == "(ILnet/minecraft/world/entity/player/Inventory;)Lnet/minecraft/world/inventory/AbstractContainerMenu;"
+                && matches!(owner, "net/neoforged/neoforge/network/IContainerFactory" | "net/minecraft/world/inventory/MenuType$MenuSupplier")
+                && matches!(ctx.rt.get_obj(recv).map(|o| &o.data), Some(Data::Closure(c)) if c.interface_class == "net/neoforged/neoforge/network/IContainerFactory");
+            if is_closure && !container_default && name != "getClass" && name != "hashCode" && name != "toString" && name != "equals" {
                 return Some(crate::vm::invoke_closure(ctx, recv, &args[1..]));
             }
         }
@@ -2131,6 +2138,14 @@ mod collection_for_each_tests {
 }
 
 fn dispatch_map_instance(ctx: &mut ExecCtx<'_>, recv: V, name: &str, args: &[V]) -> Option<V> {
+    if ctx.rt.class_of(recv)==Some("com/google/common/collect/ImmutableMap") {
+        if matches!(name,"put"|"putAll"|"putIfAbsent"|"remove"|"clear"|"replace"|"replaceAll"|"compute"|"computeIfAbsent"|"computeIfPresent"|"merge") {
+            return Some(ctx.rt.throw_exception("java/lang/UnsupportedOperationException","immutable Map"));
+        }
+        if matches!(name,"keySet"|"values"|"entrySet") {
+            return Some(ctx.rt.throw_exception("java/lang/UnsupportedOperationException","ImmutableMap collection views are not implemented"));
+        }
+    }
     let snapshot = || -> Vec<(V, V)> {
         match ctx.rt.get_obj(recv).map(|o| &o.data) {
             Some(Data::Map(m)) => m.clone(),
