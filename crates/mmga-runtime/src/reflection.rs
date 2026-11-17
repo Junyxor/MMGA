@@ -1,7 +1,10 @@
 //! Reflection metadata is read from the linked original classfiles. Unsupported
 //! external classes are not represented as having an empty method list.
 use crate::{Data, ExecCtx, Rt, V};
-use mmga_classfile::{access, parse_method_descriptor, DescriptorType, MemberRef, MethodInfo};
+use mmga_classfile::{
+    access, parse_field_descriptor, parse_method_descriptor, Annotation, DescriptorType, FieldInfo,
+    MemberRef, MethodInfo,
+};
 
 fn class_object(rt: &mut Rt, name: &str) -> V {
     rt.new_pinned_handle("java/lang/Class", "class", 0, name)
@@ -38,6 +41,45 @@ fn metadata(rt: &mut Rt, owner: &str, method: &MethodInfo) -> V {
     rt.put_field(value, "$descriptor", descriptor);
     rt.put_field(value, "$modifiers", V::I(method.access as i32));
     value
+}
+
+fn field_metadata(rt: &mut Rt, owner: &str, field: &FieldInfo) -> V {
+    let value = rt.new_instance("java/lang/reflect/Field", 0);
+    let declaring = class_object(rt, owner);
+    let name = rt.intern_str(&field.name);
+    let descriptor = rt.intern_str(&field.desc);
+    rt.put_field(value, "$declaring", declaring);
+    rt.put_field(value, "$name", name);
+    rt.put_field(value, "$descriptor", descriptor);
+    rt.put_field(value, "$modifiers", V::I(field.access as i32));
+    value
+}
+
+fn annotations(ctx: &ExecCtx<'_>, value: V) -> Option<Vec<Annotation>> {
+    let class = ctx.rt.handle_of(ctx.rt.get_field(value, "$declaring"))?.2;
+    if class == "java/lang/Object" && !ctx.linked.bytecode_classes.contains_key(class) {
+        return Some(Vec::new());
+    }
+    let cf = ctx.linked.bytecode_classes.get(class)?;
+    let name = ctx.rt.str_of(ctx.rt.get_field(value, "$name"))?;
+    let desc = ctx.rt.str_of(ctx.rt.get_field(value, "$descriptor"))?;
+    if ctx.rt.class_of(value) == Some("java/lang/reflect/Field") {
+        Some(
+            cf.fields
+                .iter()
+                .find(|f| f.name == name && f.desc == desc)?
+                .annotations
+                .clone(),
+        )
+    } else {
+        Some(
+            cf.methods
+                .iter()
+                .find(|m| m.name == name && m.desc == desc)?
+                .annotations
+                .clone(),
+        )
+    }
 }
 
 fn public_method(
@@ -136,18 +178,36 @@ fn public_method(
 }
 
 pub fn call(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: &[V]) -> Option<V> {
-    if is_static {
-        return None;
-    }
     let (owner, name, desc) = (
         member.owner.as_str(),
         member.name.as_str(),
         member.desc.as_str(),
     );
+    if is_static {
+        if owner == "java/lang/reflect/Modifier" && desc == "(I)Z" {
+            let flag = match name {
+                "isStatic" => access::STATIC,
+                "isPublic" => access::PUBLIC,
+                "isPrivate" => access::PRIVATE,
+                "isProtected" => access::PROTECTED,
+                "isFinal" => access::FINAL,
+                "isAbstract" => access::ABSTRACT,
+                "isInterface" => access::INTERFACE,
+                _ => return None,
+            };
+            return Some(V::bool(args[0].i() & flag as i32 != 0));
+        }
+        return None;
+    }
     if owner == "java/lang/Class"
         && matches!(
             name,
-            "getConstructors" | "getDeclaredConstructors" | "getMethod"
+            "getConstructors"
+                | "getDeclaredConstructors"
+                | "getMethod"
+                | "getDeclaredFields"
+                | "getDeclaredMethods"
+                | "getSuperclass"
         )
     {
         let ("class", _, class, _) = ctx.rt.handle_of(args[0])? else {
@@ -155,11 +215,121 @@ pub fn call(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: &[
         };
         let class = class.to_owned();
         let Some(cf) = ctx.linked.bytecode_classes.get(&class) else {
+            if class == "java/lang/Object" && name == "getSuperclass" {
+                return Some(V::NULL);
+            }
+            if class == "java/lang/Object"
+                && name == "getDeclaredFields"
+                && desc == "()[Ljava/lang/reflect/Field;"
+            {
+                return Some(ctx.rt.alloc(
+                    "[Ljava/lang/reflect/Field;",
+                    0,
+                    Data::Array(Vec::new()),
+                ));
+            }
+            if class == "java/lang/Object"
+                && name == "getDeclaredMethods"
+                && desc == "()[Ljava/lang/reflect/Method;"
+            {
+                let definitions = [
+                    (
+                        "getClass",
+                        "()Ljava/lang/Class;",
+                        access::PUBLIC | access::FINAL | access::NATIVE,
+                    ),
+                    ("hashCode", "()I", access::PUBLIC | access::NATIVE),
+                    ("equals", "(Ljava/lang/Object;)Z", access::PUBLIC),
+                    (
+                        "clone",
+                        "()Ljava/lang/Object;",
+                        access::PROTECTED | access::NATIVE,
+                    ),
+                    ("toString", "()Ljava/lang/String;", access::PUBLIC),
+                    (
+                        "notify",
+                        "()V",
+                        access::PUBLIC | access::FINAL | access::NATIVE,
+                    ),
+                    (
+                        "notifyAll",
+                        "()V",
+                        access::PUBLIC | access::FINAL | access::NATIVE,
+                    ),
+                    ("wait", "()V", access::PUBLIC | access::FINAL),
+                    ("wait", "(J)V", access::PUBLIC | access::FINAL),
+                    (
+                        "wait0",
+                        "(J)V",
+                        access::PRIVATE | access::FINAL | access::NATIVE,
+                    ),
+                    ("wait", "(JI)V", access::PUBLIC | access::FINAL),
+                    ("finalize", "()V", access::PROTECTED),
+                ];
+                let values = definitions
+                    .into_iter()
+                    .map(|(name, desc, flags)| {
+                        metadata(
+                            ctx.rt,
+                            &class,
+                            &MethodInfo {
+                                name: name.into(),
+                                desc: desc.into(),
+                                access: flags,
+                                signature: None,
+                                code: None,
+                                annotations: vec![],
+                                param_annotations: vec![],
+                                exceptions: vec![],
+                            },
+                        )
+                    })
+                    .collect();
+                return Some(
+                    ctx.rt
+                        .alloc("[Ljava/lang/reflect/Method;", 0, Data::Array(values)),
+                );
+            }
             return Some(ctx.rt.throw_exception(
                 "java/lang/UnsupportedOperationException",
                 &format!("Reflection metadata for external class {class} is not implemented"),
             ));
         };
+        if name == "getSuperclass" && desc == "()Ljava/lang/Class;" {
+            let superclass = if cf.access & access::INTERFACE == 0 {
+                cf.superclass.clone()
+            } else {
+                None
+            };
+            return Some(superclass.map_or(V::NULL, |name| class_object(ctx.rt, &name)));
+        }
+        if name == "getDeclaredFields" && desc == "()[Ljava/lang/reflect/Field;" {
+            let fields = cf.fields.clone();
+            let values = fields
+                .iter()
+                .map(|f| field_metadata(ctx.rt, &class, f))
+                .collect();
+            return Some(
+                ctx.rt
+                    .alloc("[Ljava/lang/reflect/Field;", 0, Data::Array(values)),
+            );
+        }
+        if name == "getDeclaredMethods" && desc == "()[Ljava/lang/reflect/Method;" {
+            let methods = cf
+                .methods
+                .iter()
+                .filter(|m| m.name != "<init>" && m.name != "<clinit>")
+                .cloned()
+                .collect::<Vec<_>>();
+            let values = methods
+                .iter()
+                .map(|m| metadata(ctx.rt, &class, m))
+                .collect();
+            return Some(
+                ctx.rt
+                    .alloc("[Ljava/lang/reflect/Method;", 0, Data::Array(values)),
+            );
+        }
         if matches!(name, "getConstructors" | "getDeclaredConstructors")
             && desc == "()[Ljava/lang/reflect/Constructor;"
         {
@@ -233,9 +403,115 @@ pub fn call(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: &[
             | "java/lang/reflect/Method"
             | "java/lang/reflect/Executable"
             | "java/lang/reflect/Member"
+            | "java/lang/reflect/Field"
+            | "java/lang/reflect/AccessibleObject"
     ) {
         let recv = args[0];
         return match (name, desc) {
+            ("getAnnotation", "(Ljava/lang/Class;)Ljava/lang/annotation/Annotation;") => {
+                if args[1].is_null() {
+                    return Some(
+                        ctx.rt
+                            .throw_exception("java/lang/NullPointerException", "annotationClass"),
+                    );
+                }
+                let annotation_class = ctx.rt.handle_of(args[1])?.2.to_owned();
+                let wanted = format!("L{annotation_class};");
+                let found = annotations(ctx, recv)?
+                    .into_iter()
+                    .find(|a| a.runtime_visible && a.desc == wanted);
+                Some(match found {
+                    None => V::NULL,
+                    Some(annotation) => {
+                        let value = ctx.rt.new_instance("mmga/internal/Annotation", 0);
+                        let typ = class_object(ctx.rt, &annotation_class);
+                        ctx.rt.put_field(value, "$annotation_type", typ);
+                        // Preserve the exact encoded elements; value-method dispatch
+                        // remains unsupported until each element type is implemented.
+                        let raw = ctx.rt.new_str(format!("{:?}", annotation.values));
+                        ctx.rt.put_field(value, "$annotation_elements", raw);
+                        value
+                    }
+                })
+            }
+            ("setAccessible", "(Z)V") => {
+                ctx.rt.put_field(recv, "$accessible", args[1]);
+                Some(V::Void)
+            }
+            ("get", "(Ljava/lang/Object;)Ljava/lang/Object;")
+                if ctx.rt.class_of(recv) == Some("java/lang/reflect/Field") =>
+            {
+                let declaring = ctx
+                    .rt
+                    .handle_of(ctx.rt.get_field(recv, "$declaring"))?
+                    .2
+                    .to_owned();
+                let field_name = ctx.rt.str_of(ctx.rt.get_field(recv, "$name"))?.to_owned();
+                let field_desc = ctx
+                    .rt
+                    .str_of(ctx.rt.get_field(recv, "$descriptor"))?
+                    .to_owned();
+                let flags = ctx.rt.get_field(recv, "$modifiers").i();
+                if flags & access::PUBLIC as i32 == 0
+                    && ctx.rt.get_field(recv, "$accessible") != V::TRUE
+                {
+                    return Some(
+                        ctx.rt
+                            .throw_exception("java/lang/IllegalAccessException", &field_name),
+                    );
+                }
+                let value = if flags & access::STATIC as i32 != 0 {
+                    crate::read_static_field(ctx, &declaring, &field_name, &field_desc)
+                } else {
+                    if args[1].is_null() {
+                        return Some(ctx.rt.throw_exception(
+                            "java/lang/NullPointerException",
+                            "Field.get receiver",
+                        ));
+                    }
+                    let actual = ctx.rt.class_of(args[1])?;
+                    if !ctx.linked.is_subtype(actual, &declaring, ctx.host) {
+                        return Some(ctx.rt.throw_exception(
+                            "java/lang/IllegalArgumentException",
+                            "Field receiver type",
+                        ));
+                    }
+                    crate::read_instance_field(ctx, args[1], &declaring, &field_name, &field_desc)
+                };
+                if ctx.rt.pending_exception.is_some() {
+                    return Some(V::NULL);
+                }
+                let typ = parse_field_descriptor(&field_desc).ok()?;
+                Some(match typ {
+                    DescriptorType::Boolean => {
+                        crate::box_primitive(ctx.rt, "java/lang/Boolean", value)
+                    }
+                    DescriptorType::Byte => crate::box_primitive(ctx.rt, "java/lang/Byte", value),
+                    DescriptorType::Char => {
+                        crate::box_primitive(ctx.rt, "java/lang/Character", value)
+                    }
+                    DescriptorType::Short => crate::box_primitive(ctx.rt, "java/lang/Short", value),
+                    DescriptorType::Int => crate::box_primitive(ctx.rt, "java/lang/Integer", value),
+                    DescriptorType::Long => crate::box_primitive(ctx.rt, "java/lang/Long", value),
+                    DescriptorType::Float => crate::box_primitive(ctx.rt, "java/lang/Float", value),
+                    DescriptorType::Double => {
+                        crate::box_primitive(ctx.rt, "java/lang/Double", value)
+                    }
+                    _ => value,
+                })
+            }
+            ("getType", "()Ljava/lang/Class;")
+                if ctx.rt.class_of(recv) == Some("java/lang/reflect/Field") =>
+            {
+                let descriptor = ctx
+                    .rt
+                    .str_of(ctx.rt.get_field(recv, "$descriptor"))?
+                    .to_owned();
+                Some(class_object(
+                    ctx.rt,
+                    &type_name(&parse_field_descriptor(&descriptor).ok()?),
+                ))
+            }
             ("getDeclaringClass", "()Ljava/lang/Class;") => {
                 Some(ctx.rt.get_field(recv, "$declaring"))
             }
@@ -442,6 +718,104 @@ mod tests {
             .rt
             .exception_summary(error)
             .contains("NoSuchMethodException"));
+    }
+
+    #[test]
+    fn reflected_fields_preserve_annotations_access_control_and_original_values() {
+        use mmga_classfile::{Annotation, FieldInfo};
+        let mut cf = class(
+            "test/Models",
+            Some("java/lang/Object"),
+            &[],
+            vec![],
+            access::PUBLIC,
+        );
+        cf.fields.push(FieldInfo {
+            name: "MODELS".into(),
+            desc: "Ljava/lang/String;".into(),
+            access: access::PRIVATE | access::STATIC,
+            signature: None,
+            constant_value: None,
+            annotations: vec![Annotation {
+                desc: "Ltest/Marker;".into(),
+                values: BTreeMap::new(),
+                runtime_visible: true,
+            }],
+        });
+        let mut linked = LinkedSpace::new();
+        linked.add_bytecode_classes(BTreeMap::from([("test/Models".into(), cf)]));
+        let mut rt = Rt::new();
+        let cls = class_object(&mut rt, "test/Models");
+        let ann = class_object(&mut rt, "test/Marker");
+        let expected = rt.intern_str("original");
+        rt.put_static("test/Models", "MODELS", expected);
+        let mut host = NullHost;
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        let fields = invoke(
+            &mut ctx,
+            "java/lang/Class",
+            "getDeclaredFields",
+            "()[Ljava/lang/reflect/Field;",
+            &[cls],
+        );
+        assert!(ctx.rt.pending_exception.is_none());
+        let field = match &ctx.rt.get_obj(fields).unwrap().data {
+            Data::Array(xs) => xs[0],
+            _ => panic!(),
+        };
+        let annotation = invoke(
+            &mut ctx,
+            "java/lang/reflect/Field",
+            "getAnnotation",
+            "(Ljava/lang/Class;)Ljava/lang/annotation/Annotation;",
+            &[field, ann],
+        );
+        assert!(!annotation.is_null());
+        invoke(
+            &mut ctx,
+            "java/lang/reflect/Field",
+            "get",
+            "(Ljava/lang/Object;)Ljava/lang/Object;",
+            &[field, V::NULL],
+        );
+        let error = ctx.rt.take_exception().unwrap();
+        assert!(ctx
+            .rt
+            .exception_summary(error)
+            .contains("IllegalAccessException"));
+        invoke(
+            &mut ctx,
+            "java/lang/reflect/Field",
+            "setAccessible",
+            "(Z)V",
+            &[field, V::TRUE],
+        );
+        assert_eq!(
+            invoke(
+                &mut ctx,
+                "java/lang/reflect/Field",
+                "get",
+                "(Ljava/lang/Object;)Ljava/lang/Object;",
+                &[field, V::NULL]
+            ),
+            expected
+        );
+        let wrong = class_object(ctx.rt, "test/Absent");
+        assert_eq!(
+            invoke(
+                &mut ctx,
+                "java/lang/reflect/Field",
+                "getAnnotation",
+                "(Ljava/lang/Class;)Ljava/lang/annotation/Annotation;",
+                &[field, wrong]
+            ),
+            V::NULL
+        );
     }
 
     #[test]

@@ -574,6 +574,9 @@ fn jdk_supertypes(cls: &str) -> &'static [&'static str] {
         | "it/unimi/dsi/fastutil/objects/Object2BooleanOpenHashMap"
         | "it/unimi/dsi/fastutil/ints/Int2ObjectOpenHashMap"
         | "com/google/common/collect/ImmutableMap" => &["java/util/Map"],
+        "com/google/common/collect/ImmutableMapKeySet" | "com/google/common/collect/ImmutableMapEntrySet" => &["com/google/common/collect/ImmutableSet"],
+        "com/google/common/collect/ImmutableMapValues" => &["java/util/Collection"],
+        "com/google/common/collect/UnmodifiableIterator" => &["java/util/Iterator"],
         "java/util/AbstractMap$SimpleEntry" | "java/util/AbstractMap$SimpleImmutableEntry" => {
             &["java/util/Map$Entry"]
         }

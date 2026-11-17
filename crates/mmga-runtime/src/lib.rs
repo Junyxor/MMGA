@@ -3,6 +3,7 @@
 
 pub mod fxhash;
 pub mod heap;
+mod guava_views;
 mod jdk_state;
 mod reflection;
 pub mod linked;

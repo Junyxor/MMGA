@@ -85,6 +85,9 @@ pub fn stdlib_call(
     if let Some(value) = crate::reflection::call(ctx, member, is_static, args) {
         return Some(value);
     }
+    if let Some(value) = crate::guava_views::call(ctx, member, is_static, args) {
+        return Some(value);
+    }
 
     // 0. Functional interfaces (`Consumer`, `Supplier`, `Function`, `BiFunction`, `Predicate`, `Runnable`, `Callable`, etc.)
     //    when the receiver is a `Data::Closure`!
@@ -1917,6 +1920,27 @@ fn dispatch_set_instance(
     args: &[V],
 ) -> Option<V> {
     Some(match name {
+        "addAll" if desc == "(Ljava/util/Collection;)Z" => {
+            let source = *args.first()?;
+            let iterator = crate::invoke_member(ctx, mmga_classfile::op::INVOKEINTERFACE,
+                &MemberRef::new("java/util/Collection", "iterator", "()Ljava/util/Iterator;"), &[source]);
+            if ctx.rt.pending_exception.is_some() { return Some(V::NULL); }
+            let mut changed = false;
+            loop {
+                let has_next = crate::invoke_member(ctx, mmga_classfile::op::INVOKEINTERFACE,
+                    &MemberRef::new("java/util/Iterator", "hasNext", "()Z"), &[iterator]);
+                if ctx.rt.pending_exception.is_some() { return Some(V::NULL); }
+                if has_next.i() == 0 { break; }
+                let next = crate::invoke_member(ctx, mmga_classfile::op::INVOKEINTERFACE,
+                    &MemberRef::new("java/util/Iterator", "next", "()Ljava/lang/Object;"), &[iterator]);
+                if ctx.rt.pending_exception.is_some() { return Some(V::NULL); }
+                let added = crate::invoke_member(ctx, mmga_classfile::op::INVOKEINTERFACE,
+                    &MemberRef::new("java/util/Set", "add", "(Ljava/lang/Object;)Z"), &[recv, next]);
+                if ctx.rt.pending_exception.is_some() { return Some(V::NULL); }
+                changed |= added.i() != 0;
+            }
+            V::bool(changed)
+        }
         "size" => {
             let n = match ctx.rt.get_obj(recv).map(|o| &o.data) {
                 Some(Data::Set(v)) => v.len() as i32,
@@ -2137,6 +2161,23 @@ mod collection_for_each_tests {
             }
             assert_eq!(host.seen.len(), 1);
         }
+    }
+
+    #[test]
+    fn ae2_set_add_all_retains_unique_values_and_reports_change() {
+        let mut rt=Rt::new();let linked=LinkedSpace::new();let mut host=crate::NullHost;
+        let a=rt.intern_str("model:a");let b=rt.intern_str("model:b");
+        let set=rt.alloc("java/util/HashSet",0,Data::Set(vec![a]));
+        let list=rt.alloc("java/util/ArrayList",0,Data::List(vec![a,b,b,V::NULL]));
+        let mut ctx=ExecCtx{rt:&mut rt,linked:&linked,host:&mut host,depth:0};
+        let call=MemberRef::new("java/util/Set","addAll","(Ljava/util/Collection;)Z");
+        assert_eq!(crate::invoke_member(&mut ctx,op::INVOKEINTERFACE,&call,&[set,list]),V::TRUE);
+        assert!(ctx.rt.pending_exception.is_none());
+        assert_eq!(crate::invoke_member(&mut ctx,op::INVOKEINTERFACE,&call,&[set,list]),V::FALSE);
+        let values=match &ctx.rt.get_obj(set).unwrap().data {Data::Set(v)=>v,_=>panic!()};
+        assert_eq!(values,&vec![a,b,V::NULL]);
+        crate::invoke_member(&mut ctx,op::INVOKEINTERFACE,&call,&[set,V::NULL]);
+        let error=ctx.rt.take_exception().unwrap();assert!(ctx.rt.exception_summary(error).contains("NullPointerException"));
     }
 }
 

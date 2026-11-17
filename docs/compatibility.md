@@ -1,5 +1,12 @@
 # 未修改 NeoForge 模组的兼容性记录
 
+## 2026-11-17 窗口中断后的恢复验证
+
+已先抓取远端，确认 `1ec1ddf` 与当前分支一致，并保留上一窗口全部未提交修改。首次 workspace 回归为 classfile 7 通过、NeoForge 156 通过 / 1 失败；失败来自尚为桩函数的 `fluid_content`，正在修复，不能把这一轮称为全绿。
+
+- 恢复真实 classfile 的字段/方法反射、字段访问检查及 `Set.addAll`；新增 ImmutableMap 的 keySet/values/entrySet，视图保存源 Map 引用，迭代保留实际条目和重复 value，Collection/Map.Entry/Iterator 的修改路径明确抛异常。两项回归先失败后通过，runtime 共 **14 项通过**。
+- 使用新编译的 `fast` 优化探针重跑 GuideME 21.1.22 + AE2 19.2.19：GuideME 构造完成；AE2 已越过 `ImmutableMap.entrySet` 的物品定义阻塞，下一处为 `Method.getParameters()`（`PartModelsHelper.createModels`）。整体仍在构造，注册/setup/tick 未到达，玩法与渲染未验证。本地证据 `.local/probes/ae2-immutable-views.log`，第三方 jar 未修改。
+
 ## 2026-11-17 持续修复增量（进行中）
 
 从 `e192d87` 继续，重新抓取远端且基线 63 项测试通过。已复现并修复 Balm 的 `BlockCapability.createSided`：Block/Entity/Item capability 的工厂保持名称、返回类型及 context class，按种类缓存身份，类型/context 冲突抛异常，`getAll()` 返回不可变快照；NeoForge 自带 energy/fluid/item capability 使用同一身份路径。两项 VM 回归先失败后通过。真实 Balm+Waystones 组现推进到 `MapCodec.unit(Object)`（`NeoForgeBalmWorldGen.<clinit>`），Waystones 仍未构造，注册/setup/tick 未到达。provider 和世界查询尚未实现，继续明确失败。下方表格为上一个完整验证检查点，增量完成后更新。
