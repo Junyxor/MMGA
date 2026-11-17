@@ -18,7 +18,7 @@ pub fn get_static_field(rt: &mut Rt, owner: &str, name: &str, desc: &str) -> Opt
             (name, desc),
             ("EMPTY", "Lnet/minecraft/world/item/ItemStack;")
                 | (
-                    "CODEC" | "OPTIONAL_CODEC",
+                    "CODEC" | "OPTIONAL_CODEC" | "SINGLE_ITEM_CODEC",
                     "Lcom/mojang/serialization/Codec;"
                 )
         ))
@@ -43,6 +43,8 @@ pub fn get_static_field(rt: &mut Rt, owner: &str, name: &str, desc: &str) -> Opt
         let components = patched(rt, prototype);
         rt.put_field(stack, "components", components);
         stack
+    } else if owner == STACK && name == "SINGLE_ITEM_CODEC" {
+        crate::dfu::single_item_stack_codec(rt)
     } else if owner == STACK {
         crate::dfu::item_stack_codec(rt, name == "OPTIONAL_CODEC")
     } else if owner == COMPONENTS {
@@ -361,6 +363,13 @@ pub fn decode_json(ctx: &mut ExecCtx<'_>, input: &Json, optional: bool) -> Resul
     Ok(stack)
 }
 pub fn encode_json(ctx: &mut ExecCtx<'_>, value: V, optional: bool) -> Result<Json, String> {
+    encode_json_inner(ctx,value,optional,false)
+}
+pub fn decode_single_json(ctx:&mut ExecCtx<'_>,input:&Json)->Result<V,String>{
+    let mut input=input.as_object().ok_or("Not an ItemStack map")?.clone();input.remove("count");decode_json(ctx,&Json::Object(input),false)
+}
+pub fn encode_single_json(ctx:&mut ExecCtx<'_>,value:V)->Result<Json,String>{encode_json_inner(ctx,value,false,true)}
+fn encode_json_inner(ctx: &mut ExecCtx<'_>, value: V, optional: bool, single:bool) -> Result<Json, String> {
     if ctx.rt.class_of(value) != Some(STACK) {
         return Err("Not an ItemStack".into());
     }
@@ -398,7 +407,7 @@ pub fn encode_json(ctx: &mut ExecCtx<'_>, value: V, optional: bool) -> Result<Js
         .map(|(_, _, id, _)| id.to_owned())
         .ok_or("Unregistered item")?;
     let count = ctx.rt.get_field(value, "count").i();
-    if !(1..=99).contains(&count) {
+    if !single && !(1..=99).contains(&count) {
         return Err(format!("ItemStack count {count} outside [1,99]"));
     }
     let components = ctx.rt.get_field(value, "components");
@@ -409,7 +418,7 @@ pub fn encode_json(ctx: &mut ExecCtx<'_>, value: V, optional: bool) -> Result<Js
         );
         return Err("Unknown component map".into());
     }
-    Ok(serde_json::json!({"id":id,"count":count}))
+    Ok(if single{serde_json::json!({"id":id})}else{serde_json::json!({"id":id,"count":count})})
 }
 
 #[cfg(test)]
@@ -502,6 +511,23 @@ mod tests {
         let calls = ctx.rt.get_field(args[0], "verifyCalls").i();
         ctx.rt.put_field(args[0], "verifyCalls", V::I(calls + 1));
         V::Void
+    }
+    #[test]
+    fn single_item_codec_ignores_count_fields_and_encodes_original_stacks_without_mutation() {
+        let mut prepared=crate::PreparedLoad::from_jars(Vec::new(),true).unwrap();
+        prepared.linked.register_native_module(mmga_runtime::NativeModuleRegistry{classes:&[mmga_runtime::NativeClassDef{name:"test/SingleItem",superclass:Some("net/minecraft/world/item/Item"),interfaces:&[],is_interface:false,methods:&[("components.()Lnet/minecraft/core/component/DataComponentMap;",prototype,false,false),("verifyComponentsAfterLoad.(Lnet/minecraft/world/item/ItemStack;)V",verify,false,false)]}],lambdas:&[]});
+        let mut rt=Rt::new();let item=rt.new_instance("test/SingleItem",0);prepared.loader.state.registries.register_direct(&mut rt,"item","example:single","example",item,crate::ContentProperties::default());
+        let codec=get_static_field(&mut rt,STACK,"SINGLE_ITEM_CODEC","Lcom/mojang/serialization/Codec;").expect("Single item codec must retain its actual id/components schema");
+        assert_eq!(get_static_field(&mut rt,STACK,"SINGLE_ITEM_CODEC","Lcom/mojang/serialization/Codec;"),Some(codec));
+        let ops=crate::dfu::get_static_field(&mut rt,"com/mojang/serialization/JsonOps","INSTANCE","Lcom/mojang/serialization/JsonOps;").unwrap();
+        let input=rt.new_str("{\"id\":\"example:single\",\"count\":5}");
+        let mut ctx=ExecCtx{rt:&mut rt,linked:&prepared.linked,host:&mut prepared.loader,depth:0};
+        let json=invoke_member(&mut ctx,op::INVOKESTATIC,&MemberRef::new("com/google/gson/JsonParser","parseString","(Ljava/lang/String;)Lcom/google/gson/JsonElement;"),&[input]);
+        let decoded=invoke_member(&mut ctx,op::INVOKEINTERFACE,&MemberRef::new("com/mojang/serialization/Codec","parse","(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;"),&[codec,ops,json]);
+        let stack=ctx.rt.get_field(decoded,"$value");assert_eq!(ctx.rt.get_field(stack,"count"),V::I(1));assert_eq!(ctx.rt.get_field(stack,"item"),item);assert!(ctx.rt.pending_exception.is_none());
+        ctx.rt.put_field(stack,"count",V::I(200));let encoded=invoke_member(&mut ctx,op::INVOKEINTERFACE,&MemberRef::new("com/mojang/serialization/Codec","encodeStart","(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;"),&[codec,ops,stack]);
+        assert_eq!(ctx.rt.get_field(encoded,"$success"),V::TRUE);
+        let result=ctx.rt.get_field(encoded,"$value");let text=invoke_member(&mut ctx,op::INVOKEVIRTUAL,&MemberRef::new("java/lang/Object","toString","()Ljava/lang/String;"),&[result]);assert_eq!(ctx.rt.str_of(text),Some("{\"id\":\"example:single\"}"));assert_eq!(ctx.rt.get_field(stack,"count"),V::I(200));
     }
     #[test]
     fn codec_uses_actual_registered_item_prototype_and_preserves_count() {

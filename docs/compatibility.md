@@ -36,6 +36,8 @@
 - Jar 解析不再丢弃原始 `.class` resource bytes；ClassLoader 可读取真实原字节而不是把已存在的 class resource 报成缺失。两项回归先失败后通过，涵盖 root/nested 同名 class 的优先级和未 link 的 multi-release/module-info 资源。输入 jar 未被改写；classfile crate 共九项测试通过。
 - IMC 以真实 message/supplier refs、事件 container recipient 和延迟 method predicate 遍历实际 queue；消费失败保留当前消息，下游 filter 的删除、toList 前后失败和追加/prefetch 时机经六项回归验证。未加载 forge/fml 别名不再假装已加载。原 Curios 已完成 common/sided setup、InterModProcess 和 **LoadComplete**，服务器命令阶段停在 ItemArgument.item(CommandBuildContext)；饰品玩法与真实 tick 尚未验证。
 - Create sliding-door 的 ItemTags.DOORS/TRAPDOORS 使用官方 `minecraft:doors/trapdoors` item registry 键，既有 item-tag 回归新增失败后通过的对应断言。原 jar 越过该处，下一处 `Direction.from2DDataValue`（Catnip Iterate.getHorizontals），仍在构造。
+- Direction 的 2D/3D 索引按官方顺序与 Java signed remainder/abs 执行；Axis/AxisDirection 常量和真实 anonymous constant-body superclass metadata 保持身份，EnumSet 对 declaring enum 与 constant-body class 分别校验。五项 Direction 回归和四项 EnumSet 回归通过，原 Create 越过 Iterate 初始化到 BlockTags.SLABS，仍在构造。
+- SINGLE_ITEM_CODEC 使用真实 id/components schema，忽略输入 count，并编码原 stack 而不修改其数量；未知 item/component 仍明确失败。一项 VM 回归先失败后通过；AE2 越过该 codec 到 GlobalPos.CODEC（`AEComponents.lambda$static$22`），仍在构造。
 - ClassLoader 使用真实 linked class-space identity、解析类和 host classpath bytes；ServiceLoader 改为 metadata/iterator 延迟 provider 构造，检查请求 loader、provider cache/reload 和 constructor cause，不再提前运行所有 provider。八项回归通过，Class.isEnum 区分真实 enum 与匿名 constant body。Mekanism 已越过 MekanismAPI，下一处 `Codec.checkRange(Number,Number)`（SerializerHelper），构造尚未完成。
 - 本机工具版本核实：Rust 1.98.0；PATH java/javac 为 17.0.12，javap 及 `D:/MC launcher/Java/21` 中的实际 JDK 为 Microsoft 25.0.3（目录名不是版本证据）。模组输入仍为官方 Java 21 classfile，已由 Rust VM 解析/执行；JDK 21 专有语义依据固定官方源数据，未把本机 Java 工具说成 Java 21，也未在本机运行官方 NeoForge 对照。
 

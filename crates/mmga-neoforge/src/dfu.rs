@@ -128,6 +128,7 @@ pub fn custom_data_codec(rt: &mut Rt, custom: bool, require_id: bool) -> V {
 pub fn item_stack_codec(rt: &mut Rt, optional: bool) -> V {
     graph(rt, CODEC, "item_stack", &[V::bool(optional)])
 }
+pub fn single_item_stack_codec(rt:&mut Rt)->V{graph(rt,CODEC,"single_item_stack",&[])}
 pub fn fluid_stack_codec(rt: &mut Rt, optional: bool, content: bool) -> V {
     graph(
         rt,
@@ -866,7 +867,7 @@ fn decode_remainder(rt: &Rt, codec: V, input: &serde_json::Value) -> serde_json:
     };
     match kind.as_str() {
         "map_result" => input.clone(),
-        "map_codec" | "item_stack" | "fluid_stack" | "unbounded_map" => input.clone(),
+        "map_codec" | "item_stack" | "single_item_stack" | "fluid_stack" | "unbounded_map" => input.clone(),
         "list" => serde_json::json!([]),
         "xmap" | "comapFlatMap" | "flatComapMap" | "flatXmap" | "range" | "extra_int_range" => {
             decode_remainder(rt, args[0], input)
@@ -1502,6 +1503,7 @@ fn decode_value(
         "item_stack" => {
             crate::item_stack::decode_json(ctx, input, args[0] == V::TRUE).map_err(Into::into)
         }
+        "single_item_stack"=>crate::item_stack::decode_single_json(ctx,input).map_err(Into::into),
         "or_else" => match decode_value(ctx, args[0], ops, input, compressed, depth + 1) {
             Ok(value) => Ok(value),
             Err(error) => {
@@ -1942,6 +1944,7 @@ fn encode_value(
         "item_stack" => {
             crate::item_stack::encode_json(ctx, value, args[0] == V::TRUE).map_err(Into::into)
         }
+        "single_item_stack"=>crate::item_stack::encode_single_json(ctx,value).map_err(Into::into),
         "or_else" | "or_else_get" => encode_value(ctx, args[0], ops, value, compressed, depth + 1),
         "nbt_data" => {
             crate::custom_data::encode_json(ctx.rt, value, args[0] == V::TRUE, args[1] == V::TRUE)
