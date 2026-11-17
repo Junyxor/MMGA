@@ -4,7 +4,7 @@
 
 本轮先 `git fetch origin`，以远端 `68c50cd` 为基线。该提交以及 `f8005c7`、`0c06e55` 均已存在。本机检查未找到上一轮 checkout 或可恢复的未提交修改。`cargo test --workspace` 基线通过：classfile 7、runtime 3、NeoForge 17，共 27 项；包括 javac 编译的字节码测试。下面的增量记录取代后文 2026-11-15 的旧阻塞描述。
 
-- Mekanism 10.7.19.85：2975 个 class 解析成功；复现 `FastColor$ARGB32.color(III)I` 后实现了原始位移/按位或的 ARGB 打包及通道读取（不把越界输入钳位）。新增回归测试先失败后通过，五种 BaseTier 的真实 RGB 均保留。原 jar 重跑推进到 `TextColor.fromRgb(I)`；仍在构造，注册/setup/tick/玩法/渲染均未到达。
+- Mekanism 10.7.19.85：2975 个 class 解析成功；依次修复 `FastColor$ARGB32.color(III)I` 和 `TextColor.fromRgb(I)`。按官方 1.21.1 字节码实现不钳位的 ARGB 位移/按位或，以及 TextColor 去除 alpha、保留 legacy 名称和大写十六进制序列化；两项回归均先失败后通过。原 jar 重跑推进到 `Attributes.ATTACK_SPEED`；仍在构造，注册/setup/tick/玩法/渲染均未到达。
 - Create 6.0.10：3805 个 class（含内嵌库）解析成功；Ponder 已完成构造，Create 自身构造已进入，当前阻塞 `SoundEvents.GENERIC_EXPLODE`。组合加载尚未进入注册或 setup；12 个预先登记项不能作为完成注册的证据。tick/玩法/渲染未测试。
 - YSM 2.6.5：933 个 class 解析成功；构造、注册事件、common/sided setup 和加载器的一次模拟 tick 返回成功，31 次事件、5 次回调、15 个监听器、1 条命令。YSM 捕获 `System.load` 的 `UnsatisfiedLinkError`，记录 `unsatisfied_runtime_env` WARNING，核心 JNI 初始化失败；0 个模组注册项、0 个网络通道。这里是禁用原生功能后的加载器路径，模型同步、玩法和渲染均未验证，不能称为完整支持。
 

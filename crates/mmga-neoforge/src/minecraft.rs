@@ -485,6 +485,57 @@ pub fn call_chat(
     let name = member.name.as_str();
     let desc = member.desc.as_str();
 
+    if owner == "net/minecraft/network/chat/TextColor" {
+        if is_static {
+            let (rgb, color_name) = match (name, desc) {
+                ("fromRgb", "(I)Lnet/minecraft/network/chat/TextColor;") => (args[0].i(), V::NULL),
+                ("fromLegacyFormat", "(Lnet/minecraft/ChatFormatting;)Lnet/minecraft/network/chat/TextColor;") => {
+                    let format = args[0];
+                    if format.is_null() || rt.get_field(format, "$rgb").i() < 0 {
+                        return Some(V::NULL);
+                    }
+                    (rt.get_field(format, "$rgb").i(), rt.get_field(format, "$fmt_name"))
+                }
+                _ => return None,
+            };
+            let cache_key = rt.str_of(color_name).map(|n| format!("$legacy:{n}"));
+            if let Some(cached) = cache_key.as_ref().and_then(|k| rt.get_static(owner, k)) {
+                return Some(cached);
+            }
+            let color = rt.new_instance(owner, 0);
+            rt.put_field(color, "value", V::I(rgb & 0xffffff));
+            rt.put_field(color, "name", color_name);
+            if let Some(key) = cache_key {
+                rt.put_static(owner, &key, color);
+            }
+            return Some(color);
+        }
+        let recv = args[0];
+        return match (name, desc) {
+            ("getValue", "()I") => Some(rt.get_field(recv, "value")),
+            ("serialize" | "toString", "()Ljava/lang/String;") => {
+                let color_name = rt.get_field(recv, "name");
+                Some(if color_name.is_null() {
+                    rt.new_str(format!("#{:06X}", rt.get_field(recv, "value").i()))
+                } else {
+                    color_name
+                })
+            }
+            ("equals", "(Ljava/lang/Object;)Z") => Some(V::bool(
+                rt.class_of(args[1]) == Some(owner)
+                    && rt.get_field(recv, "value") == rt.get_field(args[1], "value"),
+            )),
+            ("hashCode", "()I") => {
+                // Objects.hash(value, name), as in the official 1.21.1 bytecode.
+                let name_hash = rt.str_of(rt.get_field(recv, "name")).map_or(0i32, |s| {
+                    s.encode_utf16().fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(c as i32))
+                });
+                Some(V::I(31i32.wrapping_add(rt.get_field(recv, "value").i()).wrapping_mul(31).wrapping_add(name_hash)))
+            }
+            _ => None,
+        };
+    }
+
     if (owner == "net/minecraft/network/chat/Component" || owner == MUTABLE_COMPONENT) && is_static
     {
         match (name, desc) {
@@ -3713,6 +3764,25 @@ mod tests {
             rt.str_of(str_v),
             Some("Unsupported platform linux on x86_64 (code linux)!")
         );
+    }
+
+    #[test]
+    fn text_color_masks_argb_and_preserves_legacy_names() {
+        let mut rt = Rt::new();
+        let lang = BTreeMap::new();
+        let owner = "net/minecraft/network/chat/TextColor";
+        let rgb = call_chat(&mut rt, &lang, &MemberRef::new(owner, "fromRgb", "(I)Lnet/minecraft/network/chat/TextColor;"), true, &[V::I(0xff5fffb8u32 as i32)]).expect("TextColor.fromRgb");
+        let value = call_chat(&mut rt, &lang, &MemberRef::new(owner, "getValue", "()I"), false, &[rgb]).unwrap();
+        assert_eq!(value.i(), 0x5fffb8);
+        let text = call_chat(&mut rt, &lang, &MemberRef::new(owner, "serialize", "()Ljava/lang/String;"), false, &[rgb]).unwrap();
+        assert_eq!(rt.str_of(text), Some("#5FFFB8"));
+        let green = chat_formatting_constant(&mut rt, "GREEN").unwrap();
+        let named = call_chat(&mut rt, &lang, &MemberRef::new(owner, "fromLegacyFormat", "(Lnet/minecraft/ChatFormatting;)Lnet/minecraft/network/chat/TextColor;"), true, &[green]).unwrap();
+        let text = call_chat(&mut rt, &lang, &MemberRef::new(owner, "serialize", "()Ljava/lang/String;"), false, &[named]).unwrap();
+        assert_eq!(rt.str_of(text), Some("green"));
+        let bold = chat_formatting_constant(&mut rt, "BOLD").unwrap();
+        let no_color = call_chat(&mut rt, &lang, &MemberRef::new(owner, "fromLegacyFormat", "(Lnet/minecraft/ChatFormatting;)Lnet/minecraft/network/chat/TextColor;"), true, &[bold]).unwrap();
+        assert!(no_color.is_null());
     }
 
     #[test]
