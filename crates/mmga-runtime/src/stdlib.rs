@@ -1663,6 +1663,24 @@ fn dispatch_list_instance(
                 ),
             }
         }
+        "getFirst" | "getLast" => {
+            let items = match ctx.rt.get_obj(recv).map(|o| &o.data) {
+                Some(Data::List(v)) => v.clone(),
+                _ => Vec::new(),
+            };
+            let picked = if name == "getFirst" {
+                items.first().copied()
+            } else {
+                items.last().copied()
+            };
+            match picked {
+                Some(v) => v,
+                None => ctx.rt.throw_exception(
+                    "java/lang/NoSuchElementException",
+                    "List is empty",
+                ),
+            }
+        }
         "set" => {
             let idx = args[0].i() as usize;
             let mut prev = V::NULL;

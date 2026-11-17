@@ -48,8 +48,266 @@ pub fn extract_lang_entries(
     }
 }
 
+/// Vanilla `SoundEvents` fields Create 6.0.10 reads while building its sound list.
+/// The third column is the 1.21.1 registry id. The second column matches the
+/// field type in that jar: a bare `SoundEvent`, a `Holder`, or a `Holder$Reference`.
+fn vanilla_sound(name: &str) -> Option<(&'static str, &'static str)> {
+    Some(match name {
+        "ITEM_PICKUP" => ("event", "entity.item.pickup"),
+        "GENERIC_EXPLODE" => ("holder_ref", "entity.generic.explode"),
+        "NOTE_BLOCK_BELL" => ("holder_ref", "block.note_block.bell"),
+        "SAND_BREAK" => ("event", "block.sand.break"),
+        "ITEM_FRAME_ADD_ITEM" => ("event", "entity.item_frame.add_item"),
+        "ITEM_FRAME_ROTATE_ITEM" => ("event", "entity.item_frame.rotate_item"),
+        "WOOL_BREAK" => ("event", "block.wool.break"),
+        "SHULKER_OPEN" => ("event", "block.shulker_box.open"),
+        "SLIME_BLOCK_PLACE" => ("event", "block.slime_block.place"),
+        "ANVIL_LAND" => ("event", "block.anvil.land"),
+        "ITEM_BREAK" => ("event", "entity.item.break"),
+        "WOOL_HIT" => ("event", "block.wool.hit"),
+        "GILDED_BLACKSTONE_BREAK" => ("event", "block.gilded_blackstone.break"),
+        "NETHERRACK_BREAK" => ("event", "block.netherrack.break"),
+        "WOOD_PLACE" => ("event", "block.wood.place"),
+        "WOODEN_BUTTON_CLICK_OFF" => ("event", "block.wooden_button.click_off"),
+        "NOTE_BLOCK_BASEDRUM" => ("holder_ref", "block.note_block.basedrum"),
+        "NOTE_BLOCK_HAT" => ("holder_ref", "block.note_block.hat"),
+        "NOTE_BLOCK_BASS" => ("holder_ref", "block.note_block.bass"),
+        "WARDEN_TENDRIL_CLICKS" => ("event", "entity.warden.tendril_clicks"),
+        "FROG_TONGUE" => ("event", "entity.frog.tongue"),
+        "ITEM_FRAME_BREAK" => ("event", "entity.item_frame.break"),
+        "WEEPING_VINES_BREAK" => ("event", "block.weeping_vines.break"),
+        "WOODEN_TRAPDOOR_OPEN" => ("event", "block.wooden_trapdoor.open"),
+        "CHEST_OPEN" => ("event", "block.chest.open"),
+        "IRON_TRAPDOOR_CLOSE" => ("event", "block.iron_trapdoor.close"),
+        "WOODEN_TRAPDOOR_CLOSE" => ("event", "block.wooden_trapdoor.close"),
+        "NETHERITE_BLOCK_HIT" => ("event", "block.netherite_block.hit"),
+        "CHISELED_BOOKSHELF_BREAK" => ("event", "block.chiseled_bookshelf.break"),
+        "ARMOR_EQUIP_GOLD" => ("holder", "item.armor.equip_gold"),
+        "BOOK_PUT" => ("event", "item.book.put"),
+        "ITEM_FRAME_REMOVE_ITEM" => ("event", "entity.item_frame.remove_item"),
+        "BOAT_PADDLE_LAND" => ("event", "entity.boat.paddle_land"),
+        "UI_STONECUTTER_TAKE_RESULT" => ("event", "ui.stonecutter.take_result"),
+        "GENERIC_EAT" => ("event", "entity.generic.eat"),
+        "BARREL_OPEN" => ("event", "block.barrel.open"),
+        "NETHERITE_BLOCK_PLACE" => ("event", "block.netherite_block.place"),
+        "NETHERRACK_HIT" => ("event", "block.netherrack.hit"),
+        "GRAVEL_PLACE" => ("event", "block.gravel.place"),
+        "NETHERITE_BLOCK_BREAK" => ("event", "block.netherite_block.break"),
+        "BELL_BLOCK" => ("event", "block.bell.use"),
+        "ARMOR_EQUIP_LEATHER" => ("holder", "item.armor.equip_leather"),
+        "ARMOR_EQUIP_NETHERITE" => ("holder", "item.armor.equip_netherite"),
+        _ => return None,
+    })
+}
+
+fn new_sound_event(rt: &mut Rt, path: &str) -> V {
+    let event = rt.new_instance("net/minecraft/sounds/SoundEvent", 0);
+    let id = format!("minecraft:{path}");
+    let location = new_rl_handle(rt, &id);
+    rt.put_field(event, "location", location);
+    rt.pin(event);
+    event
+}
+
+fn sound_static(rt: &mut Rt, name: &str) -> Option<V> {
+    let (kind, path) = vanilla_sound(name)?;
+    let event = new_sound_event(rt, path);
+    if kind == "event" {
+        return Some(event);
+    }
+    let class = if kind == "holder_ref" {
+        "net/minecraft/core/Holder$Reference"
+    } else {
+        "net/minecraft/core/Holder"
+    };
+    let holder = rt.new_instance(class, 0);
+    let key = new_resource_key(rt, "minecraft:sound_event", &format!("minecraft:{path}"));
+    rt.put_field(holder, "$value", event);
+    rt.put_field(holder, "$key", key);
+    rt.pin(holder);
+    Some(holder)
+}
+
+/// 1.21.1 `Attributes` defaults. Ids still use the `generic.` prefix from that version.
+fn vanilla_attribute(name: &str) -> Option<(&'static str, f64)> {
+    Some(match name {
+        "ARMOR" => ("generic.armor", 0.0),
+        "ARMOR_TOUGHNESS" => ("generic.armor_toughness", 0.0),
+        "ATTACK_DAMAGE" => ("generic.attack_damage", 2.0),
+        "ATTACK_KNOCKBACK" => ("generic.attack_knockback", 0.0),
+        "ATTACK_SPEED" => ("generic.attack_speed", 4.0),
+        "BLOCK_INTERACTION_RANGE" => ("player.block_interaction_range", 4.5),
+        "BURNING_TIME" => ("generic.burning_time", 1.0),
+        "ENTITY_INTERACTION_RANGE" => ("player.entity_interaction_range", 3.0),
+        "EXPLOSION_KNOCKBACK_RESISTANCE" => ("generic.explosion_knockback_resistance", 0.0),
+        "FALL_DAMAGE_MULTIPLIER" => ("generic.fall_damage_multiplier", 1.0),
+        "FLYING_SPEED" => ("generic.flying_speed", 0.4),
+        "FOLLOW_RANGE" => ("generic.follow_range", 32.0),
+        "GRAVITY" => ("generic.gravity", 0.08),
+        "JUMP_STRENGTH" => ("generic.jump_strength", 0.42),
+        "KNOCKBACK_RESISTANCE" => ("generic.knockback_resistance", 0.0),
+        "LUCK" => ("generic.luck", 0.0),
+        "MAX_HEALTH" => ("generic.max_health", 20.0),
+        "MOVEMENT_EFFICIENCY" => ("generic.movement_efficiency", 0.0),
+        "MOVEMENT_SPEED" => ("generic.movement_speed", 0.7),
+        "OXYGEN_BONUS" => ("generic.oxygen_bonus", 0.0),
+        "SAFE_FALL_DISTANCE" => ("generic.safe_fall_distance", 3.0),
+        "SCALE" => ("generic.scale", 1.0),
+        "SNEAKING_SPEED" => ("generic.sneaking_speed", 0.3),
+        "STEP_HEIGHT" => ("generic.step_height", 0.6),
+        "SUBMERGED_MINING_SPEED" => ("generic.submerged_mining_speed", 0.2),
+        "SWEEPING_DAMAGE_RATIO" => ("player.sweeping_damage_ratio", 0.0),
+        "WATER_MOVEMENT_EFFICIENCY" => ("generic.water_movement_efficiency", 0.0),
+        _ => return None,
+    })
+}
+
+fn armor_material_static(rt: &mut Rt, name: &str) -> Option<V> {
+    let (path, enchant, toughness, knockback) = match name {
+        "LEATHER" => ("leather", 15, 0.0, 0.0),
+        "CHAIN" => ("chainmail", 12, 0.0, 0.0),
+        "IRON" => ("iron", 9, 0.0, 0.0),
+        "GOLD" => ("gold", 25, 0.0, 0.0),
+        "DIAMOND" => ("diamond", 10, 2.0, 0.0),
+        "TURTLE" => ("turtle", 9, 0.0, 0.0),
+        "NETHERITE" => ("netherite", 15, 3.0, 0.1),
+        "ARMADILLO" => ("armadillo", 4, 0.0, 0.0),
+        _ => return None,
+    };
+    let id = format!("minecraft:{path}");
+    let mat = rt.new_instance("net/minecraft/world/item/ArmorMaterial", 0);
+    let material_name = rt.intern_str(path);
+    rt.put_field(mat, "name", material_name);
+    rt.put_field(mat, "enchantmentValue", V::I(enchant));
+    rt.put_field(mat, "toughness", V::F(toughness));
+    rt.put_field(mat, "knockbackResistance", V::F(knockback));
+    rt.pin(mat);
+    let holder = rt.new_instance("net/minecraft/core/Holder", 0);
+    let key = new_resource_key(rt, "minecraft:armor_material", &id);
+    rt.put_field(holder, "$value", mat);
+    rt.put_field(holder, "$key", key);
+    rt.pin(holder);
+    Some(holder)
+}
+
+fn attribute_static(rt: &mut Rt, name: &str) -> Option<V> {
+    let (path, default) = vanilla_attribute(name)?;
+    let id = format!("minecraft:{path}");
+    let attr = rt.new_instance("net/minecraft/world/entity/ai/attributes/RangedAttribute", 0);
+    let desc = rt.intern_str(&format!("attribute.name.{path}"));
+    let location = new_rl_handle(rt, &id);
+    rt.put_field(attr, "descriptionId", desc);
+    rt.put_field(attr, "defaultValue", V::D(default));
+    rt.put_field(attr, "id", location);
+    rt.pin(attr);
+    let holder = rt.new_instance("net/minecraft/core/Holder", 0);
+    let key = new_resource_key(rt, "minecraft:attribute", &id);
+    rt.put_field(holder, "$value", attr);
+    rt.put_field(holder, "$key", key);
+    rt.pin(holder);
+    Some(holder)
+}
+
+fn armor_type(rt: &mut Rt, name: &str) -> V {
+    let ord = match name {
+        "HELMET" => 0,
+        "CHESTPLATE" => 1,
+        "LEGGINGS" => 2,
+        "BOOTS" => 3,
+        "BODY" => 4,
+        _ => 0,
+    };
+    let obj = rt.new_instance("net/minecraft/world/item/ArmorItem$Type", 0);
+    let label = rt.intern_str(name);
+    rt.put_field(obj, "$name", label);
+    rt.put_field(obj, "$ordinal", V::I(ord));
+    rt.pin(obj);
+    obj
+}
+
+/// `ArmorMaterial.Layer` stores a texture location and an optional suffix.
+/// `ArmorItem.Type.values` is the vanilla enum order, including `BODY` from 1.20.5.
+pub fn call_armor_layer(rt: &mut Rt, member: &MemberRef, is_static: bool, args: &[V]) -> Option<V> {
+    if member.owner == "net/minecraft/world/item/ArmorItem$Type" && is_static && member.name == "values" {
+        let mut items = Vec::with_capacity(5);
+        for name in ["HELMET", "CHESTPLATE", "LEGGINGS", "BOOTS", "BODY"] {
+            items.push(armor_type(rt, name));
+        }
+        return Some(rt.alloc(
+            "[Lnet/minecraft/world/item/ArmorItem$Type;",
+            0,
+            Data::Array(items),
+        ));
+    }
+    if member.owner == "net/minecraft/world/item/ArmorItem$Type" && is_static && member.name == "valueOf" {
+        let name = rt.str_of(*args.first()?)?.to_owned();
+        return Some(armor_type(rt, &name));
+    }
+    if (member.owner == "net/minecraft/world/entity/ai/attributes/Attribute"
+        || member.owner == "net/minecraft/world/entity/ai/attributes/RangedAttribute")
+        && !is_static
+        && member.name == "getDefaultValue"
+    {
+        return Some(rt.get_field(*args.first()?, "defaultValue"));
+    }
+    if member.owner != "net/minecraft/world/item/ArmorMaterial$Layer" || is_static {
+        return None;
+    }
+    if member.name != "<init>" {
+        return None;
+    }
+    let texture = *args.get(1)?;
+    rt.put_field(args[0], "texture", texture);
+    let suffix = if args.len() > 2 {
+        args[2]
+    } else {
+        rt.intern_str("")
+    };
+    rt.put_field(args[0], "suffix", suffix);
+    Some(V::Void)
+}
+
+/// `TextColor.fromRgb` stores the packed int unchanged. Mekanism tier colors
+/// pass the ARGB value produced by `FastColor.ARGB32.color`.
+pub fn call_text_color(rt: &mut Rt, member: &MemberRef, is_static: bool, args: &[V]) -> Option<V> {
+    if member.owner != "net/minecraft/network/chat/TextColor" {
+        return None;
+    }
+    if is_static && member.name == "fromRgb" {
+        let color = rt.new_instance(member.owner.as_str(), 0);
+        rt.put_field(color, "value", V::I(args.first()?.i()));
+        rt.pin(color);
+        return Some(color);
+    }
+    if !is_static && member.name == "getValue" {
+        return Some(rt.get_field(*args.first()?, "value"));
+    }
+    if !is_static && member.name == "equals" {
+        let left = rt.get_field(*args.first()?, "value").i();
+        let right = args.get(1).map(|v| rt.get_field(*v, "value").i());
+        let same_class = args
+            .get(1)
+            .and_then(|v| rt.class_of(*v))
+            .is_some_and(|c| c == "net/minecraft/network/chat/TextColor");
+        return Some(V::bool(same_class && Some(left) == right));
+    }
+    if !is_static && member.name == "serialize" {
+        return Some(rt.get_field(*args.first()?, "value"));
+    }
+    None
+}
+
 /// Static field lookups for `Component`, `Style`, `ChatFormatting`, and `com/sun/jna/Platform`.
 pub fn get_static_field(rt: &mut Rt, owner: &str, name: &str) -> Option<V> {
+    if owner == "net/minecraft/sounds/SoundEvents" {
+        return sound_static(rt, name);
+    }
+    if owner == "net/minecraft/world/entity/ai/attributes/Attributes" {
+        return attribute_static(rt, name);
+    }
+    if owner == "net/minecraft/world/item/ArmorMaterials" {
+        return armor_material_static(rt, name);
+    }
     if owner == STYLE_CLASS && name == "EMPTY" {
         return Some(new_style(rt));
     }
@@ -3655,6 +3913,89 @@ mod tests {
             );
             assert_eq!(value.i(), expected);
         }
+    }
+
+    #[test]
+    fn text_color_keeps_the_packed_argb_from_mekanism_tiers() {
+        let mut prepared = crate::PreparedLoad::from_jars(Vec::new(), true).unwrap();
+        let mut rt = Rt::new();
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &prepared.linked,
+            host: &mut prepared.loader,
+            depth: 0,
+        };
+        let packed = mmga_runtime::invoke_member(
+            &mut ctx,
+            mmga_classfile::op::INVOKESTATIC,
+            &MemberRef::new("net/minecraft/util/FastColor$ARGB32", "color", "(III)I"),
+            &[V::I(95), V::I(255), V::I(184)],
+        );
+        let color = mmga_runtime::invoke_member(
+            &mut ctx,
+            mmga_classfile::op::INVOKESTATIC,
+            &MemberRef::new(
+                "net/minecraft/network/chat/TextColor",
+                "fromRgb",
+                "(I)Lnet/minecraft/network/chat/TextColor;",
+            ),
+            &[packed],
+        );
+        let value = mmga_runtime::invoke_member(
+            &mut ctx,
+            mmga_classfile::op::INVOKEVIRTUAL,
+            &MemberRef::new("net/minecraft/network/chat/TextColor", "getValue", "()I"),
+            &[color],
+        );
+        assert!(ctx.rt.pending_exception.is_none());
+        assert_eq!(value.i() as u32, 0xff5f_ffb8);
+    }
+
+    #[test]
+    fn generic_explode_holder_points_at_the_vanilla_sound_id() {
+        let mut prepared = crate::PreparedLoad::from_jars(Vec::new(), true).unwrap();
+        let mut rt = Rt::new();
+        let holder = {
+            let mut ctx = ExecCtx {
+                rt: &mut rt,
+                linked: &prepared.linked,
+                host: &mut prepared.loader,
+                depth: 0,
+            };
+            mmga_runtime::read_static_field(
+                &mut ctx,
+                "net/minecraft/sounds/SoundEvents",
+                "GENERIC_EXPLODE",
+                "Lnet/minecraft/core/Holder$Reference;",
+            )
+        };
+        let event = rt.get_field(holder, "$value");
+        let location = rt.get_field(event, "location");
+        let id = rt.handle_of(location).map(|(_, _, tag, _)| tag.to_owned());
+        assert_eq!(id.as_deref(), Some("minecraft:entity.generic.explode"));
+        assert_eq!(rt.class_of(holder), Some("net/minecraft/core/Holder$Reference"));
+    }
+
+    #[test]
+    fn attack_speed_holder_uses_the_1_21_1_default() {
+        let mut prepared = crate::PreparedLoad::from_jars(Vec::new(), true).unwrap();
+        let mut rt = Rt::new();
+        let holder = {
+            let mut ctx = ExecCtx {
+                rt: &mut rt,
+                linked: &prepared.linked,
+                host: &mut prepared.loader,
+                depth: 0,
+            };
+            mmga_runtime::read_static_field(
+                &mut ctx,
+                "net/minecraft/world/entity/ai/attributes/Attributes",
+                "ATTACK_SPEED",
+                "Lnet/minecraft/core/Holder;",
+            )
+        };
+        let attr = rt.get_field(holder, "$value");
+        assert_eq!(rt.get_field(attr, "defaultValue").d(), 4.0);
     }
 
     #[test]
