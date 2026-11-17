@@ -18,6 +18,9 @@ pub fn get_static_field(rt: &mut Rt, owner: &str, name: &str, desc: &str) -> Opt
         "CHEST_ARMOR" => "chest_armor",
         "LEG_ARMOR" => "leg_armor",
         "FOOT_ARMOR" => "foot_armor",
+        // Original BuilderTransformers sliding/trapdoor item builders; awn.o/N.
+        "DOORS" => "doors",
+        "TRAPDOORS" => "trapdoors",
         _ => return None,
     };
     if let Some(value) = rt.get_static(owner, name) {
@@ -94,6 +97,8 @@ mod tests {
             ("CHEST_ARMOR", "chest_armor"),
             ("LEG_ARMOR", "leg_armor"),
             ("FOOT_ARMOR", "foot_armor"),
+            ("DOORS", "doors"),
+            ("TRAPDOORS", "trapdoors"),
         ] {
             let key = read_static_field(&mut ctx, OWNER, name, "Lnet/minecraft/tags/TagKey;");
             assert!(

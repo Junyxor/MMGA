@@ -35,6 +35,7 @@
 - `Codec.mapResult` 的原 ResultFunction 现在接收真实 decoded Pair/DataResult、原始 input 和已合并 prefix 的编码结果，unknown callback 明确失败。两个回归先失败后通过，另一个回归复现了 callback 的 stable lifecycle 被丢弃，并修复 top-level codec result 的 lifecycle/input identity 保留。AE2 越过 GenericStack，下一处 ItemStack.SINGLE_ITEM_CODEC（`AECodecs.<clinit>`），仍在构造。
 - Jar 解析不再丢弃原始 `.class` resource bytes；ClassLoader 可读取真实原字节而不是把已存在的 class resource 报成缺失。两项回归先失败后通过，涵盖 root/nested 同名 class 的优先级和未 link 的 multi-release/module-info 资源。输入 jar 未被改写；classfile crate 共九项测试通过。
 - IMC 以真实 message/supplier refs、事件 container recipient 和延迟 method predicate 遍历实际 queue；消费失败保留当前消息，下游 filter 的删除、toList 前后失败和追加/prefetch 时机经六项回归验证。未加载 forge/fml 别名不再假装已加载。原 Curios 已完成 common/sided setup、InterModProcess 和 **LoadComplete**，服务器命令阶段停在 ItemArgument.item(CommandBuildContext)；饰品玩法与真实 tick 尚未验证。
+- Create sliding-door 的 ItemTags.DOORS/TRAPDOORS 使用官方 `minecraft:doors/trapdoors` item registry 键，既有 item-tag 回归新增失败后通过的对应断言。原 jar 越过该处，下一处 `Direction.from2DDataValue`（Catnip Iterate.getHorizontals），仍在构造。
 
 ## 2026-11-17 持续修复增量（进行中）
 
