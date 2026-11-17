@@ -3,6 +3,7 @@
 
 mod chat;
 mod json;
+mod map_result;
 mod result;
 
 use mmga_classfile::{op, MemberRef};
@@ -19,8 +20,12 @@ const ENUM_CODEC: &str = "net/minecraft/util/StringRepresentable$EnumCodec";
 const VALUE_CODEC: &str = "net/minecraft/util/StringRepresentable$StringRepresentableCodec";
 const LAZY_CODEC: &str = "com/mojang/serialization/Codec$RecursiveCodec";
 const UNBOUNDED_MAP: &str = "com/mojang/serialization/codecs/UnboundedMapCodec";
+const DISPATCH_MAP: &str = "com/mojang/serialization/codecs/KeyDispatchCodec";
 
 pub fn is_subtype(sub: &str, sup: &str) -> bool {
+    if map_result::is_subtype(sub, sup) {
+        return true;
+    }
     (matches!(
         sub,
         CODEC | PRIMITIVE | ENUM_CODEC | VALUE_CODEC | LAZY_CODEC | UNBOUNDED_MAP
@@ -33,10 +38,10 @@ pub fn is_subtype(sub: &str, sup: &str) -> bool {
             "com/mojang/serialization/codecs/BaseMapCodec" | "java/lang/Record"
         ))
         || (sub == ENUM_CODEC && sup == VALUE_CODEC)
-        || (sub == MAP
+        || (matches!(sub, MAP | DISPATCH_MAP)
             && matches!(
                 sup,
-                "com/mojang/serialization/MapEncoder"
+                MAP | "com/mojang/serialization/MapEncoder"
                     | "com/mojang/serialization/MapDecoder"
                     | "com/mojang/serialization/CompressorHolder"
             ))
@@ -245,6 +250,9 @@ pub fn call(
 }
 
 fn call_codec(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: &[V]) -> Option<V> {
+    if let Some(value) = map_result::call(ctx, member, is_static, args) {
+        return Some(value);
+    }
     let (owner, name, desc) = (
         member.owner.as_str(),
         member.name.as_str(),
@@ -364,6 +372,16 @@ fn call_codec(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: 
             | "com/mojang/serialization/Encoder"
             | "com/mojang/serialization/Decoder"
     );
+    let is_map = matches!(owner, MAP | DISPATCH_MAP);
+    if is_codec && !is_static && name == "dispatchMap" {
+        if desc == "(Ljava/lang/String;Ljava/util/function/Function;Ljava/util/function/Function;)Lcom/mojang/serialization/MapCodec;" {
+            return Some(graph(ctx.rt, DISPATCH_MAP, "dispatch_map", args));
+        }
+        if desc == "(Ljava/util/function/Function;Ljava/util/function/Function;)Lcom/mojang/serialization/MapCodec;" {
+            let field=ctx.rt.intern_str("type");
+            return Some(graph(ctx.rt, DISPATCH_MAP, "dispatch_map", &[args[0],field,args[1],args[2]]));
+        }
+    }
     if owner == CODEC && is_static && name == "unboundedMap"
         && desc == "(Lcom/mojang/serialization/Codec;Lcom/mojang/serialization/Codec;)Lcom/mojang/serialization/codecs/UnboundedMapCodec;" {
         return Some(graph(ctx.rt, UNBOUNDED_MAP, "unbounded_map", args));
@@ -530,10 +548,13 @@ fn call_codec(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: 
             _=>None,
         };
     }
-    if !is_static && (is_codec || owner == MAP) {
+    if !is_static && (is_codec || is_map) {
         let recv = *args.first()?;
-        let class = if owner == MAP { MAP } else { CODEC };
+        let class = if is_map { MAP } else { CODEC };
         let returns = |parameters: &str, ret: &str| desc == format!("({parameters})L{ret};");
+        if is_map && name == "mapResult" && desc == "(Lcom/mojang/serialization/MapCodec$ResultFunction;)Lcom/mojang/serialization/MapCodec;" {
+            return Some(graph(ctx.rt,MAP,"map_result",args));
+        }
         if matches!(name, "xmap" | "comapFlatMap" | "flatComapMap" | "flatXmap")
             && returns(
                 "Ljava/util/function/Function;Ljava/util/function/Function;",
@@ -581,14 +602,13 @@ fn call_codec(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: 
             };
             return Some(graph(ctx.rt, MAP, kind, args));
         }
-        if owner == MAP && name == "forGetter" && returns("Ljava/util/function/Function;", BUILDER)
-        {
+        if is_map && name == "forGetter" && returns("Ljava/util/function/Function;", BUILDER) {
             let builder = ctx.rt.new_instance(BUILDER, 0);
             ctx.rt.put_field(builder, "$builder_codec", recv);
             ctx.rt.put_field(builder, "$builder_getter", args[1]);
             return Some(builder);
         }
-        if owner == MAP && name == "codec" && desc == "()Lcom/mojang/serialization/Codec;" {
+        if is_map && name == "codec" && desc == "()Lcom/mojang/serialization/Codec;" {
             return Some(graph(ctx.rt, CODEC, "map_codec", &[recv]));
         }
         if matches!(name, "encodeStart" | "parse" | "decode" | "encode") {
@@ -801,6 +821,7 @@ fn decode_remainder(rt: &Rt, codec: V, input: &serde_json::Value) -> serde_json:
         return serde_json::Value::Null;
     };
     match kind.as_str() {
+        "map_result" => input.clone(),
         "map_codec" | "item_stack" | "fluid_stack" | "unbounded_map" => input.clone(),
         "list" => serde_json::json!([]),
         "xmap" | "comapFlatMap" | "flatComapMap" | "flatXmap" | "range" | "extra_int_range" => {
@@ -1111,6 +1132,165 @@ fn decode_unbounded_map(
     }
 }
 
+fn selected_map_codec(ctx: &mut ExecCtx<'_>, selector: V, key: V) -> Result<V, DecodeError> {
+    let codec = function(ctx, selector, &[key]);
+    if ctx.rt.pending_exception.is_some() {
+        return Err("Dispatch selector failed".into());
+    }
+    if codec.is_null() {
+        ctx.rt.throw_exception(
+            "java/lang/NullPointerException",
+            "Dispatch selector returned null codec",
+        );
+        return Err("Null dispatch codec".into());
+    }
+    if !ctx
+        .linked
+        .is_subtype(ctx.rt.class_of(codec).unwrap_or(""), MAP, ctx.host)
+        && ctx.rt.class_of(codec) != Some(MAP)
+    {
+        ctx.rt.throw_exception(
+            "java/lang/ClassCastException",
+            "Dispatch selector did not return MapCodec",
+        );
+        return Err("Wrong dispatch codec".into());
+    }
+    Ok(codec)
+}
+
+fn decode_dispatch_map(
+    ctx: &mut ExecCtx<'_>,
+    args: &[V],
+    ops: V,
+    input: &serde_json::Value,
+    compressed: bool,
+    depth: usize,
+) -> Result<V, DecodeError> {
+    if compressed {
+        ctx.rt.throw_exception(
+            "java/lang/UnsupportedOperationException",
+            "Compressed dispatch maps require a real key compressor",
+        );
+        return Err("Unsupported compressed dispatch".into());
+    }
+    let field = ctx
+        .rt
+        .str_of(args[1])
+        .ok_or("Dispatch type key is not a String")?
+        .to_owned();
+    let value = input
+        .as_object()
+        .and_then(|map| map.get(&field))
+        .ok_or_else(|| format!("Input does not contain a key [{field}]: {input}"))?;
+    let (key, previous) = match decode_value(ctx, args[0], ops, value, compressed, depth + 1) {
+        Ok(value) => (value, None),
+        Err(error) => match error.partial {
+            Some(value) => (value, Some(error)),
+            None => return Err(error),
+        },
+    };
+    let codec = selected_map_codec(ctx, args[3], key)?;
+    let decoded = decode_value(ctx, codec, ops, input, compressed, depth + 1);
+    match (previous, decoded) {
+        (None, result) => result,
+        (Some(mut error), Ok(value)) => {
+            error.partial = Some(value);
+            Err(error)
+        }
+        (Some(mut error), Err(next)) => {
+            error.message.push_str("; ");
+            error.message.push_str(&next.message);
+            error.partial = next.partial;
+            Err(error)
+        }
+    }
+}
+
+fn encode_dispatch_map(
+    ctx: &mut ExecCtx<'_>,
+    args: &[V],
+    ops: V,
+    value: V,
+    compressed: bool,
+    depth: usize,
+) -> Result<serde_json::Value, EncodeError> {
+    if compressed {
+        ctx.rt.throw_exception(
+            "java/lang/UnsupportedOperationException",
+            "Compressed dispatch maps require a real key compressor",
+        );
+        return Err("Unsupported compressed dispatch".into());
+    }
+    let field = ctx
+        .rt
+        .str_of(args[1])
+        .ok_or("Dispatch type key is not a String")?
+        .to_owned();
+    let key = function(ctx, args[2], &[value]);
+    if ctx.rt.pending_exception.is_some() {
+        return Err("Dispatch type function failed".into());
+    }
+    let codec = selected_map_codec(ctx, args[3], key).map_err(|error| EncodeError {
+        message: error.message,
+        partial: None,
+    })?;
+    let encoded = encode_value(ctx, codec, ops, value, compressed, depth + 1);
+    if ctx.rt.pending_exception.is_some() {
+        return Err("Dispatch child encoder failed".into());
+    }
+    let key = function(ctx, args[2], &[value]);
+    if ctx.rt.pending_exception.is_some() {
+        return Err("Dispatch type function failed".into());
+    }
+    let encoded_key = encode_value(ctx, args[0], ops, key, compressed, depth + 1);
+    if ctx.rt.pending_exception.is_some() {
+        return Err("Dispatch key encoder failed".into());
+    }
+    let mut messages = Vec::new();
+    let payload = match encoded {
+        Ok(value) => Some(value),
+        Err(error) => {
+            messages.push(error.message);
+            error.partial
+        }
+    };
+    let key = match encoded_key {
+        Ok(value) => Some(value),
+        Err(error) => {
+            messages.push(error.message);
+            error.partial
+        }
+    };
+    let payload = match payload {
+        Some(serde_json::Value::Object(mut map)) => {
+            if let Some(key) = key {
+                map.insert(field, key);
+            }
+            Some(serde_json::Value::Object(map))
+        }
+        Some(other) => {
+            ctx.rt.throw_exception(
+                "java/lang/UnsupportedOperationException",
+                &format!("Dispatch child map encoder produced non-map {other}"),
+            );
+            return Err("Unsupported dispatch map".into());
+        }
+        None => key.map(|key| {
+            let mut map = serde_json::Map::new();
+            map.insert(field, key);
+            serde_json::Value::Object(map)
+        }),
+    };
+    if messages.is_empty() {
+        payload.ok_or_else(|| "Dispatch encoder produced no data".into())
+    } else {
+        Err(EncodeError {
+            message: messages.join("; "),
+            partial: payload,
+        })
+    }
+}
+
 fn encode_unbounded_map(
     ctx: &mut ExecCtx<'_>,
     args: &[V],
@@ -1255,6 +1435,8 @@ fn decode_value(
         return Err("Unknown codec".into());
     };
     match kind.as_str() {
+        "map_result" => map_result::decode(ctx, &args, ops, input, compressed, depth),
+        "dispatch_map" => decode_dispatch_map(ctx, &args, ops, input, compressed, depth),
         "unbounded_map" => decode_unbounded_map(ctx, &args, ops, input, compressed, depth),
         "number_provider" => {
             crate::number_providers::decode_json(ctx.rt, input, args[0].i()).map_err(Into::into)
@@ -1655,6 +1837,8 @@ fn encode_value(
         }
     }
     match kind.as_str() {
+        "map_result" => map_result::encode(ctx, &args, ops, value, compressed, depth),
+        "dispatch_map" => encode_dispatch_map(ctx, &args, ops, value, compressed, depth),
         "unbounded_map" => encode_unbounded_map(ctx, &args, ops, value, compressed, depth),
         "number_provider" => {
             crate::number_providers::encode_json(ctx.rt, value, args[0].i()).map_err(Into::into)
@@ -2762,6 +2946,140 @@ mod tests {
             ),
             &[map, key, value],
         );
+        let error = ctx.rt.take_exception().unwrap();
+        assert!(ctx
+            .rt
+            .exception_summary(error)
+            .contains("UnsupportedOperationException"));
+    }
+    #[test]
+    fn dispatch_map_executes_type_selector_child_codec_and_rechecks_type_on_encode() {
+        fn kind(ctx: &mut ExecCtx<'_>, args: &[V]) -> V {
+            let calls = ctx.rt.get_field(args[0], "calls").i();
+            ctx.rt.put_field(args[0], "calls", V::I(calls + 1));
+            ctx.rt.get_field(args[0], "kind")
+        }
+        fn select(_ctx: &mut ExecCtx<'_>, args: &[V]) -> V {
+            args[0]
+        }
+        fn get(ctx: &mut ExecCtx<'_>, args: &[V]) -> V {
+            ctx.rt.get_field(args[0], "value")
+        }
+        fn construct(ctx: &mut ExecCtx<'_>, args: &[V]) -> V {
+            let value = ctx.rt.new_instance("test/Variant", 0);
+            let kind = ctx.rt.intern_str("demo");
+            ctx.rt.put_field(value, "kind", kind);
+            ctx.rt.put_field(value, "value", args[0]);
+            value
+        }
+        fn fn_value(rt: &mut Rt, id: u32, captures: Vec<V>) -> V {
+            rt.alloc(
+                "java/util/function/Function",
+                0,
+                Data::Closure(Box::new(mmga_runtime::ClosureData {
+                    interface_class: "java/util/function/Function".into(),
+                    sam_name: "apply".into(),
+                    sam_desc: "(Ljava/lang/Object;)Ljava/lang/Object;".into(),
+                    instantiated_desc: "(Ljava/lang/Object;)Ljava/lang/Object;".into(),
+                    captures,
+                    target: mmga_runtime::ClosureTarget::NativeLambda(id),
+                })),
+            )
+        }
+        let mut linked = LinkedSpace::new();
+        linked.register_native_module(mmga_runtime::NativeModuleRegistry {
+            classes: &[],
+            lambdas: &[(501, kind), (502, select), (503, get), (504, construct)],
+        });
+        let mut host = NullHost;
+        let mut rt = Rt::new();
+        let string = get_static_field(
+            &mut rt,
+            CODEC,
+            "STRING",
+            "Lcom/mojang/serialization/codecs/PrimitiveCodec;",
+        )
+        .unwrap();
+        let int = get_static_field(
+            &mut rt,
+            CODEC,
+            "INT",
+            "Lcom/mojang/serialization/codecs/PrimitiveCodec;",
+        )
+        .unwrap();
+        let ops = get_static_field(
+            &mut rt,
+            JSON_OPS,
+            "INSTANCE",
+            "Lcom/mojang/serialization/JsonOps;",
+        )
+        .unwrap();
+        let getter = fn_value(&mut rt, 503, vec![]);
+        let constructor = fn_value(&mut rt, 504, vec![]);
+        let field = field_codec(&mut rt, int, "value");
+        let child = record_map_codec(&mut rt, &[(field, getter)], constructor);
+        let type_fn = fn_value(&mut rt, 501, vec![]);
+        let selector = fn_value(&mut rt, 502, vec![child]);
+        let field_name = rt.intern_str("kind");
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        let map=invoke(&mut ctx,CODEC,"dispatchMap","(Ljava/lang/String;Ljava/util/function/Function;Ljava/util/function/Function;)Lcom/mojang/serialization/MapCodec;",false,&[string,field_name,type_fn,selector]);
+        let data = decode_value(
+            &mut ctx,
+            map,
+            ops,
+            &serde_json::json!({"kind":"demo","value":7}),
+            false,
+            0,
+        )
+        .unwrap();
+        assert_eq!(ctx.rt.get_field(data, "calls"), V::NULL);
+        assert_eq!(
+            encode_value(&mut ctx, map, ops, data, false, 0).unwrap(),
+            serde_json::json!({"kind":"demo","value":7})
+        );
+        assert_eq!(ctx.rt.get_field(data, "calls"), V::I(2));
+        let error = decode_value(
+            &mut ctx,
+            map,
+            ops,
+            &serde_json::json!({"value":7}),
+            false,
+            0,
+        )
+        .unwrap_err();
+        assert!(error
+            .message
+            .contains("Input does not contain a key [kind]"));
+        let bad = fn_value(ctx.rt, 502, vec![int]);
+        let bad_map=invoke(&mut ctx,CODEC,"dispatchMap","(Ljava/lang/String;Ljava/util/function/Function;Ljava/util/function/Function;)Lcom/mojang/serialization/MapCodec;",false,&[string,field_name,type_fn,bad]);
+        assert!(decode_value(
+            &mut ctx,
+            bad_map,
+            ops,
+            &serde_json::json!({"kind":"demo","value":7}),
+            false,
+            0
+        )
+        .is_err());
+        let error = ctx.rt.take_exception().unwrap();
+        assert!(ctx
+            .rt
+            .exception_summary(error)
+            .contains("ClassCastException"));
+        assert!(decode_value(
+            &mut ctx,
+            map,
+            ops,
+            &serde_json::json!({"kind":"demo","value":7}),
+            true,
+            0
+        )
+        .is_err());
         let error = ctx.rt.take_exception().unwrap();
         assert!(ctx
             .rt

@@ -28,6 +28,7 @@
 - NeoForgeDataMaps.FURNACE_FUELS 的 DataMapType metadata 保存真实 id/item registry/persistent-network codec/mandatory=false，FurnaceFuel 构造和正值校验分别按 record/codec 执行。JSON `{burn_time:n}` 与裸整数都实际可读，persistent 写对象、sync 写裸整数；三项回归先失败后通过，未实现数据映射世界/数据生成明确失败。原始 AllItems 最小 loop 已越过 burnTime，完整 Create 在 callback 修复后也越过该点，后续阻塞见增量。
 - Create AllItems 的七个 vanilla ItemTags 字段按官方 mappings/字面量映射（含 piglin_loved 与 enchantable 路径），两个回归先失败后通过，same item registry/direct factory 身份一致。完整 Create 越过 AllItems 初始化，当前 `WoodType.OAK`（`AllSpriteShifts.populateMaps`），仍在构造；登记 renderer metadata 不代表实际客户端渲染。
 - Canonical registry reference 状态保存真实 intrusive prereference identity、注册绑定、alias/shadow、default/frozen flags，static attribute/sound/block/type holder 与 getHolder 使用同一路径。八项引用回归、四项 codec 回归、七项既有 registry 回归通过，实际 onAdd/onBake 回调保留对象/时机/异常。host 调用不会消费 pending exception，相关 VM 集成回归先失败后通过。Mekanism 越过 intrusive holder，下一处 `Class.getClassLoader()`（`MekanismAPI.<clinit>`），仍在构造。RegistrationInfo 字段保留真实 lifecycle；最终 DFU DataResult 的完整 lifecycle 传播尚未证明与官方完全一致。
+- `Codec.dispatchMap` 实际调用类型 getter、MapCodec selector 与字段 codec；encode 按官方两次求 type 的顺序，partial/errors、未知 selector 与 compressed 未实现错误均明确保留。`MapCodec.mapResult` 保留并实际调用原 ResultFunction，通过真实 Json MapLike/RecordBuilder 子集读写条目，encode/decode 都不能绕过 callback。三项回归先失败后通过；AE2 越过 AEKey 初始化，下一处 `Codec.mapResult`（`GenericStack.<clinit>`），仍在构造。
 
 ## 2026-11-17 持续修复增量（进行中）
 
