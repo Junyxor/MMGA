@@ -54,6 +54,7 @@ pub mod tags;
 pub mod tag_codecs;
 pub mod util_values;
 pub mod vanilla_block_tags;
+pub mod vanilla_item_tags;
 pub mod world;
 
 pub use bus::{
