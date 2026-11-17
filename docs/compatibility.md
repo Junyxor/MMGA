@@ -6,6 +6,7 @@
 
 - 恢复真实 classfile 的字段/方法反射、字段访问检查及 `Set.addAll`；新增 ImmutableMap 的 keySet/values/entrySet，视图保存源 Map 引用，迭代保留实际条目和重复 value，Collection/Map.Entry/Iterator 的修改路径明确抛异常。两项回归先失败后通过，runtime 共 **14 项通过**。
 - 使用新编译的 `fast` 优化探针重跑 GuideME 21.1.22 + AE2 19.2.19：GuideME 构造完成；AE2 已越过 `ImmutableMap.entrySet` 的物品定义阻塞，下一处为 `Method.getParameters()`（`PartModelsHelper.createModels`）。整体仍在构造，注册/setup/tick 未到达，玩法与渲染未验证。本地证据 `.local/probes/ae2-immutable-views.log`，第三方 jar 未修改。
+- 继续补齐 `Method.getParameters/getReturnType/invoke`：参数类型来自原 descriptor；invoke 检查数量、receiver、访问权限与拆箱/拓宽转换，真正执行原目标并装箱结果，目标异常保留为 `InvocationTargetException.target/cause`。参数名称与未保留的 MethodParameters 标志仍明确未实现。回归先失败后通过，原 AE2 jar 越过模型方法调用，进入 `AEBlocks`，下一处为 `SoundType.AMETHYST_CLUSTER`；仍在构造，注册/setup/tick 未到达。证据 `.local/probes/ae2-reflection-invoke.log`。
 
 ## 2026-11-17 持续修复增量（进行中）
 

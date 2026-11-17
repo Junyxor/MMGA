@@ -199,6 +199,34 @@ pub fn call(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: &[
         }
         return None;
     }
+    if owner == "java/lang/reflect/Parameter" {
+        let executable = ctx.rt.get_field(args[0], "$executable");
+        let index = ctx.rt.get_field(args[0], "$index").i() as usize;
+        let descriptor = ctx
+            .rt
+            .str_of(ctx.rt.get_field(executable, "$descriptor"))?
+            .to_owned();
+        let (parameters, _) = parse_method_descriptor(&descriptor).ok()?;
+        return match (name, desc) {
+            ("getType", "()Ljava/lang/Class;") => {
+                Some(class_object(ctx.rt, &type_name(parameters.get(index)?)))
+            }
+            ("getDeclaringExecutable", "()Ljava/lang/reflect/Executable;") => Some(executable),
+            ("isVarArgs", "()Z") => Some(V::bool(
+                index + 1 == parameters.len()
+                    && ctx.rt.get_field(executable, "$modifiers").i() & access::VARARGS as i32 != 0,
+            )),
+            // MethodParameters names and flags are not retained by the parser.
+            // Do not fabricate argN when the original class may name it.
+            _ => None,
+        };
+    }
+    if owner == "java/lang/reflect/InvocationTargetException"
+        && name == "getTargetException"
+        && desc == "()Ljava/lang/Throwable;"
+    {
+        return Some(ctx.rt.get_field(args[0], "target"));
+    }
     if owner == "java/lang/Class"
         && matches!(
             name,
@@ -408,6 +436,44 @@ pub fn call(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: &[
     ) {
         let recv = args[0];
         return match (name, desc) {
+            ("getParameters", "()[Ljava/lang/reflect/Parameter;") => {
+                let descriptor = ctx
+                    .rt
+                    .str_of(ctx.rt.get_field(recv, "$descriptor"))?
+                    .to_owned();
+                let (parameters, _) = parse_method_descriptor(&descriptor).ok()?;
+                let values = parameters
+                    .iter()
+                    .enumerate()
+                    .map(|(index, _)| {
+                        let parameter = ctx.rt.new_instance("java/lang/reflect/Parameter", 0);
+                        ctx.rt.put_field(parameter, "$executable", recv);
+                        ctx.rt.put_field(parameter, "$index", V::I(index as i32));
+                        parameter
+                    })
+                    .collect();
+                Some(
+                    ctx.rt
+                        .alloc("[Ljava/lang/reflect/Parameter;", 0, Data::Array(values)),
+                )
+            }
+            ("getReturnType", "()Ljava/lang/Class;")
+                if ctx.rt.class_of(recv) == Some("java/lang/reflect/Method") =>
+            {
+                let descriptor = ctx
+                    .rt
+                    .str_of(ctx.rt.get_field(recv, "$descriptor"))?
+                    .to_owned();
+                Some(class_object(
+                    ctx.rt,
+                    &type_name(&parse_method_descriptor(&descriptor).ok()?.1),
+                ))
+            }
+            ("invoke", "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;")
+                if ctx.rt.class_of(recv) == Some("java/lang/reflect/Method") =>
+            {
+                Some(invoke_reflected(ctx, recv, args[1], args[2]))
+            }
             ("getAnnotation", "(Ljava/lang/Class;)Ljava/lang/annotation/Annotation;") => {
                 if args[1].is_null() {
                     return Some(
@@ -552,6 +618,210 @@ pub fn call(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: &[
     None
 }
 
+fn invoke_reflected(ctx: &mut ExecCtx<'_>, method: V, receiver: V, array: V) -> V {
+    let Some(declaring) = ctx
+        .rt
+        .handle_of(ctx.rt.get_field(method, "$declaring"))
+        .map(|h| h.2.to_owned())
+    else {
+        return V::NULL;
+    };
+    let Some(name) = ctx
+        .rt
+        .str_of(ctx.rt.get_field(method, "$name"))
+        .map(str::to_owned)
+    else {
+        return V::NULL;
+    };
+    let Some(desc) = ctx
+        .rt
+        .str_of(ctx.rt.get_field(method, "$descriptor"))
+        .map(str::to_owned)
+    else {
+        return V::NULL;
+    };
+    let flags = ctx.rt.get_field(method, "$modifiers").i() as u16;
+    if flags & access::PUBLIC == 0 && ctx.rt.get_field(method, "$accessible") != V::TRUE {
+        return ctx
+            .rt
+            .throw_exception("java/lang/IllegalAccessException", &name);
+    }
+    let (parameters, ret) =
+        parse_method_descriptor(&desc).expect("reflected descriptor was parsed at load");
+    let arguments = if array.is_null() {
+        Vec::new()
+    } else {
+        match ctx.rt.get_obj(array).map(|o| &o.data) {
+            Some(Data::Array(xs)) => xs.clone(),
+            _ => {
+                return ctx.rt.throw_exception(
+                    "java/lang/IllegalArgumentException",
+                    "Method.invoke arguments are not an array",
+                )
+            }
+        }
+    };
+    if arguments.len() != parameters.len() {
+        return ctx.rt.throw_exception(
+            "java/lang/IllegalArgumentException",
+            "wrong number of arguments",
+        );
+    }
+    let is_static = flags & access::STATIC != 0;
+    let mut call_args = Vec::with_capacity(arguments.len() + 1);
+    if !is_static {
+        if receiver.is_null() {
+            return ctx
+                .rt
+                .throw_exception("java/lang/NullPointerException", "Method.invoke receiver");
+        }
+        if !ctx.linked.is_subtype(
+            ctx.rt.class_of(receiver).unwrap_or(""),
+            &declaring,
+            ctx.host,
+        ) {
+            return ctx.rt.throw_exception(
+                "java/lang/IllegalArgumentException",
+                "object is not an instance of declaring class",
+            );
+        }
+        call_args.push(receiver);
+    }
+    for (value, typ) in arguments.into_iter().zip(&parameters) {
+        let converted = match typ {
+            DescriptorType::Object(class) => {
+                if value.is_null()
+                    || ctx
+                        .linked
+                        .is_subtype(ctx.rt.class_of(value).unwrap_or(""), class, ctx.host)
+                {
+                    Some(value)
+                } else {
+                    None
+                }
+            }
+            DescriptorType::Array(_) => {
+                if value.is_null()
+                    || ctx.linked.is_subtype(
+                        ctx.rt.class_of(value).unwrap_or(""),
+                        &typ.to_descriptor(),
+                        ctx.host,
+                    )
+                {
+                    Some(value)
+                } else {
+                    None
+                }
+            }
+            _ => convert_primitive(ctx.rt, value, typ),
+        };
+        let Some(value) = converted else {
+            return ctx.rt.throw_exception(
+                "java/lang/IllegalArgumentException",
+                "argument type mismatch",
+            );
+        };
+        call_args.push(value);
+    }
+    if is_static {
+        crate::ensure_class_init(ctx, &declaring);
+        if ctx.rt.pending_exception.is_some() {
+            return V::NULL;
+        }
+    }
+    let opcode = if is_static {
+        mmga_classfile::op::INVOKESTATIC
+    } else if ctx
+        .linked
+        .bytecode_classes
+        .get(&declaring)
+        .is_some_and(|cf| cf.access & access::INTERFACE != 0)
+    {
+        mmga_classfile::op::INVOKEINTERFACE
+    } else {
+        mmga_classfile::op::INVOKEVIRTUAL
+    };
+    let result = crate::invoke_member(
+        ctx,
+        opcode,
+        &MemberRef::new(declaring, name, desc),
+        &call_args,
+    );
+    if let Some(cause) = ctx.rt.take_exception() {
+        ctx.rt.throw_exception(
+            "java/lang/reflect/InvocationTargetException",
+            &ctx.rt.exception_summary(cause),
+        );
+        let exception = V::R(
+            ctx.rt
+                .pending_exception
+                .expect("throw created an exception"),
+        );
+        ctx.rt.put_field(exception, "target", cause);
+        ctx.rt.put_field(exception, "cause", cause);
+        return V::NULL;
+    }
+    match ret {
+        DescriptorType::Void => V::NULL,
+        DescriptorType::Object(_) | DescriptorType::Array(_) => result,
+        _ => crate::box_primitive(ctx.rt, primitive_wrapper(&ret), result),
+    }
+}
+
+fn primitive_wrapper(typ: &DescriptorType) -> &'static str {
+    match typ {
+        DescriptorType::Boolean => "java/lang/Boolean",
+        DescriptorType::Byte => "java/lang/Byte",
+        DescriptorType::Char => "java/lang/Character",
+        DescriptorType::Short => "java/lang/Short",
+        DescriptorType::Int => "java/lang/Integer",
+        DescriptorType::Long => "java/lang/Long",
+        DescriptorType::Float => "java/lang/Float",
+        DescriptorType::Double => "java/lang/Double",
+        _ => unreachable!(),
+    }
+}
+
+fn convert_primitive(rt: &Rt, value: V, typ: &DescriptorType) -> Option<V> {
+    let class = rt.class_of(value)?;
+    let raw = rt.get_field(value, "$value");
+    let rank = match class {
+        "java/lang/Byte" => 1,
+        "java/lang/Short" => 2,
+        "java/lang/Character" => 2,
+        "java/lang/Integer" => 3,
+        "java/lang/Long" => 4,
+        "java/lang/Float" => 5,
+        "java/lang/Double" => 6,
+        "java/lang/Boolean" => 0,
+        _ => return None,
+    };
+    Some(match typ {
+        DescriptorType::Boolean if rank == 0 => raw,
+        DescriptorType::Byte if rank == 1 => raw,
+        DescriptorType::Char if class == "java/lang/Character" => raw,
+        DescriptorType::Short if (1..=2).contains(&rank) && class != "java/lang/Character" => {
+            V::I(raw.i())
+        }
+        DescriptorType::Int if (1..=3).contains(&rank) => V::I(raw.i()),
+        DescriptorType::Long if (1..=4).contains(&rank) => {
+            V::J(if rank == 4 { raw.j() } else { raw.i() as i64 })
+        }
+        DescriptorType::Float if (1..=5).contains(&rank) => V::F(match rank {
+            5 => raw.f(),
+            4 => raw.j() as f32,
+            _ => raw.i() as f32,
+        }),
+        DescriptorType::Double if (1..=6).contains(&rank) => V::D(match rank {
+            6 => raw.d(),
+            5 => raw.f() as f64,
+            4 => raw.j() as f64,
+            _ => raw.i() as f64,
+        }),
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -601,6 +871,151 @@ mod tests {
             &MemberRef::new(owner, name, desc),
             args,
         )
+    }
+    #[test]
+    fn ae2_model_methods_expose_real_parameters_and_invoke_the_original_target() {
+        fn model(ctx: &mut ExecCtx<'_>, _args: &[V]) -> V {
+            ctx.rt.intern_str("ae2:part/model")
+        }
+        fn fail(ctx: &mut ExecCtx<'_>, _args: &[V]) -> V {
+            ctx.rt
+                .throw_exception("java/lang/IllegalStateException", "original failure")
+        }
+        let mut linked = LinkedSpace::new();
+        linked.add_bytecode_classes(BTreeMap::from([(
+            "test/Models".into(),
+            class(
+                "test/Models",
+                Some("java/lang/Object"),
+                &[],
+                vec![
+                    method(
+                        "models",
+                        "()Ljava/lang/String;",
+                        access::PUBLIC | access::STATIC,
+                    ),
+                    method(
+                        "typed",
+                        "(ILjava/lang/String;)V",
+                        access::PUBLIC | access::STATIC,
+                    ),
+                    method("fail", "()V", access::PUBLIC | access::STATIC),
+                ],
+                access::PUBLIC,
+            ),
+        )]));
+        linked.register_native_module(crate::NativeModuleRegistry {
+            classes: &[crate::NativeClassDef {
+                name: "test/Models",
+                superclass: Some("java/lang/Object"),
+                interfaces: &[],
+                is_interface: false,
+                methods: &[
+                    ("models.()Ljava/lang/String;", model, true, false),
+                    ("fail.()V", fail, true, false),
+                ],
+            }],
+            lambdas: &[],
+        });
+        let mut rt = Rt::new();
+        let cls = class_object(&mut rt, "test/Models");
+        let mut host = NullHost;
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        let methods = invoke(
+            &mut ctx,
+            "java/lang/Class",
+            "getDeclaredMethods",
+            "()[Ljava/lang/reflect/Method;",
+            &[cls],
+        );
+        let methods = match &ctx.rt.get_obj(methods).unwrap().data {
+            Data::Array(xs) => xs.clone(),
+            _ => panic!(),
+        };
+        let parameters = invoke(
+            &mut ctx,
+            "java/lang/reflect/Method",
+            "getParameters",
+            "()[Ljava/lang/reflect/Parameter;",
+            &[methods[0]],
+        );
+        assert!(
+            ctx.rt.pending_exception.is_none(),
+            "getParameters must use the actual descriptor"
+        );
+        assert!(
+            matches!(&ctx.rt.get_obj(parameters).unwrap().data,Data::Array(xs) if xs.is_empty())
+        );
+        let parameters = invoke(
+            &mut ctx,
+            "java/lang/reflect/Method",
+            "getParameters",
+            "()[Ljava/lang/reflect/Parameter;",
+            &[methods[1]],
+        );
+        let parameters = match &ctx.rt.get_obj(parameters).unwrap().data {
+            Data::Array(xs) => xs.clone(),
+            _ => panic!(),
+        };
+        assert_eq!(parameters.len(), 2);
+        for (parameter, expected) in parameters.into_iter().zip(["int", "java/lang/String"]) {
+            let typ = invoke(
+                &mut ctx,
+                "java/lang/reflect/Parameter",
+                "getType",
+                "()Ljava/lang/Class;",
+                &[parameter],
+            );
+            assert_eq!(ctx.rt.handle_of(typ).unwrap().2, expected);
+        }
+        let typ = invoke(
+            &mut ctx,
+            "java/lang/reflect/Method",
+            "getReturnType",
+            "()Ljava/lang/Class;",
+            &[methods[0]],
+        );
+        assert_eq!(ctx.rt.handle_of(typ).unwrap().2, "java/lang/String");
+        let result = invoke(
+            &mut ctx,
+            "java/lang/reflect/Method",
+            "invoke",
+            "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
+            &[methods[0], V::NULL, V::NULL],
+        );
+        assert_eq!(ctx.rt.str_of(result), Some("ae2:part/model"));
+        assert!(ctx.rt.pending_exception.is_none());
+        invoke(
+            &mut ctx,
+            "java/lang/reflect/Method",
+            "invoke",
+            "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
+            &[methods[1], V::NULL, V::NULL],
+        );
+        let error = ctx.rt.take_exception().unwrap();
+        assert!(ctx
+            .rt
+            .exception_summary(error)
+            .contains("IllegalArgumentException"));
+        invoke(
+            &mut ctx,
+            "java/lang/reflect/Method",
+            "invoke",
+            "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
+            &[methods[2], V::NULL, V::NULL],
+        );
+        let error = ctx.rt.take_exception().unwrap();
+        assert_eq!(
+            ctx.rt.class_of(error),
+            Some("java/lang/reflect/InvocationTargetException")
+        );
+        let cause = ctx.rt.get_field(error, "target");
+        assert!(ctx.rt.exception_summary(cause).contains("original failure"));
     }
     #[test]
     fn ae2_grid_service_reads_real_constructor_and_default_method_metadata() {

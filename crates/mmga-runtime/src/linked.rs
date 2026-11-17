@@ -509,6 +509,8 @@ fn jdk_supertypes(cls: &str) -> &'static [&'static str] {
         "java/lang/RuntimeException"
         | "java/io/IOException"
         | "java/lang/ReflectiveOperationException" => &["java/lang/Exception"],
+        "java/lang/reflect/InvocationTargetException" | "java/lang/IllegalAccessException"
+        | "java/lang/NoSuchMethodException" | "java/lang/NoSuchFieldException" => &["java/lang/ReflectiveOperationException"],
         "java/io/EOFException" | "java/io/FileNotFoundException" => &["java/io/IOException"],
         "java/io/UncheckedIOException"
         | "java/lang/NullPointerException"
