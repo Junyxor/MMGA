@@ -31,6 +31,7 @@
 - NoteBlockInstrument 的 23 个 enum 常量、三种 instrument type、tunable/custom/above 标志与真实 SoundEvents holder 已按官方验证，两项回归通过。Mekanism 越过 note instrument，下一阻塞 EquipmentSlot.values；没有实现音符播放或渲染。
 - EquipmentSlot.values/valueOf 返回官方七个 canonical 槽位的独立数组与正确异常；一项新增回归、armor 共 7 项通过。Mekanism 已进一步到 WorldConfig 的 `DimensionType.MAX_Y`。
 - DimensionType 的位数和高度上限常量取自官方推导（12 bits、MIN_Y -2032、MAX_Y 2031、Y_SIZE 4064），一项回归通过。Mekanism 构造已处理 9 个配置和 10 个监听器，暴露后续 event metadata 分类缺陷，继续修复中。
+- Create 的 SIGN/LECTERN BlockEntityType 与 vanilla BlockTags（包括 mining/tool tags）已逐项核对，实现 stable type/key/真实factory元数据，一项 tag 回归和两项 type 回归通过。Create 已从显示源/目标进入 AllBlocks/TagGen，当前 Multimap.putAll 阻塞继续修复；全局 tag membership 或真实方块实体行为仍不声称支持。
 
 最新验证：**2026-11-17，Windows x86_64，Minecraft 1.21.1 / NeoForge 21.1.266**。实现检查点 `a417383`，Rust `1.98.0`，Java 21。后续文档提交不改变这次探测的代码。三个 crate 仍为 `mmga-classfile`、`mmga-runtime`、`mmga-neoforge`；输入均为官方发布的原始 jar，未修改、未针对桩 API 重编译。
 

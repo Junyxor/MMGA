@@ -39,6 +39,7 @@ pub mod string_representable;
 pub mod subsystems;
 pub mod tags;
 pub mod util_values;
+pub mod vanilla_block_tags;
 pub mod world;
 
 pub use bus::{

@@ -1,7 +1,8 @@
 //! Registered vanilla block-entity type definitions used by Create display sources.
 //!
 //! Minecraft 1.21.1 `BlockEntityType` = `dqj`; verified factory method handles
-//! are CommandBlockEntity (`dqr`) and EnchantingTableBlockEntity (`drc`). This
+//! are CommandBlockEntity (`dqr`), EnchantingTableBlockEntity (`drc`),
+//! SignBlockEntity (`drs`) and LecternBlockEntity (`drk`). This
 //! module retains those constructors but does not fabricate an entity instance:
 //! invoking an unimplemented constructor fails at that exact method boundary.
 
@@ -20,7 +21,7 @@ struct Definition {
     entity: &'static str,
     blocks: &'static [&'static str],
 }
-const DEFINITIONS: [Definition; 2] = [
+const DEFINITIONS: [Definition; 4] = [
     Definition {
         field: "COMMAND_BLOCK",
         id: "minecraft:command_block",
@@ -36,6 +37,41 @@ const DEFINITIONS: [Definition; 2] = [
         id: "minecraft:enchanting_table",
         entity: "net/minecraft/world/level/block/entity/EnchantingTableBlockEntity",
         blocks: &["ENCHANTING_TABLE"],
+    },
+    Definition {
+        field: "SIGN",
+        id: "minecraft:sign",
+        entity: "net/minecraft/world/level/block/entity/SignBlockEntity",
+        blocks: &[
+            "OAK_SIGN",
+            "SPRUCE_SIGN",
+            "BIRCH_SIGN",
+            "ACACIA_SIGN",
+            "CHERRY_SIGN",
+            "JUNGLE_SIGN",
+            "DARK_OAK_SIGN",
+            "OAK_WALL_SIGN",
+            "SPRUCE_WALL_SIGN",
+            "BIRCH_WALL_SIGN",
+            "ACACIA_WALL_SIGN",
+            "CHERRY_WALL_SIGN",
+            "JUNGLE_WALL_SIGN",
+            "DARK_OAK_WALL_SIGN",
+            "CRIMSON_SIGN",
+            "CRIMSON_WALL_SIGN",
+            "WARPED_SIGN",
+            "WARPED_WALL_SIGN",
+            "MANGROVE_SIGN",
+            "MANGROVE_WALL_SIGN",
+            "BAMBOO_SIGN",
+            "BAMBOO_WALL_SIGN",
+        ],
+    },
+    Definition {
+        field: "LECTERN",
+        id: "minecraft:lectern",
+        entity: "net/minecraft/world/level/block/entity/LecternBlockEntity",
+        blocks: &["LECTERN"],
     },
 ];
 pub fn get_static_field(
@@ -271,6 +307,16 @@ mod tests {
                 "ENCHANTING_TABLE",
                 "minecraft:enchanting_table",
                 "net/minecraft/world/level/block/entity/EnchantingTableBlockEntity",
+            ),
+            (
+                "SIGN",
+                "minecraft:sign",
+                "net/minecraft/world/level/block/entity/SignBlockEntity",
+            ),
+            (
+                "LECTERN",
+                "minecraft:lectern",
+                "net/minecraft/world/level/block/entity/LecternBlockEntity",
             ),
         ] {
             let ty = read_static_field(
