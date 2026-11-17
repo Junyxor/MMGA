@@ -95,6 +95,9 @@ pub fn stdlib_call(
     if let Some(value) = crate::enum_sets::call(ctx, member, is_static, args) {
         return Some(value);
     }
+    if let Some(value) = crate::string_utils::call(ctx, member, is_static, args) {
+        return Some(value);
+    }
     if let Some(value) = crate::array_utils::call(ctx, member, is_static, args) {
         return Some(value);
     }

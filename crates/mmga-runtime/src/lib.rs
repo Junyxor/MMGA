@@ -5,6 +5,7 @@ pub mod fxhash;
 pub mod heap;
 mod guava_views;
 mod enum_sets;
+mod string_utils;
 mod array_utils;
 mod jdk_state;
 mod reflection;
