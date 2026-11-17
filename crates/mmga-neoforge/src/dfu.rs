@@ -103,6 +103,26 @@ pub fn codec_from_map(rt: &mut Rt, map: V) -> V {
     graph(rt, CODEC, "map_codec", &[map])
 }
 
+pub fn custom_data_codec(rt: &mut Rt, custom: bool, require_id: bool) -> V {
+    graph(
+        rt,
+        CODEC,
+        "nbt_data",
+        &[V::bool(custom), V::bool(require_id)],
+    )
+}
+pub fn item_stack_codec(rt: &mut Rt, optional: bool) -> V {
+    graph(rt, CODEC, "item_stack", &[V::bool(optional)])
+}
+pub fn decode_json_int(rt: &mut Rt, input: &serde_json::Value) -> Result<i32, String> {
+    let value = json::primitive_read(rt, "INT", input, false)?;
+    Ok(rt.get_field(value, "$value").i())
+}
+/// A named dependency whose encode/decode remain explicitly unsupported, usable in retained graphs.
+pub fn unsupported_codec(rt: &mut Rt, label: &str) -> V {
+    graph(rt, CODEC, &format!("unsupported:{label}"), &[])
+}
+
 pub fn get_static_field(rt: &mut Rt, owner: &str, name: &str, desc: &str) -> Option<V> {
     if let Some(value) = chat::get_static(rt, owner, name, desc) {
         return Some(value);
@@ -308,6 +328,9 @@ fn call_codec(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: 
                 &[recv, V::I(0), V::I(i32::MAX)],
             ));
         }
+        if name == "orElse" && returns("Ljava/lang/Object;", class) {
+            return Some(graph(ctx.rt, class, "or_else", args));
+        }
         if name == "listOf" && desc == "(II)Lcom/mojang/serialization/Codec;" {
             return Some(graph(ctx.rt, CODEC, "list", args));
         }
@@ -359,15 +382,14 @@ fn call_codec(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: 
                         "JsonOps input must be a JsonElement",
                     ));
                 };
-                let decoded = decode_value(ctx, recv, ops, &json, compressed, 0);
+                let decoded = decode_with_remainder(ctx, recv, ops, &json, compressed, 0);
                 if ctx.rt.pending_exception.is_some() {
                     return Some(V::NULL);
                 }
                 return Some(match decoded {
-                    Ok(value) => {
+                    Ok((value, remainder)) => {
                         let value = if decode_pair {
-                            let rest = decode_remainder(ctx.rt, recv, &json);
-                            let empty = json::from_value(ctx.rt, rest);
+                            let empty = json::from_value(ctx.rt, remainder);
                             let pair = ctx.rt.new_instance("com/mojang/datafixers/util/Pair", 0);
                             ctx.rt.put_field(pair, "left", value);
                             ctx.rt.put_field(pair, "right", empty);
@@ -521,13 +543,90 @@ fn decode_remainder(rt: &Rt, codec: V, input: &serde_json::Value) -> serde_json:
         return serde_json::Value::Null;
     };
     match kind.as_str() {
-        "map_codec" => input.clone(),
+        "map_codec" | "item_stack" => input.clone(),
         "list" => serde_json::json!([]),
         "xmap" | "comapFlatMap" | "flatComapMap" | "flatXmap" | "range" => {
             decode_remainder(rt, args[0], input)
         }
         _ => serde_json::Value::Null,
     }
+}
+
+fn decode_with_remainder(
+    ctx: &mut ExecCtx<'_>,
+    codec: V,
+    ops: V,
+    input: &serde_json::Value,
+    compressed: bool,
+    depth: usize,
+) -> Result<(V, serde_json::Value), DecodeError> {
+    if depth >= 128 {
+        return Err("Codec nesting exceeds128".into());
+    }
+    if let Some((kind, args)) = graph_parts(ctx.rt, codec) {
+        if kind == "or_else" {
+            return match decode_with_remainder(ctx, args[0], ops, input, compressed, depth + 1) {
+                Ok(result) => Ok(result),
+                Err(error) => {
+                    if ctx.rt.pending_exception.is_some() {
+                        Err(error)
+                    } else {
+                        Ok((args[1], input.clone()))
+                    }
+                }
+            };
+        }
+        if matches!(
+            kind.as_str(),
+            "xmap" | "comapFlatMap" | "flatComapMap" | "flatXmap"
+        ) {
+            let base = decode_with_remainder(ctx, args[0], ops, input, compressed, depth + 1);
+            let (base, remainder, previous) = match base {
+                Ok((value, remainder)) => (value, remainder, None),
+                Err(error) => match error.partial {
+                    Some(value) => (
+                        value,
+                        error
+                            .remainder
+                            .clone()
+                            .unwrap_or_else(|| decode_remainder(ctx.rt, args[0], input)),
+                        Some(error),
+                    ),
+                    None => return Err(error),
+                },
+            };
+            let mapped = function(ctx, args[1], &[base]);
+            if ctx.rt.pending_exception.is_some() {
+                return Err("Java callback failed".into());
+            }
+            let next = if matches!(kind.as_str(), "comapFlatMap" | "flatXmap") {
+                flatten_decoded_result(ctx, mapped)
+            } else {
+                Ok(mapped)
+            };
+            return match (previous, next) {
+                (None, Ok(value)) => Ok((value, remainder)),
+                (None, Err(mut error)) => {
+                    error.remainder = Some(remainder);
+                    Err(error)
+                }
+                (Some(mut error), Ok(value)) => {
+                    error.partial = Some(value);
+                    error.remainder = Some(remainder);
+                    Err(error)
+                }
+                (Some(mut error), Err(next)) => {
+                    error.message.push_str("; ");
+                    error.message.push_str(&next.message);
+                    error.partial = next.partial;
+                    error.remainder = Some(remainder);
+                    Err(error)
+                }
+            };
+        }
+    }
+    decode_value(ctx, codec, ops, input, compressed, depth)
+        .map(|value| (value, decode_remainder(ctx.rt, codec, input)))
 }
 
 fn decode_value(
@@ -552,6 +651,23 @@ fn decode_value(
         return Err("Unknown codec".into());
     };
     match kind.as_str() {
+        "item_stack" => {
+            crate::item_stack::decode_json(ctx, input, args[0] == V::TRUE).map_err(Into::into)
+        }
+        "or_else" => match decode_value(ctx, args[0], ops, input, compressed, depth + 1) {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                if ctx.rt.pending_exception.is_some() {
+                    Err(error)
+                } else {
+                    Ok(args[1])
+                }
+            }
+        },
+        "nbt_data" => {
+            crate::custom_data::decode_json(ctx.rt, input, args[0] == V::TRUE, args[1] == V::TRUE)
+                .map_err(Into::into)
+        }
         "component" => chat::decode(ctx, ops, input, compressed, depth),
         "BOOL" | "BYTE" | "SHORT" | "INT" | "LONG" | "FLOAT" | "DOUBLE" | "STRING" => {
             json::primitive_read(ctx.rt, &kind, input, compressed).map_err(Into::into)
@@ -914,6 +1030,14 @@ fn encode_value(
         }
     }
     match kind.as_str() {
+        "item_stack" => {
+            crate::item_stack::encode_json(ctx, value, args[0] == V::TRUE).map_err(Into::into)
+        }
+        "or_else" => encode_value(ctx, args[0], ops, value, compressed, depth + 1),
+        "nbt_data" => {
+            crate::custom_data::encode_json(ctx.rt, value, args[0] == V::TRUE, args[1] == V::TRUE)
+                .map_err(Into::into)
+        }
         "component" => chat::encode(ctx, ops, value, compressed, depth),
         "BOOL" => {
             if ctx.rt.class_of(value) != Some("java/lang/Boolean") {
@@ -1193,6 +1317,64 @@ fn function(ctx: &mut ExecCtx<'_>, callback: V, args: &[V]) -> V {
 mod tests {
     use super::*;
     use mmga_runtime::NullHost;
+    #[test]
+    fn or_else_defaults_real_data_errors_preserves_input_remainder_and_propagates_host_failure() {
+        let mut rt = Rt::new();
+        let linked = test_linked();
+        let mut host = NullHost;
+        let base = get_static_field(
+            &mut rt,
+            CODEC,
+            "INT",
+            "Lcom/mojang/serialization/codecs/PrimitiveCodec;",
+        )
+        .unwrap();
+        let fallback = box_primitive(&mut rt, "java/lang/Integer", V::I(7));
+        let ops = get_static_field(
+            &mut rt,
+            JSON_OPS,
+            "INSTANCE",
+            "Lcom/mojang/serialization/JsonOps;",
+        )
+        .unwrap();
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        let codec = invoke(
+            &mut ctx,
+            CODEC,
+            "orElse",
+            "(Ljava/lang/Object;)Lcom/mojang/serialization/Codec;",
+            false,
+            &[base, fallback],
+        );
+        let input = json::from_value(ctx.rt, serde_json::json!("bad"));
+        let decoded=invoke(&mut ctx,CODEC,"decode","(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;",false,&[codec,ops,input]);
+        let pair = result::value(ctx.rt, decoded).unwrap();
+        assert_eq!(ctx.rt.get_field(pair, "left"), fallback);
+        assert_eq!(
+            json::to_value(ctx.rt, ctx.rt.get_field(pair, "right")),
+            Some(serde_json::json!("bad"))
+        );
+        let unknown = graph(ctx.rt, CODEC, "unimplemented_test_node", &[]);
+        let guarded = invoke(
+            &mut ctx,
+            CODEC,
+            "orElse",
+            "(Ljava/lang/Object;)Lcom/mojang/serialization/Codec;",
+            false,
+            &[unknown, fallback],
+        );
+        invoke(&mut ctx,CODEC,"parse","(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;",false,&[guarded,ops,input]);
+        let error = ctx.rt.take_exception().unwrap();
+        assert!(ctx
+            .rt
+            .exception_summary(error)
+            .contains("UnsupportedOperationException"));
+    }
     fn invoke(
         ctx: &mut ExecCtx<'_>,
         owner: &str,

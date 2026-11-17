@@ -1680,6 +1680,12 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::dfu::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
+        if let Some(value) = crate::item_stack::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
+        if let Some(value) = crate::custom_data::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
         if let Some(value) = crate::attribute_modifier::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
@@ -1844,6 +1850,12 @@ impl HostApi for FmlLoader {
             return Some(value);
         }
         if let Some(value) = crate::guava_builders::call(rt, linked, self, member, is_static, args) {
+            return Some(value);
+        }
+        if let Some(value) = crate::item_stack::call(rt, linked, self, member, is_static, args) {
+            return Some(value);
+        }
+        if let Some(value) = crate::custom_data::call(rt, linked, self, member, is_static, args) {
             return Some(value);
         }
         if let Some(value) = crate::dfu::call(rt, linked, self, member, is_static, args) {
@@ -2104,6 +2116,12 @@ impl HostApi for FmlLoader {
             return true;
         }
         if crate::menu_types::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::item_stack::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::custom_data::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::capabilities::is_subtype(sub_class, super_class) {

@@ -167,7 +167,14 @@ pub(super) fn decode(
                         box_primitive(ctx.rt, "java/lang/Boolean", V::bool(*value))
                     }
                     Json::Number(_) => json::primitive_read(ctx.rt, "NUMBER", arg, false)?,
-                    Json::Object(_) | Json::Array(_) => decode(ctx, ops, arg, false, depth + 1)?,
+                    Json::Object(_) | Json::Array(_) => {
+                        let component = decode(ctx, ops, arg, false, depth + 1)?;
+                        if let Some(text) = plain_literal(ctx.rt, component) {
+                            ctx.rt.new_str(text)
+                        } else {
+                            component
+                        }
+                    }
                     Json::Null => return Err("Translation argument cannot be null".into()),
                 };
                 values.push(value);
@@ -246,6 +253,27 @@ pub(super) fn decode(
         }
     }
     Ok(component)
+}
+
+fn plain_literal(rt: &Rt, component: V) -> Option<String> {
+    if rt.str_of(rt.get_field(component, "$kind")) != Some("literal") {
+        return None;
+    }
+    if !array(rt, rt.get_field(component, "$siblings"))?.is_empty() {
+        return None;
+    }
+    let style = rt.get_field(component, "$style");
+    if rt.get_field(style, "color").i() >= 0
+        || FLAGS
+            .iter()
+            .any(|(_, field)| !rt.get_field(style, field).is_null())
+        || ["font", "insertion", "clickEvent", "hoverEvent"]
+            .iter()
+            .any(|field| !rt.get_field(style, field).is_null())
+    {
+        return None;
+    }
+    Some(rt.str_of(rt.get_field(component, "$text"))?.to_owned())
 }
 
 pub(super) fn encode(
@@ -383,6 +411,23 @@ pub(super) fn encode(
 mod tests {
     use super::*;
     use mmga_runtime::NullHost;
+    #[test]
+    fn translation_arguments_collapse_only_plain_literals() {
+        let mut rt = Rt::new();
+        let linked = LinkedSpace::new();
+        let mut host = NullHost;
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        let value=decode(&mut ctx,V::NULL,&serde_json::json!({"translate":"k","with":[{"text":"plain"},{"text":"styled","bold":false},{"text":"parent","extra":["child"]}]}),false,0).unwrap();
+        let args = array(ctx.rt, ctx.rt.get_field(value, "$args")).unwrap();
+        assert_eq!(ctx.rt.str_of(args[0]), Some("plain"));
+        assert_eq!(ctx.rt.class_of(args[1]), Some(MUTABLE));
+        assert_eq!(ctx.rt.class_of(args[2]), Some(MUTABLE));
+    }
     #[test]
     fn translatable_style_arguments_and_siblings_roundtrip_without_flattening() {
         let mut rt = Rt::new();

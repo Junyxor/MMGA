@@ -14,6 +14,8 @@ pub mod capabilities;
 pub mod codecs;
 pub mod common_components;
 pub mod components;
+pub mod custom_data;
+pub mod item_stack;
 pub mod direction;
 pub mod dfu;
 pub mod dye_color;
