@@ -10,6 +10,8 @@ StreamCodec 检查点：移除旧实现中丢弃 `map`/`composite` 参数、原�
 
 数据组件检查点：实现 `DataComponentType.builder` 和 Builder 构造、persistent/network codec、cacheEncoding 参数保留、构建后的独立快照和官方异常（5 项回归通过）。Curios 注册现在推进到 `CurioAttributeModifiers.<clinit>` 的 `RecordCodecBuilder.create(Function)`；Sophisticated Core 独立探测推进到 `Codec.INT:PrimitiveCodec`。二者均构造完成、注册已进入但未完成，setup/tick/玩法/渲染未到达；没有为 DFU 返回假序列化结果。
 
+护甲值检查点：八种原版 ArmorMaterial 的防御映射、附魔值、装备音效、层纹理、韧性及击退抗性按官方字节码实现；ArmorItem.Type 保持 enum 身份，非法 valueOf 抛错。Layer 保存 suffix/dyeable 并计算真实纹理路径；修复 ARMADILLO 附魔值和三个 Attribute 精度/ID 问题。5 项回归通过。Mekanism 原 jar 越过 `ArmorMaterial.defense()`，下一阻塞为 `Direction.values()`（`EnumUtils.<clinit>`）；构造仍未完成，注册及以后阶段未到达。修复不涉及真实装备玩法或渲染，repairIngredient 的实际构建仍明确报未实现。
+
 ## 2026-11-17 继续推进（Linux，基线仍是 1.21.1 / NeoForge 21.1.266）
 
 本轮在 `12472a2`（ARGB32）之上实现了 Create 实际读取的原版 `SoundEvents`（按 jar 里的字段类型返回 `SoundEvent` 或 `Holder`）、Mekanism 用到的 `Attributes` 默认值、`TextColor.fromRgb`、`ArmorMaterial` 数据、`ArmorItem.Type.values`，以及 Java 21 的 `List.getFirst` / `getLast`。`DeferredHolder.create(ResourceKey, ResourceLocation)` 会登记一个尚未绑定的 holder，注册同名条目后才能 `get()`。没有为了过探针填默认返回值。

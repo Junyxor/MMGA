@@ -4,6 +4,7 @@
 //! subsystems, and `WorldState` are native Rust. [`loader::FmlLoader`] implements
 //! `HostApi` and drives the FML lifecycle for jars linked into the VM.
 
+pub mod armor;
 pub mod bus;
 pub mod codecs;
 pub mod components;

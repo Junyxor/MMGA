@@ -64,7 +64,7 @@ fn vanilla_attribute(name: &str) -> Option<(&'static str, f64)> {
         "FLYING_SPEED" => ("generic.flying_speed", 0.4),
         "FOLLOW_RANGE" => ("generic.follow_range", 32.0),
         "GRAVITY" => ("generic.gravity", 0.08),
-        "JUMP_STRENGTH" => ("generic.jump_strength", 0.42),
+        "JUMP_STRENGTH" => ("generic.jump_strength", f64::from(0.42_f32)),
         "KNOCKBACK_RESISTANCE" => ("generic.knockback_resistance", 0.0),
         "LUCK" => ("generic.luck", 0.0),
         "MAX_HEALTH" => ("generic.max_health", 20.0),
@@ -73,44 +73,20 @@ fn vanilla_attribute(name: &str) -> Option<(&'static str, f64)> {
         "OXYGEN_BONUS" => ("generic.oxygen_bonus", 0.0),
         "SAFE_FALL_DISTANCE" => ("generic.safe_fall_distance", 3.0),
         "SCALE" => ("generic.scale", 1.0),
-        "SNEAKING_SPEED" => ("generic.sneaking_speed", 0.3),
+        "SNEAKING_SPEED" => ("player.sneaking_speed", 0.3),
         "STEP_HEIGHT" => ("generic.step_height", 0.6),
-        "SUBMERGED_MINING_SPEED" => ("generic.submerged_mining_speed", 0.2),
+        "SUBMERGED_MINING_SPEED" => ("player.submerged_mining_speed", 0.2),
         "SWEEPING_DAMAGE_RATIO" => ("player.sweeping_damage_ratio", 0.0),
         "WATER_MOVEMENT_EFFICIENCY" => ("generic.water_movement_efficiency", 0.0),
         _ => return None,
     })
 }
 
-fn armor_material_static(rt: &mut Rt, name: &str) -> Option<V> {
-    let (path, enchant, toughness, knockback) = match name {
-        "LEATHER" => ("leather", 15, 0.0, 0.0),
-        "CHAIN" => ("chainmail", 12, 0.0, 0.0),
-        "IRON" => ("iron", 9, 0.0, 0.0),
-        "GOLD" => ("gold", 25, 0.0, 0.0),
-        "DIAMOND" => ("diamond", 10, 2.0, 0.0),
-        "TURTLE" => ("turtle", 9, 0.0, 0.0),
-        "NETHERITE" => ("netherite", 15, 3.0, 0.1),
-        "ARMADILLO" => ("armadillo", 4, 0.0, 0.0),
-        _ => return None,
-    };
-    let id = format!("minecraft:{path}");
-    let mat = rt.new_instance("net/minecraft/world/item/ArmorMaterial", 0);
-    let material_name = rt.intern_str(path);
-    rt.put_field(mat, "name", material_name);
-    rt.put_field(mat, "enchantmentValue", V::I(enchant));
-    rt.put_field(mat, "toughness", V::F(toughness));
-    rt.put_field(mat, "knockbackResistance", V::F(knockback));
-    rt.pin(mat);
-    let holder = rt.new_instance("net/minecraft/core/Holder", 0);
-    let key = new_resource_key(rt, "minecraft:armor_material", &id);
-    rt.put_field(holder, "$value", mat);
-    rt.put_field(holder, "$key", key);
-    rt.pin(holder);
-    Some(holder)
-}
-
 fn attribute_static(rt: &mut Rt, name: &str) -> Option<V> {
+    let owner = "net/minecraft/world/entity/ai/attributes/Attributes";
+    if let Some(value) = rt.get_static(owner, name) {
+        return Some(value);
+    }
     let (path, default) = vanilla_attribute(name)?;
     let id = format!("minecraft:{path}");
     let attr = rt.new_instance("net/minecraft/world/entity/ai/attributes/RangedAttribute", 0);
@@ -125,75 +101,27 @@ fn attribute_static(rt: &mut Rt, name: &str) -> Option<V> {
     rt.put_field(holder, "$value", attr);
     rt.put_field(holder, "$key", key);
     rt.pin(holder);
+    rt.put_static(owner, name, holder);
     Some(holder)
 }
 
-fn armor_type(rt: &mut Rt, name: &str) -> V {
-    let ord = match name {
-        "HELMET" => 0,
-        "CHESTPLATE" => 1,
-        "LEGGINGS" => 2,
-        "BOOTS" => 3,
-        "BODY" => 4,
-        _ => 0,
-    };
-    let obj = rt.new_instance("net/minecraft/world/item/ArmorItem$Type", 0);
-    let label = rt.intern_str(name);
-    rt.put_field(obj, "$name", label);
-    rt.put_field(obj, "$ordinal", V::I(ord));
-    rt.pin(obj);
-    obj
-}
-
-/// `ArmorMaterial.Layer` stores a texture location and an optional suffix.
-/// `ArmorItem.Type.values` is the vanilla enum order, including `BODY` from 1.20.5.
-pub fn call_armor_layer(rt: &mut Rt, member: &MemberRef, is_static: bool, args: &[V]) -> Option<V> {
-    if member.owner == "net/minecraft/world/item/ArmorItem$Type" && is_static && member.name == "values" {
-        let mut items = Vec::with_capacity(5);
-        for name in ["HELMET", "CHESTPLATE", "LEGGINGS", "BOOTS", "BODY"] {
-            items.push(armor_type(rt, name));
-        }
-        return Some(rt.alloc(
-            "[Lnet/minecraft/world/item/ArmorItem$Type;",
-            0,
-            Data::Array(items),
-        ));
-    }
-    if member.owner == "net/minecraft/world/item/ArmorItem$Type" && is_static && member.name == "valueOf" {
-        let name = rt.str_of(*args.first()?)?.to_owned();
-        return Some(armor_type(rt, &name));
-    }
+/// The implemented Attribute accessor reads the preserved vanilla default.
+pub fn call_attribute(rt: &mut Rt, member: &MemberRef, is_static: bool, args: &[V]) -> Option<V> {
     if (member.owner == "net/minecraft/world/entity/ai/attributes/Attribute"
         || member.owner == "net/minecraft/world/entity/ai/attributes/RangedAttribute")
         && !is_static
         && member.name == "getDefaultValue"
+        && member.desc == "()D"
     {
         return Some(rt.get_field(*args.first()?, "defaultValue"));
     }
-    if member.owner != "net/minecraft/world/item/ArmorMaterial$Layer" || is_static {
-        return None;
-    }
-    if member.name != "<init>" {
-        return None;
-    }
-    let texture = *args.get(1)?;
-    rt.put_field(args[0], "texture", texture);
-    let suffix = if args.len() > 2 {
-        args[2]
-    } else {
-        rt.intern_str("")
-    };
-    rt.put_field(args[0], "suffix", suffix);
-    Some(V::Void)
+    None
 }
 
 /// Static field lookups for `Component`, `Style`, `ChatFormatting`, and `com/sun/jna/Platform`.
 pub fn get_static_field(rt: &mut Rt, owner: &str, name: &str) -> Option<V> {
     if owner == "net/minecraft/world/entity/ai/attributes/Attributes" {
         return attribute_static(rt, name);
-    }
-    if owner == "net/minecraft/world/item/ArmorMaterials" {
-        return armor_material_static(rt, name);
     }
     if owner == STYLE_CLASS && name == "EMPTY" {
         return Some(new_style(rt));
