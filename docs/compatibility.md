@@ -20,6 +20,8 @@ CommonComponents 检查点：`space()` 每次构造独立的单空格 MutableCom
 
 Direction 检查点：六个 enum 常量保持原版顺序和身份，`values()` 返回独立数组，非法/null valueOf 抛准确异常，字符串按原版为小写。两个回归通过实际 VM。Mekanism 原 jar 当前停在 `RelativeSide.<clinit>` 的 `StringRepresentable.fromEnum(Supplier)`，需要真实枚举/DFU codec；构造未完成，注册/setup/tick/玩法/渲染尚未到达。同步补齐 StreamCodec 的 Encoder/Decoder、枚举的 Enum/StringRepresentable 等精确继承关系，并通过真实 Class.isAssignableFrom/isInstance 验证。
 
+不可变层审查修复：原版护甲材料的 `List.of` 层列表拒绝 17 种 mutator，均在修改状态前抛 UnsupportedOperationException；自定义材料保留调用方传入列表的可变性。回归覆盖 `clear` 等修改后内容不变，armor 测试共 6 项通过。
+
 ## 2026-11-17 继续推进（Linux，基线仍是 1.21.1 / NeoForge 21.1.266）
 
 本轮在 `12472a2`（ARGB32）之上实现了 Create 实际读取的原版 `SoundEvents`（按 jar 里的字段类型返回 `SoundEvent` 或 `Holder`）、Mekanism 用到的 `Attributes` 默认值、`TextColor.fromRgb`、`ArmorMaterial` 数据、`ArmorItem.Type.values`，以及 Java 21 的 `List.getFirst` / `getLast`。`DeferredHolder.create(ResourceKey, ResourceLocation)` 会登记一个尚未绑定的 holder，注册同名条目后才能 `get()`。没有为了过探针填默认返回值。

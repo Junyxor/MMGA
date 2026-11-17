@@ -1647,6 +1647,48 @@ fn dispatch_list_instance(
     desc: &str,
     args: &[V],
 ) -> Option<V> {
+    let immutable = matches!(
+        ctx.rt.class_of(recv),
+        Some("java/util/ImmutableCollections$List12" | "java/util/ImmutableCollections$ListN")
+    );
+    // List.of rejects mutation before index checks or callback invocation,
+    // including operations that would leave its contents unchanged.
+    if immutable
+        && matches!(
+            (name, desc),
+            ("add", "(Ljava/lang/Object;)Z")
+                | ("add", "(ILjava/lang/Object;)V")
+                | ("addAll", "(Ljava/util/Collection;)Z")
+                | ("addAll", "(ILjava/util/Collection;)Z")
+                | ("set", "(ILjava/lang/Object;)Ljava/lang/Object;")
+                | ("remove", "(I)Ljava/lang/Object;")
+                | ("remove", "(Ljava/lang/Object;)Z")
+                | ("clear", "()V")
+                | ("removeAll" | "retainAll", "(Ljava/util/Collection;)Z")
+                | ("removeIf", "(Ljava/util/function/Predicate;)Z")
+                | ("replaceAll", "(Ljava/util/function/UnaryOperator;)V")
+                | ("sort", "(Ljava/util/Comparator;)V")
+                | ("addFirst" | "addLast", "(Ljava/lang/Object;)V")
+                | ("removeFirst" | "removeLast", "()Ljava/lang/Object;")
+        )
+    {
+        return Some(ctx.rt.throw_exception(
+            "java/lang/UnsupportedOperationException",
+            "immutable List",
+        ));
+    }
+    if immutable
+        && matches!(
+            name,
+            "add" | "addAll" | "set" | "remove" | "clear" | "removeAll" | "retainAll"
+                | "removeIf" | "replaceAll" | "sort" | "addFirst" | "addLast"
+                | "removeFirst" | "removeLast" | "offer"
+        )
+    {
+        // A nonexistent overload or Queue-only method must not fall through to
+        // the name-based mutable-list implementation below.
+        return None;
+    }
     Some(match name {
         "size" => {
             let n = match ctx.rt.get_obj(recv).map(|o| &o.data) {

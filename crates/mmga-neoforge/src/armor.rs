@@ -152,7 +152,12 @@ pub fn get_static_field(
         initialize_layer(rt, overlay, asset, suffix, V::FALSE);
         layers.push(overlay);
     }
-    let layers = rt.alloc("java/util/List", 0, Data::List(layers));
+    // ArmorMaterials uses List.of (one layer, or leather's two layers).
+    let layers = rt.alloc(
+        "java/util/ImmutableCollections$List12",
+        0,
+        Data::List(layers),
+    );
     let material = rt.new_instance(MATERIAL, 0);
     initialize_material(
         rt,
@@ -1076,5 +1081,126 @@ mod tests {
         assert!(rt
             .exception_summary(exception)
             .contains("ResourceLocationException"));
+    }
+
+    #[test]
+    fn vanilla_layers_reject_mutation_but_custom_layers_keep_caller_mutability() {
+        let mut rt = Rt::new();
+        let linked = LinkedSpace::new();
+        let mut host = ArmorHost::default();
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        let holder = read_static_field(&mut ctx, MATERIALS, "LEATHER", HOLDER_DESC);
+        let material = ctx.rt.get_field(holder, "$value");
+        let layers = invoke(
+            &mut ctx,
+            MATERIAL,
+            "layers",
+            "()Ljava/util/List;",
+            false,
+            &[material],
+        );
+        let before = match &ctx.rt.get_obj(layers).unwrap().data {
+            Data::List(values) => values.clone(),
+            _ => panic!("expected layers"),
+        };
+        for (name, desc, parameters) in [
+            ("clear", "()V", vec![]),
+            ("add", "(Ljava/lang/Object;)Z", vec![before[0]]),
+            ("add", "(ILjava/lang/Object;)V", vec![V::I(0), before[0]]),
+            (
+                "set",
+                "(ILjava/lang/Object;)Ljava/lang/Object;",
+                vec![V::I(0), before[1]],
+            ),
+            ("remove", "(I)Ljava/lang/Object;", vec![V::I(0)]),
+            ("remove", "(Ljava/lang/Object;)Z", vec![before[0]]),
+            ("addAll", "(Ljava/util/Collection;)Z", vec![layers]),
+            (
+                "addAll",
+                "(ILjava/util/Collection;)Z",
+                vec![V::I(0), layers],
+            ),
+            ("removeAll", "(Ljava/util/Collection;)Z", vec![layers]),
+            ("retainAll", "(Ljava/util/Collection;)Z", vec![layers]),
+            ("sort", "(Ljava/util/Comparator;)V", vec![V::NULL]),
+            (
+                "replaceAll",
+                "(Ljava/util/function/UnaryOperator;)V",
+                vec![V::NULL],
+            ),
+            (
+                "removeIf",
+                "(Ljava/util/function/Predicate;)Z",
+                vec![V::NULL],
+            ),
+            ("addFirst", "(Ljava/lang/Object;)V", vec![before[0]]),
+            ("addLast", "(Ljava/lang/Object;)V", vec![before[0]]),
+            ("removeFirst", "()Ljava/lang/Object;", vec![]),
+            ("removeLast", "()Ljava/lang/Object;", vec![]),
+        ] {
+            let mut arguments = vec![layers];
+            arguments.extend(parameters);
+            invoke(&mut ctx, "java/util/List", name, desc, false, &arguments);
+            let error = ctx
+                .rt
+                .take_exception()
+                .unwrap_or_else(|| panic!("{name} must fail"));
+            assert!(ctx
+                .rt
+                .exception_summary(error)
+                .contains("UnsupportedOperationException"));
+            let after = match &ctx.rt.get_obj(layers).unwrap().data {
+                Data::List(values) => values.clone(),
+                _ => panic!("expected layers"),
+            };
+            assert_eq!(after, before, "{name} changed global material layers");
+        }
+        assert_eq!(
+            ctx.rt.class_of(layers),
+            Some("java/util/ImmutableCollections$List12")
+        );
+        assert_eq!(
+            invoke(&mut ctx, "java/util/List", "size", "()I", false, &[layers]),
+            V::I(2)
+        );
+
+        let custom_layers = ctx.rt.alloc("java/util/ArrayList", 0, Data::List(before));
+        let defense = ctx.rt.alloc("java/util/Map", 0, Data::Map(Vec::new()));
+        let custom = ctx.rt.new_instance(MATERIAL, 0);
+        invoke(&mut ctx, MATERIAL, "<init>", "(Ljava/util/Map;ILnet/minecraft/core/Holder;Ljava/util/function/Supplier;Ljava/util/List;FF)V", false, &[custom, defense, V::I(1), V::NULL, V::NULL, custom_layers, V::F(0.0), V::F(0.0)]);
+        let returned = invoke(
+            &mut ctx,
+            MATERIAL,
+            "layers",
+            "()Ljava/util/List;",
+            false,
+            &[custom],
+        );
+        assert_eq!(returned, custom_layers);
+        invoke(
+            &mut ctx,
+            "java/util/List",
+            "clear",
+            "()V",
+            false,
+            &[returned],
+        );
+        assert_eq!(
+            invoke(
+                &mut ctx,
+                "java/util/List",
+                "size",
+                "()I",
+                false,
+                &[returned]
+            ),
+            V::I(0)
+        );
+        assert!(ctx.rt.pending_exception.is_none());
     }
 }
