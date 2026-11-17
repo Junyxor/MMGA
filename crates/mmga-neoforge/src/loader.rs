@@ -1837,6 +1837,9 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::dye_color::call(rt, member, is_static, args) {
             return Some(value);
         }
+        if let Some(value) = crate::guava_builders::call(rt, linked, self, member, is_static, args) {
+            return Some(value);
+        }
         if let Some(value) = crate::dfu::call(rt, linked, self, member, is_static, args) {
             return Some(value);
         }

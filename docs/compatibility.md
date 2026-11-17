@@ -21,6 +21,7 @@
 - NeoForge 的 54 个明确 item tag 常量按官方 source 固定提交逐项映射 `c:` 与 `neoforge:` 路径，未知名称仍失败，不声称 tag 内容已加载。两项回归通过。Mekanism 越过 `Tags$Items.ORES_IRON`，下一阻塞 `PushReaction.NORMAL`（`BlockResourceInfo.<init>`）。
 - 审查补齐每个 DeferredRegister 的 register-event 截止状态：supplier 执行后或 registry 已完成后再添加项目会抛 IllegalStateException，不能接受后永不执行。回归先证明晚注册会静默通过，再修复；deferred 相关 9 项回归通过。
 - NeoForgeStreamCodecs.enumCodec 保留 Class 并按真实 VarInt ordinal 编解码，decode 使用真实 enum constants，越界/null/non-enum 异常经过回归。Core 越过 enum codec，下一阻塞 ImmutableMap.Builder 构造，修复该构造后已推进到第 12 项之后的 `CustomData.CODEC`。
+- Guava ImmutableMap.Builder 保存 builder 自身状态而非误当 Map，build 的 duplicate/null/keepingLast 和独立快照规则经过两项 VM 回归；生成的 immutable map 拒绝 mutator，未完成的 immutable view 显式拒绝。Core 已注册 12 项，当前 `CustomData.CODEC` 阻塞已继续推进中。
 
 最新验证：**2026-11-17，Windows x86_64，Minecraft 1.21.1 / NeoForge 21.1.266**。实现检查点 `a417383`，Rust `1.98.0`，Java 21。后续文档提交不改变这次探测的代码。三个 crate 仍为 `mmga-classfile`、`mmga-runtime`、`mmga-neoforge`；输入均为官方发布的原始 jar，未修改、未针对桩 API 重编译。
 
