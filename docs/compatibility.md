@@ -4,6 +4,8 @@
 
 声音值检查点：按官方 jar SHA-1 `30c73b1c5da787909b2f73340419fdf13b9def88` 与 mappings SHA-1 `2244b6f072256667bcd9a73df124d6c58de77992` 实现 Create 使用的 SoundEvent 常量、正确声明类型、静态身份、注册表条目与固定/可变距离。修正 `SHULKER_OPEN` 为 `entity.shulker.open`，未知字段/签名继续失败。三个声音回归测试通过。Create 原 jar 已越过声音表和 `DeferredHolder.create`，合并后复测停在 `CommonComponents.space()`；独立音频播放和渲染尚未实现。
 
+Curios 检查点：修正 `Registries.TRIGGER_TYPE`（单数）与 `BuiltInRegistries.TRIGGER_TYPES`（复数）的精确映射；错误 owner 下的拼写仍报错。Curios 9.5.1 的原始 152 个 class 全部解析，构造完成（3 个配置、8 个监听器），已进入注册，停在 `curios:attribute_modifiers` supplier 的 `DataComponentType.builder()`；setup、tick、玩法、渲染未到达。回归测试先失败后通过。
+
 ## 2026-11-17 继续推进（Linux，基线仍是 1.21.1 / NeoForge 21.1.266）
 
 本轮在 `12472a2`（ARGB32）之上实现了 Create 实际读取的原版 `SoundEvents`（按 jar 里的字段类型返回 `SoundEvent` 或 `Holder`）、Mekanism 用到的 `Attributes` 默认值、`TextColor.fromRgb`、`ArmorMaterial` 数据、`ArmorItem.Type.values`，以及 Java 21 的 `List.getFirst` / `getLast`。`DeferredHolder.create(ResourceKey, ResourceLocation)` 会登记一个尚未绑定的 holder，注册同名条目后才能 `get()`。没有为了过探针填默认返回值。

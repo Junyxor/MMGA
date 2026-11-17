@@ -559,7 +559,8 @@ pub fn lookup_builtin_registry_key(owner: &str, name: &str) -> Option<&'static s
                 "INSTRUMENT" => "minecraft:instrument",
                 "DECORATED_POT_PATTERN" => "minecraft:decorated_pot_pattern",
                 "CREATIVE_MODE_TAB" => "minecraft:creative_mode_tab",
-                "TRIGGER_TYPES" => "minecraft:trigger_type",
+                "TRIGGER_TYPE" if owner.ends_with("/Registries") => "minecraft:trigger_type",
+                "TRIGGER_TYPES" if owner.ends_with("/BuiltInRegistries") => "minecraft:trigger_type",
                 "NUMBER_FORMAT_TYPE" => "minecraft:number_format_type",
                 "ARMOR_MATERIAL" => "minecraft:armor_material",
                 "DATA_COMPONENT_TYPE" | "ENCHANTMENT_EFFECT_COMPONENT_TYPE" if name == "DATA_COMPONENT_TYPE" => "minecraft:data_component_type",
@@ -4223,5 +4224,60 @@ mod tests {
         assert_eq!(profile_str.split(':').nth(1).unwrap().len(), 36);
         assert_eq!(table_got, "entry_1");
         assert!(rt.take_exception().is_none());
+    }
+
+    #[test]
+    fn curios_trigger_registry_field_preserves_owner_and_resource_key() {
+        let mut prepared = crate::PreparedLoad::from_jars(Vec::new(), true).unwrap();
+        let mut rt = Rt::new();
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &prepared.linked,
+            host: &mut prepared.loader,
+            depth: 0,
+        };
+        // CuriosRegistry.<clinit> passes this ResourceKey into DeferredRegister.create.
+        let key = mmga_runtime::read_static_field(
+            &mut ctx,
+            "net/minecraft/core/registries/Registries",
+            "TRIGGER_TYPE",
+            "Lnet/minecraft/resources/ResourceKey;",
+        );
+        assert!(ctx.rt.pending_exception.is_none(), "{:?}", ctx.rt.pending_exception);
+        assert_eq!(
+            resource_key_parts(ctx.rt, key),
+            Some(("minecraft:root".into(), "minecraft:trigger_type".into()))
+        );
+        let namespace = ctx.rt.intern_str("curios");
+        let deferred = mmga_runtime::invoke_member(
+            &mut ctx,
+            mmga_classfile::op::INVOKESTATIC,
+            &MemberRef::new(
+                "net/neoforged/neoforge/registries/DeferredRegister",
+                "create",
+                "(Lnet/minecraft/resources/ResourceKey;Ljava/lang/String;)Lnet/neoforged/neoforge/registries/DeferredRegister;",
+            ),
+            &[key, namespace],
+        );
+        assert_eq!(ctx.rt.handle_of(deferred).unwrap().2, "minecraft:trigger_type");
+
+        let builtin = mmga_runtime::read_static_field(
+            &mut ctx,
+            "net/minecraft/core/registries/BuiltInRegistries",
+            "TRIGGER_TYPES",
+            "Lnet/minecraft/core/Registry;",
+        );
+        assert_eq!(ctx.rt.handle_of(builtin).unwrap().2, "minecraft:trigger_type");
+        assert!(ctx.rt.pending_exception.is_none());
+
+        // These spellings belong to different owners; they are not interchangeable aliases.
+        for (owner, name, descriptor) in [
+            ("net/minecraft/core/registries/Registries", "TRIGGER_TYPES", "Lnet/minecraft/resources/ResourceKey;"),
+            ("net/minecraft/core/registries/BuiltInRegistries", "TRIGGER_TYPE", "Lnet/minecraft/core/Registry;"),
+        ] {
+            mmga_runtime::read_static_field(&mut ctx, owner, name, descriptor);
+            let error = ctx.rt.take_exception().expect("invalid field must fail");
+            assert!(ctx.rt.exception_summary(error).contains(name));
+        }
     }
 }
