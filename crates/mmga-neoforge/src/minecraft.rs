@@ -294,65 +294,8 @@ pub fn get_static_field(rt: &mut Rt, owner: &str, name: &str) -> Option<V> {
         rt.pin(obj);
         return Some(obj);
     }
-    if owner == "net/minecraft/network/codec/ByteBufCodecs" {
-        let valid = matches!(
-            name,
-            "BOOL"
-                | "BYTE"
-                | "SHORT"
-                | "UNSIGNED_SHORT"
-                | "INT"
-                | "VAR_INT"
-                | "LONG"
-                | "VAR_LONG"
-                | "FLOAT"
-                | "DOUBLE"
-                | "BYTE_ARRAY"
-                | "STRING_UTF8"
-                | "TAG"
-                | "COMPOUND_TAG"
-                | "TRUSTED_COMPOUND_TAG"
-                | "OPTIONAL_COMPOUND_TAG"
-                | "VECTOR3F"
-                | "QUATERNIONF"
-                | "GAME_PROFILE"
-                | "GAME_PROFILE_PROPERTIES"
-        );
-        if valid {
-            return Some(rt.new_pinned_handle(
-                "net/minecraft/network/codec/StreamCodec",
-                "stream_codec",
-                0,
-                name,
-            ));
-        }
-    }
     if owner == "net/minecraft/world/level/material/MapColor" {
         return map_color_constant(rt, name);
-    }
-    if matches!(
-        (owner, name),
-        ("net/minecraft/resources/ResourceLocation", "STREAM_CODEC")
-            | ("net/minecraft/core/UUIDUtil", "STREAM_CODEC")
-            | ("net/minecraft/core/BlockPos", "STREAM_CODEC")
-            | ("net/minecraft/core/GlobalPos", "STREAM_CODEC")
-            | ("net/minecraft/network/chat/ComponentSerialization", "STREAM_CODEC")
-            | ("net/minecraft/network/chat/ComponentSerialization", "TRUSTED_STREAM_CODEC")
-            | ("net/minecraft/network/chat/ComponentSerialization", "OPTIONAL_STREAM_CODEC")
-            | ("net/minecraft/world/item/ItemStack", "STREAM_CODEC")
-            | ("net/minecraft/world/item/ItemStack", "OPTIONAL_STREAM_CODEC")
-            | ("net/minecraft/world/item/ItemStack", "LIST_STREAM_CODEC")
-            | ("net/minecraft/world/item/ItemStack", "OPTIONAL_LIST_STREAM_CODEC")
-            | ("net/neoforged/neoforge/fluids/FluidStack", "STREAM_CODEC")
-            | ("net/neoforged/neoforge/fluids/FluidStack", "OPTIONAL_STREAM_CODEC")
-            | ("net/minecraft/core/Direction", "STREAM_CODEC")
-    ) {
-        return Some(rt.new_pinned_handle(
-            "net/minecraft/network/codec/StreamCodec",
-            "stream_codec",
-            0,
-            format!("{owner}.{name}"),
-        ));
     }
     None
 }
@@ -1227,52 +1170,6 @@ pub fn call_network_and_codecs(
             }
         };
         return Some(items[idx]);
-    }
-
-    // 2. `ByteBufCodecs` & `StreamCodec`
-    if owner == "net/minecraft/network/codec/ByteBufCodecs" && is_static {
-        return match name {
-            "idMapper"
-            | "stringUtf8"
-            | "byteArray"
-            | "collection"
-            | "map"
-            | "optional"
-            | "holderRegistry"
-            | "registry"
-            | "holder"
-            | "fromCodec"
-            | "fromCodecTrusted"
-            | "fromCodecWithRegistries"
-            | "fromCodecWithRegistriesTrusted"
-            | "either" => Some(rt.new_pinned_handle(
-                "net/minecraft/network/codec/StreamCodec",
-                "stream_codec",
-                0,
-                name,
-            )),
-            "list" => Some(rt.new_pinned_handle(
-                "net/minecraft/network/codec/StreamCodec$CodecOperation",
-                "codec_op",
-                0,
-                "list",
-            )),
-            _ => None,
-        };
-    }
-    if owner == "net/minecraft/network/codec/StreamCodec" {
-        if is_static {
-            return match name {
-                "unit" | "of" | "ofMember" | "composite" | "recursive" => Some(
-                    rt.new_pinned_handle(owner, "stream_codec", 0, name),
-                ),
-                _ => None,
-            };
-        }
-        return match name {
-            "map" | "apply" | "cast" | "dispatch" => Some(args[0]),
-            _ => None,
-        };
     }
 
     // 3. `CustomPacketPayload$Type`

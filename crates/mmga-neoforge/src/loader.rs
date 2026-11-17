@@ -1660,6 +1660,9 @@ impl HostApi for FmlLoader {
                 _ => None,
             };
         }
+        if let Some(value) = crate::codecs::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
         if let Some(value) = crate::sounds::get_static_field(rt, &mut self.state.registries, owner, name, desc) {
             return Some(value);
         }
@@ -1782,6 +1785,9 @@ impl HostApi for FmlLoader {
             return Some(value);
         }
         if let Some(value) = crate::minecraft::call_armor_layer(rt, member, is_static, args) {
+            return Some(value);
+        }
+        if let Some(value) = crate::codecs::call(rt, linked, self, member, is_static, args) {
             return Some(value);
         }
         if let Some(value) = crate::minecraft::call_network_and_codecs(

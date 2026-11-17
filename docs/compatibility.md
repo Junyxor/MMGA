@@ -6,6 +6,8 @@
 
 Curios 检查点：修正 `Registries.TRIGGER_TYPE`（单数）与 `BuiltInRegistries.TRIGGER_TYPES`（复数）的精确映射；错误 owner 下的拼写仍报错。Curios 9.5.1 的原始 152 个 class 全部解析，构造完成（3 个配置、8 个监听器），已进入注册，停在 `curios:attribute_modifiers` supplier 的 `DataComponentType.builder()`；setup、tick、玩法、渲染未到达。回归测试先失败后通过。
 
+StreamCodec 检查点：移除旧实现中丢弃 `map`/`composite` 参数、原样返回接收者的路径。新不可变 codec 图保存函数、子 codec 和限制；原始类型、VarInt/VarLong、UTF-8、数组、集合、optional、map/composite 实际编码解码，并测试黄金字节、边界、异常、静态身份和递归缓存（6 项通过）。NBT/registry/DFU 图可以保存，但实际执行尚未实现的部分明确抛异常。Jade 15.10.6 已越过 `CodecOperation.apply`，现在在网络注册事件停于 `Block.BLOCK_STATE_REGISTRY`（`BlockAccessorImpl$SyncData.<clinit>`）；构造和注册阶段完成，setup/tick/HUD/玩法仍未完成。没有填充假方块状态表。
+
 ## 2026-11-17 继续推进（Linux，基线仍是 1.21.1 / NeoForge 21.1.266）
 
 本轮在 `12472a2`（ARGB32）之上实现了 Create 实际读取的原版 `SoundEvents`（按 jar 里的字段类型返回 `SoundEvent` 或 `Holder`）、Mekanism 用到的 `Attributes` 默认值、`TextColor.fromRgb`、`ArmorMaterial` 数据、`ArmorItem.Type.values`，以及 Java 21 的 `List.getFirst` / `getLast`。`DeferredHolder.create(ResourceKey, ResourceLocation)` 会登记一个尚未绑定的 holder，注册同名条目后才能 `get()`。没有为了过探针填默认返回值。

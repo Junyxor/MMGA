@@ -5,6 +5,7 @@
 //! `HostApi` and drives the FML lifecycle for jars linked into the VM.
 
 pub mod bus;
+pub mod codecs;
 pub mod loader;
 pub mod minecraft;
 pub mod registries;
