@@ -555,6 +555,9 @@ fn call_codec(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: 
         let recv = *args.first()?;
         let class = if is_map { MAP } else { CODEC };
         let returns = |parameters: &str, ret: &str| desc == format!("({parameters})L{ret};");
+        if is_codec && !is_map && name == "validate" && returns("Ljava/util/function/Function;", CODEC) {
+            return Some(graph(ctx.rt, CODEC, "flatXmap", &[recv, *args.get(1)?, *args.get(1)?]));
+        }
         if is_map && name == "mapResult" && desc == "(Lcom/mojang/serialization/MapCodec$ResultFunction;)Lcom/mojang/serialization/MapCodec;" {
             return Some(graph(ctx.rt,MAP,"map_result",args));
         }
@@ -2256,6 +2259,60 @@ fn function(ctx: &mut ExecCtx<'_>, callback: V, args: &[V]) -> V {
 mod tests {
     use super::*;
     use mmga_runtime::NullHost;
+
+    fn counted_validator(ctx: &mut ExecCtx<'_>, args: &[V]) -> V {
+        let counter = args[0]; let value = args[1];
+        let calls = ctx.rt.get_field(counter, "calls").i() + 1; ctx.rt.put_field(counter, "calls", V::I(calls));
+        if ctx.rt.get_field(counter, "throw") == V::TRUE { return ctx.rt.throw_exception("test/ValidationFailure", "original validator failure"); }
+        let value = ctx.rt.get_field(value, "$value").i();
+        if value < 0 { return result::error(ctx.rt, "negative", None); }
+        let mapped = box_primitive(ctx.rt, "java/lang/Integer", V::I(value + 1)); result::success(ctx.rt, mapped)
+    }
+    #[test]
+    fn validate_uses_the_same_real_flat_mapping_in_both_directions_and_never_masks_host_failures() {
+        let mut rt = Rt::new(); let mut linked = test_linked(); let mut host = NullHost;
+        linked.register_native_module(mmga_runtime::NativeModuleRegistry { classes: &[], lambdas: &[(14, counted_validator)] });
+        let base = get_static_field(&mut rt, CODEC, "INT", "Lcom/mojang/serialization/codecs/PrimitiveCodec;").unwrap();
+        let ops = get_static_field(&mut rt, JSON_OPS, "INSTANCE", "Lcom/mojang/serialization/JsonOps;").unwrap();
+        let counter = rt.new_instance("test/Counter", 0); let checker = closure(&mut rt, 14, vec![counter]);
+        let mut ctx = ExecCtx { rt: &mut rt, linked: &linked, host: &mut host, depth: 0 };
+        let codec = invoke(&mut ctx, CODEC, "validate", "(Ljava/util/function/Function;)Lcom/mojang/serialization/Codec;", false, &[base, checker]);
+        let input = json::from_value(ctx.rt, serde_json::json!(5));
+        let decoded = invoke(&mut ctx, CODEC, "parse", "(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;", false, &[codec, ops, input]);
+        let value = result::value(ctx.rt, decoded).unwrap(); assert_eq!(ctx.rt.get_field(value, "$value"), V::I(6));
+        let encoded = invoke(&mut ctx, CODEC, "encodeStart", "(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;", false, &[codec, ops, value]);
+        assert_eq!(json::to_value(ctx.rt, result::value(ctx.rt, encoded).unwrap()), Some(serde_json::json!(7)));
+        assert_eq!(ctx.rt.get_field(counter, "calls"), V::I(2));
+        let bad = json::from_value(ctx.rt, serde_json::json!(-1));
+        let result = invoke(&mut ctx, CODEC, "parse", "(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;", false, &[codec, ops, bad]);
+        assert!(result::value(ctx.rt, result).is_none()); assert!(ctx.rt.get_field(result, "$partial").is_null());
+        let opaque = graph(ctx.rt, CODEC, "unimplemented:validate-test", &[]);
+        let guarded = invoke(&mut ctx, CODEC, "validate", "(Ljava/util/function/Function;)Lcom/mojang/serialization/Codec;", false, &[opaque, checker]);
+        let calls = ctx.rt.get_field(counter, "calls");
+        invoke(&mut ctx, CODEC, "parse", "(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;", false, &[guarded, ops, input]);
+        let error = ctx.rt.take_exception().unwrap(); assert!(ctx.rt.exception_summary(error).contains("UnsupportedOperationException")); assert_eq!(ctx.rt.get_field(counter, "calls"), calls);
+        ctx.rt.put_field(counter, "throw", V::TRUE);
+        invoke(&mut ctx, CODEC, "parse", "(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;", false, &[codec, ops, input]);
+        let error = ctx.rt.take_exception().unwrap(); assert!(ctx.rt.exception_summary(error).contains("test.ValidationFailure"));
+    }
+    #[test]
+    fn validate_retains_checker_error_partials_and_null_callbacks_remain_real_errors() {
+        let mut rt = Rt::new(); let linked = test_linked(); let mut host = NullHost;
+        let base = get_static_field(&mut rt, CODEC, "INT", "Lcom/mojang/serialization/codecs/PrimitiveCodec;").unwrap();
+        let ops = get_static_field(&mut rt, JSON_OPS, "INSTANCE", "Lcom/mojang/serialization/JsonOps;").unwrap();
+        let checker = closure(&mut rt, 10, vec![]);
+        let mut ctx = ExecCtx { rt: &mut rt, linked: &linked, host: &mut host, depth: 0 };
+        let codec = invoke(&mut ctx, CODEC, "validate", "(Ljava/util/function/Function;)Lcom/mojang/serialization/Codec;", false, &[base, checker]);
+        let input = json::from_value(ctx.rt, serde_json::json!(5));
+        let decoded = invoke(&mut ctx, CODEC, "parse", "(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;", false, &[codec, ops, input]);
+        assert!(result::value(ctx.rt, decoded).is_none()); assert_eq!(ctx.rt.get_field(ctx.rt.get_field(decoded, "$partial"), "$value"), V::I(-5));
+        let value = box_primitive(ctx.rt, "java/lang/Integer", V::I(5));
+        let encoded = invoke(&mut ctx, CODEC, "encodeStart", "(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;", false, &[codec, ops, value]);
+        assert!(result::value(ctx.rt, encoded).is_none()); assert_eq!(json::to_value(ctx.rt, ctx.rt.get_field(encoded, "$partial")), Some(serde_json::json!(-5)));
+        let null_checker = invoke(&mut ctx, CODEC, "validate", "(Ljava/util/function/Function;)Lcom/mojang/serialization/Codec;", false, &[base, V::NULL]);
+        invoke(&mut ctx, CODEC, "parse", "(Lcom/mojang/serialization/DynamicOps;Ljava/lang/Object;)Lcom/mojang/serialization/DataResult;", false, &[null_checker, ops, input]);
+        let error = ctx.rt.take_exception().unwrap(); assert!(ctx.rt.exception_summary(error).contains("NullPointerException"));
+    }
 
     #[test]
     fn extra_codecs_integer_bounds_validate_encode_and_decode_without_partial_defaults() {

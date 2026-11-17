@@ -43,6 +43,7 @@
 - StringUtils.capitalize 使用固定 OpenJDK 21 Unicode 15.0 的简单 titlecase 映射，不把 Unicode uppercase 的多字符扩展误当 Java titlecase。两个回归先失败后通过，保留 null/空值/未改变引用及非 BMP code point；工具 `tools/GenerateJava21Titlecase.java` 校验官方文件 SHA-256 并验证全部 code points 的重现数据。原 Create 越过 capitalize 到 Collectors.joining；未声称 Rt 已能保存 lone UTF-16 surrogate。
 - `Codec.checkRange` 保留真实 min/max，并调用值的 Comparable；lazy错误消息/no partial、exact Long precision、NaN/负零和自定义比较异常由四项 VM 回归加一项 numeric bridge 回归验证。原 Mekanism 越过范围工厂，下一处 Codec.validate(Function)（SerializerHelper）；仍在构造。
 - GlobalPos 的 dimension/pos record 和 JSON codec 保存真实 ResourceKey 与三轴 signed coordinates；BlockPos 长列表的 partial、短列表错误、输入引用及 record equality 经两项回归先失败后通过。原 AE2 越过 GlobalPos codec，到 MobCategory.MISC（AEEntities）；世界查询、mutable position 和网络位置 codec 仍未验证。
+- Codec.validate 使用同一个真实 checker 执行 decode 与 encode 的 flatXmap；变换结果、partial error、null callback 和 host 异常经过两个失败后通过回归。原 Mekanism 越过 validate，下一处 Codec.promotePartial(Consumer)（SerializerHelper）；仍在构造。
 - ClassLoader 使用真实 linked class-space identity、解析类和 host classpath bytes；ServiceLoader 改为 metadata/iterator 延迟 provider 构造，检查请求 loader、provider cache/reload 和 constructor cause，不再提前运行所有 provider。八项回归通过，Class.isEnum 区分真实 enum 与匿名 constant body。Mekanism 已越过 MekanismAPI，下一处 `Codec.checkRange(Number,Number)`（SerializerHelper），构造尚未完成。
 - 本机工具版本核实：Rust 1.98.0；PATH java/javac 为 17.0.12，javap 及 `D:/MC launcher/Java/21` 中的实际 JDK 为 Microsoft 25.0.3（目录名不是版本证据）。模组输入仍为官方 Java 21 classfile，已由 Rust VM 解析/执行；JDK 21 专有语义依据固定官方源数据，未把本机 Java 工具说成 Java 21，也未在本机运行官方 NeoForge 对照。
 
