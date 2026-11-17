@@ -1781,6 +1781,9 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::data_maps::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
+        if let Some(value) = crate::entity_selector_options::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
         if let Some(value) = crate::string_representable::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
@@ -2000,6 +2003,9 @@ impl HostApi for FmlLoader {
         }
         {
             let mut ctx = ExecCtx { rt, linked, host: self, depth: 0 };
+            if let Some(value) = crate::entity_selector_options::call(&mut ctx, member, is_static, args) {
+                return Some(value);
+            }
             if let Some(value) = crate::block_properties::call(&mut ctx, member, is_static, args) {
                 return Some(value);
             }
@@ -2318,6 +2324,9 @@ impl HostApi for FmlLoader {
             return true;
         }
         if crate::data_maps::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::entity_selector_options::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::registry_holders::is_subtype(sub_class, super_class) {

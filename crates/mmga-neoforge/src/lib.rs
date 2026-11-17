@@ -24,6 +24,7 @@ pub mod item_stack;
 pub mod fluid_content;
 pub mod ingredients;
 pub mod direction;
+pub mod entity_selector_options;
 pub mod dimension_type;
 pub mod dfu;
 pub mod dye_color;
