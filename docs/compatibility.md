@@ -14,6 +14,7 @@
 - Set 的 `Collection.forEach` 现在实际调用 Consumer，null 消费者、回调异常和结构修改保持真实失败语义，两项回归通过。Create 越过 Registrate.accept 回调分发，下一阻塞为 `BlockEntityType.COMMAND_BLOCK`（`AllDisplaySources.<clinit>`）；仍在构造。
 - AttributeModifier 的 id/amount/operation record、三种 operation enum、DFU map codec 和二进制 StreamCodec 按官方语义实现，3 项回归含黄金 JSON/字节及坏输入。Curios 已实际注册首个 `attribute_modifiers` 数据组件，下一阻塞 `IMenuTypeExtension.create(IContainerFactory)`（`curios_container`）；构造完成、注册进行中、setup 尚未到达。
 - DyeColor 的 16 个 enum 常量、真实 id/名称/MapColor/texture/firework/text 颜色和查找边界按官方 bytecode 实现，两项全表回归通过。Mekanism 越过 EnumColor，下一阻塞 `Tags$Items.ORES_IRON`（`PrimaryResource.<clinit>`）；构造仍未完成。
+- SimpleJsonResourceReloadListener 构造按官方保存 gson/directory（包含 null）并保留父接口；实际资源 prepare/reload 尚未实现并明确失败。两项回归通过。Sophisticated Backpacks 自身构造现已完成，连同 Core 进入注册，4 配置、50 监听器；先推进到 ComponentSerialization stream codec，后续共同注册阻塞见下一增量。
 
 最新验证：**2026-11-17，Windows x86_64，Minecraft 1.21.1 / NeoForge 21.1.266**。实现检查点 `a417383`，Rust `1.98.0`，Java 21。后续文档提交不改变这次探测的代码。三个 crate 仍为 `mmga-classfile`、`mmga-runtime`、`mmga-neoforge`；输入均为官方发布的原始 jar，未修改、未针对桩 API 重编译。
 

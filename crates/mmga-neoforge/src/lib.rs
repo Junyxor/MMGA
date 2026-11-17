@@ -22,6 +22,7 @@ pub mod loader;
 pub mod logging_markers;
 pub mod minecraft;
 pub mod registries;
+pub mod resource_reload;
 pub mod sounds;
 pub mod string_representable;
 pub mod subsystems;

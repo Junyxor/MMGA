@@ -1805,6 +1805,9 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::logging_markers::call(rt, member, is_static, args) {
             return Some(value);
         }
+        if let Some(value) = crate::resource_reload::call(rt, member, is_static, args) {
+            return Some(value);
+        }
         if let Some(value) = crate::blocks::call(rt, &mut self.state.registries, member, is_static, args) {
             return Some(value);
         }
@@ -2057,6 +2060,9 @@ impl HostApi for FmlLoader {
             return true;
         }
         if crate::dye_color::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::resource_reload::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::capabilities::is_subtype(sub_class, super_class) {
