@@ -20,6 +20,7 @@ pub mod container_items;
 pub mod custom_data;
 pub mod item_stack;
 pub mod fluid_content;
+pub mod ingredients;
 pub mod direction;
 pub mod dimension_type;
 pub mod dfu;
