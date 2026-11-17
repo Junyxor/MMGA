@@ -43,6 +43,7 @@ pub mod registry_codecs;
 pub mod resource_reload;
 pub mod push_reaction;
 pub mod sounds;
+pub mod sound_types;
 pub mod sided_threads;
 pub mod string_representable;
 pub mod subsystems;

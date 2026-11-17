@@ -29,6 +29,17 @@ pub fn get_static_field(
         return None;
     }
     let (path, declared_desc) = match name {
+        "AMETHYST_CLUSTER_BREAK" => ("block.amethyst_cluster.break", SOUND_DESC),
+        "AMETHYST_CLUSTER_FALL" => ("block.amethyst_cluster.fall", SOUND_DESC),
+        "AMETHYST_CLUSTER_HIT" => ("block.amethyst_cluster.hit", SOUND_DESC),
+        "AMETHYST_CLUSTER_PLACE" => ("block.amethyst_cluster.place", SOUND_DESC),
+        "AMETHYST_CLUSTER_STEP" => ("block.amethyst_cluster.step", SOUND_DESC),
+        "SMALL_AMETHYST_BUD_BREAK" => ("block.small_amethyst_bud.break", SOUND_DESC),
+        "SMALL_AMETHYST_BUD_PLACE" => ("block.small_amethyst_bud.place", SOUND_DESC),
+        "MEDIUM_AMETHYST_BUD_BREAK" => ("block.medium_amethyst_bud.break", SOUND_DESC),
+        "MEDIUM_AMETHYST_BUD_PLACE" => ("block.medium_amethyst_bud.place", SOUND_DESC),
+        "LARGE_AMETHYST_BUD_BREAK" => ("block.large_amethyst_bud.break", SOUND_DESC),
+        "LARGE_AMETHYST_BUD_PLACE" => ("block.large_amethyst_bud.place", SOUND_DESC),
         "ANVIL_LAND" => ("block.anvil.land", SOUND_DESC),
         "ARMOR_EQUIP_GOLD" => ("item.armor.equip_gold", HOLDER_DESC),
         "ARMOR_EQUIP_LEATHER" => ("item.armor.equip_leather", HOLDER_DESC),

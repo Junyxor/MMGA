@@ -1682,6 +1682,9 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::blocks::get_static_field(rt, &mut self.state.registries, owner, name, desc) {
             return Some(value);
         }
+        if let Some(value) = crate::sound_types::get_static_field(rt, &mut self.state.registries, owner, name, desc) {
+            return Some(value);
+        }
         if let Some(value) = crate::block_entities::get_static_field(rt, &mut self.state.registries, owner, name, desc) {
             return Some(value);
         }
@@ -1879,6 +1882,9 @@ impl HostApi for FmlLoader {
             return Some(value);
         }
         if let Some(value) = crate::guava_builders::call(rt, linked, self, member, is_static, args) {
+            return Some(value);
+        }
+        if let Some(value) = crate::sound_types::call(rt, member, is_static, args) {
             return Some(value);
         }
         {

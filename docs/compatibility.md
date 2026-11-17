@@ -13,6 +13,7 @@
 - 流体模块原来的空桩已替换：optional 空栈 JSON `{}` 与 stream VarInt 0、mandatory 空栈异常、amount/真实 registry JSON 值和副本语义经过回归。非空流体网络、非空 component patch、NBT 继续明确失败。ItemContainerContents 保留真实 slot codec 和 256 项边界，空容器 JSON/stream 往返、值相等/不可支持的非空行为均经过验证。Core + Backpacks 均构造完成，实际注册 **47 项**，下一处 `TagKey.codec(ResourceKey)`（`filter_attributes`）；setup/tick 未到达，玩法/渲染未验证。
 - Mekanism 越过事件分类和继承 `addAlias` 后仍在构造，9 配置/23 监听器，下一处 `DefaultedRegistry.holderByNameCodec()`（`Chemical.<clinit>`）。未把 holder 元数据或部分注册当作兼容完成。
 - 当前恢复检查点 `cargo test --workspace --offline`：**195 项通过**（classfile 7 / runtime 15 / NeoForge 173），doc-tests 全通过。已有 `attribute_modifier::MAP_CODEC` dead-code warning 尚在；声明的 MSRV 1.83 仍未单独验证。测试证据 `.local/probes/resume-workspace-test.log`，优化探测用于加载验证而非性能对比。
+- AE2 的四个 amethyst SoundType 已按官方 volume/pitch 1.0 与 break/step/place/hit/fall 原始 SoundEvents 引用实现，11 个声音登记值保持真实 registry 身份；自定义构造器保留 null 和传入引用。两项回归先失败后通过，原 jar 越过 SoundType 常量，下一处为 `BlockBehaviour.Properties.of()`（`AEBaseBlock.defaultProps`），仍在构造。证据 `.local/probes/ae2-sound-types.log`；声音播放未执行。
 
 ## 2026-11-17 持续修复增量（进行中）
 
