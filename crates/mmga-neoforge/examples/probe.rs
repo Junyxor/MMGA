@@ -2,17 +2,21 @@
 //!
 //! Usage: `cargo run -p mmga-neoforge --example probe -- --dedicated-server <jar>...`
 //! Jars are read from the paths you pass. This example does not bundle any mod.
+//! Exit 1 means a supplied jar, preparation, bootstrap, or modeled tick failed;
+//! exit 2 means no input was supplied. Exit 0 only confirms the modeled lifecycle
+//! and tick completed: loading warnings can still report `degraded=true`.
 
 use mmga_classfile::{ClassFile, ModJar};
-use mmga_neoforge::PreparedLoad;
+use mmga_neoforge::{FmlLoader, PreparedLoad};
 use mmga_runtime::Rt;
 use std::env;
 use std::fs;
 use std::io::{Cursor, Read};
 use std::path::Path;
+use std::process::ExitCode;
 use std::time::Instant;
 
-fn main() {
+fn main() -> ExitCode {
     let mut dedicated = true;
     let mut paths = Vec::new();
     for arg in env::args().skip(1) {
@@ -26,7 +30,7 @@ fn main() {
     }
     if paths.is_empty() {
         eprintln!("usage: probe [--dedicated-server|--client] <mod.jar>...");
-        std::process::exit(2);
+        return ExitCode::from(2);
     }
 
     println!(
@@ -38,6 +42,7 @@ fn main() {
         }
     );
     let mut jars = Vec::new();
+    let mut open_failures = 0usize;
     for path in &paths {
         let started = Instant::now();
         match load_one(Path::new(path)) {
@@ -81,17 +86,25 @@ fn main() {
             }
             Err(err) => {
                 println!("OPEN FAILED {path}: {err}");
+                open_failures += 1;
             }
         }
     }
 
-    if jars.is_empty() {
-        println!("no jar opened; not attempting lifecycle");
-        return;
+    if open_failures != 0 {
+        println!(
+            "probe_result=failed operation=open failed_jars={open_failures} supplied_jars={}; not attempting lifecycle with a partial mod set",
+            paths.len()
+        );
+        return ExitCode::FAILURE;
     }
 
     match PreparedLoad::from_jars(jars, dedicated) {
-        Err(err) => println!("LOAD ORDER FAILED: {err}"),
+        Err(err) => {
+            println!("LOAD ORDER FAILED: {err}");
+            println!("probe_result=failed operation=prepare lifecycle=not-started");
+            ExitCode::FAILURE
+        }
         Ok(mut prepared) => {
             println!(
                 "load order: {}",
@@ -125,22 +138,23 @@ fn main() {
                         prepared.loader.state.bus.callbacks_invoked,
                         rt.telemetry.unmapped_calls.len()
                     );
-                    for issue in &prepared.loader.loading_issues {
-                        println!(
-                            "  loading_issue [{}] mod={:?} key={}: {}",
-                            issue.severity, issue.mod_id, issue.translation_key, issue.message
-                        );
-                    }
+                    report_loader_state(&prepared.loader);
                     for log in rt.telemetry.logs.iter().take(15) {
                         println!("  log: {log}");
                     }
-                    match prepared.loader.tick_server(&mut rt, &prepared.linked, 1) {
-                        Ok(()) => println!(
-                            "tick_server(1) returned Ok game_time={}",
-                            prepared.loader.state.world.game_time
-                        ),
-                        Err(err) => println!("TICK FAILED: {err}"),
-                    }
+                    let tick_ok = match prepared.loader.tick_server(&mut rt, &prepared.linked, 1) {
+                        Ok(()) => {
+                            println!(
+                                "tick_server(1) returned Ok game_time={}",
+                                prepared.loader.state.world.game_time
+                            );
+                            true
+                        }
+                        Err(err) => {
+                            println!("TICK FAILED: {err}");
+                            false
+                        }
+                    };
                     let mut keys: Vec<_> = rt.telemetry.unmapped_calls.keys().cloned().collect();
                     keys.sort();
                     for key in keys.iter().take(30) {
@@ -149,6 +163,13 @@ fn main() {
                     println!(
                         "NOTE: Ok only means the loader finished its phase list. It is not gameplay, world simulation, or rendering."
                     );
+                    if tick_ok {
+                        println!("probe_result=ok operation=modeled-lifecycle-and-one-tick");
+                        ExitCode::SUCCESS
+                    } else {
+                        println!("probe_result=failed operation=modeled-tick bootstrap=completed");
+                        ExitCode::FAILURE
+                    }
                 }
                 Err(err) => {
                     println!(
@@ -162,9 +183,45 @@ fn main() {
                     for log in rt.telemetry.logs.iter().take(15) {
                         println!("  log: {log}");
                     }
+                    report_loader_state(&prepared.loader);
+                    println!("probe_result=failed operation=bootstrap modeled_tick=not-started");
+                    ExitCode::FAILURE
                 }
             }
         }
+    }
+}
+
+fn report_loader_state(loader: &FmlLoader) {
+    println!(
+        "loader_checkpoint last_completed_phase={} scope=entire-mod-set per_mod_registration_setup_callbacks=not-tracked",
+        loader.phase.label()
+    );
+    for loaded in &loader.mods {
+        let construction = if loaded.instance.is_some() {
+            "completed"
+        } else if loaded.entry_class.is_none() {
+            "no-selected-entrypoint"
+        } else {
+            "not-completed-or-not-reached"
+        };
+        println!(
+            "  mod_state id={} entry={} instance_present={} construction={construction}",
+            loaded.mod_id,
+            loaded.entry_class.as_deref().unwrap_or("-"),
+            loaded.instance.is_some(),
+        );
+    }
+    println!(
+        "degraded={} loading_issues={}",
+        !loader.loading_issues.is_empty(),
+        loader.loading_issues.len()
+    );
+    for issue in &loader.loading_issues {
+        println!(
+            "  loading_issue [{}] mod={:?} key={}: {}",
+            issue.severity, issue.mod_id, issue.translation_key, issue.message
+        );
     }
 }
 
@@ -179,7 +236,9 @@ fn load_one(path: &Path) -> Result<ModJar, String> {
         path.display().to_string(),
     )?;
     if let Some(err) = &first_error {
-        println!("  classfile scan: {class_errors} failures, first: {err}");
+        return Err(format!(
+            "classfile scan: {class_errors} failures, first: {err}"
+        ));
     } else {
         println!("  classfile scan: all scanned class files parsed");
     }
