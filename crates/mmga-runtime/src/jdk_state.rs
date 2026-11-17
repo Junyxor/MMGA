@@ -9,6 +9,36 @@ pub fn call(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: &[
         member.name.as_str(),
         member.desc.as_str(),
     );
+    if is_static && owner == "java/lang/Thread" && name == "currentThread" && desc == "()Ljava/lang/Thread;" {
+        let cache = format!("$thread:{:?}", std::thread::current().id());
+        if let Some(value) = ctx.rt.get_static(owner, &cache) { return Some(value); }
+        let thread = ctx.rt.new_instance(owner, 0);
+        let group = match ctx.rt.get_static("java/lang/ThreadGroup", "$main") {
+            Some(group) => group,
+            None => {
+                let group = ctx.rt.new_instance("java/lang/ThreadGroup", 0);
+                let name = ctx.rt.intern_str("main");
+                ctx.rt.put_field(group, "name", name);
+                ctx.rt.put_static("java/lang/ThreadGroup", "$main", group);
+                group
+            }
+        };
+        let thread_name = ctx.rt.new_str(std::thread::current().name().unwrap_or("main"));
+        ctx.rt.put_field(thread, "group", group);
+        ctx.rt.put_field(thread, "name", thread_name);
+        ctx.rt.put_static(owner, &cache, thread);
+        return Some(thread);
+    }
+    if !is_static && owner == "java/lang/Thread" {
+        match (name, desc) {
+            ("getThreadGroup", "()Ljava/lang/ThreadGroup;") => return Some(ctx.rt.get_field(args[0], "group")),
+            ("getName", "()Ljava/lang/String;") => return Some(ctx.rt.get_field(args[0], "name")),
+            _ => {}
+        }
+    }
+    if !is_static && owner == "java/lang/ThreadGroup" && name == "getName" && desc == "()Ljava/lang/String;" {
+        return Some(ctx.rt.get_field(args[0], "name"));
+    }
     if owner == "java/util/function/Function"
         && is_static
         && name == "identity"
@@ -51,12 +81,14 @@ pub fn call(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: &[
         ctx.rt.put_field(local, "$initial_supplier", args[0]);
         return Some(local);
     }
-    if is_static
-        || !matches!(
-            owner,
-            "java/lang/ThreadLocal" | "java/lang/ThreadLocal$SuppliedThreadLocal"
-        )
-    {
+    let inherited_thread_local_method = !is_static
+        && name != "<init>"
+        && ctx.rt.class_of(args[0]).is_some_and(|class| {
+            ctx.linked.is_subtype(class, "java/lang/ThreadLocal", ctx.host)
+        })
+        && ctx.linked.is_subtype(owner, "java/lang/ThreadLocal", ctx.host);
+    if is_static || !(matches!(owner, "java/lang/ThreadLocal" | "java/lang/ThreadLocal$SuppliedThreadLocal")
+        || inherited_thread_local_method) {
         return None;
     }
     let local = args[0];
@@ -269,5 +301,31 @@ mod tests {
             ),
             V::NULL
         );
+    }
+
+    #[test]
+    fn inherited_thread_local_methods_resolve_from_subclass_owner() {
+        use crate::{NativeClassDef, NativeModuleRegistry};
+        fn initial(ctx:&mut ExecCtx<'_>,args:&[V])->V {
+            let count=ctx.rt.get_field(args[0],"calls").i()+1;
+            ctx.rt.put_field(args[0],"calls",V::I(count));
+            ctx.rt.intern_str(&format!("initial-{count}"))
+        }
+        let mut linked=LinkedSpace::new();
+        linked.register_native_module(NativeModuleRegistry{classes:&[NativeClassDef{
+            name:"test/CustomLocal",superclass:Some("java/lang/ThreadLocal"),interfaces:&[],is_interface:false,
+            methods:&[("initialValue.()Ljava/lang/Object;",initial,false,false)],
+        }],lambdas:&[]});
+        let mut rt=Rt::new();let local=rt.new_instance("test/CustomLocal",0);let mut host=NullHost;
+        let mut ctx=ExecCtx{rt:&mut rt,linked:&linked,host:&mut host,depth:0};
+        invoke_member(&mut ctx,op::INVOKESPECIAL,&MemberRef::new("java/lang/ThreadLocal","<init>","()V"),&[local]);
+        let first=invoke_member(&mut ctx,op::INVOKEVIRTUAL,&MemberRef::new("test/CustomLocal","get","()Ljava/lang/Object;"),&[local]);
+        assert!(ctx.rt.pending_exception.is_none());assert_eq!(ctx.rt.str_of(first),Some("initial-1"));
+        invoke_member(&mut ctx,op::INVOKEVIRTUAL,&MemberRef::new("test/CustomLocal","set","(Ljava/lang/Object;)V"),&[local,V::NULL]);
+        assert_eq!(invoke_member(&mut ctx,op::INVOKEVIRTUAL,&MemberRef::new("test/CustomLocal","get","()Ljava/lang/Object;"),&[local]),V::NULL);
+        assert_eq!(ctx.rt.get_field(local,"calls"),V::I(1));
+        invoke_member(&mut ctx,op::INVOKEVIRTUAL,&MemberRef::new("test/CustomLocal","remove","()V"),&[local]);
+        let next=invoke_member(&mut ctx,op::INVOKEVIRTUAL,&MemberRef::new("test/CustomLocal","get","()Ljava/lang/Object;"),&[local]);
+        assert_eq!(ctx.rt.str_of(next),Some("initial-2"));assert!(ctx.rt.pending_exception.is_none());
     }
 }

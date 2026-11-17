@@ -27,6 +27,7 @@ pub mod guava_builders;
 pub mod registries;
 pub mod resource_reload;
 pub mod sounds;
+pub mod sided_threads;
 pub mod string_representable;
 pub mod subsystems;
 pub mod tags;
