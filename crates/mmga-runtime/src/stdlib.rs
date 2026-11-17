@@ -79,6 +79,10 @@ pub fn stdlib_call(
     let name = member.name.as_str();
     let desc = member.desc.as_str();
 
+    if let Some(value) = crate::class_loading::call(ctx, member, is_static, args) {
+        return Some(value);
+    }
+
     if let Some(value) = crate::jdk_state::call(ctx, member, is_static, args) {
         return Some(value);
     }
@@ -1241,79 +1245,6 @@ fn dispatch_java_util(
                 _ => None,
             };
         }
-    }
-
-    // `java/util/ServiceLoader`
-    if owner == "java/util/ServiceLoader" {
-        if is_static && name == "load" {
-            let spi_cls = ctx
-                .rt
-                .handle_of(*args.first()?)
-                .map(|(_, _, t, _)| t.to_owned())
-                .unwrap_or_default();
-            let impl_names = ctx
-                .linked
-                .services
-                .get(&spi_cls)
-                .cloned()
-                .unwrap_or_default();
-            let mut instances = Vec::new();
-            for impl_cls in impl_names {
-                let obj = crate::vm::alloc_new_object(ctx, &impl_cls);
-                if ctx.rt.pending_exception.is_some() {
-                    return Some(V::NULL);
-                }
-                let mref = MemberRef::new(&impl_cls, "<init>", "()V");
-                let _ = crate::vm::invoke_member(ctx, mmga_classfile::op::INVOKESPECIAL, &mref, &[obj]);
-                if ctx.rt.pending_exception.is_some() {
-                    return Some(V::NULL);
-                }
-                instances.push(obj);
-            }
-            let loader = ctx.rt.new_instance("java/util/ServiceLoader", 0);
-            let list = ctx.rt.alloc("java/util/ArrayList", 0, Data::List(instances));
-            ctx.rt.put_field(loader, "$providers", list);
-            return Some(loader);
-        }
-        if !is_static {
-            let list = ctx.rt.get_field(args[0], "$providers");
-            let items: Vec<V> = match ctx.rt.get_obj(list).map(|o| &o.data) {
-                Some(Data::List(xs)) => xs.clone(),
-                _ => Vec::new(),
-            };
-            return match name {
-                "findFirst" => {
-                    let first = items.into_iter().next();
-                    Some(ctx.rt.alloc("java/util/Optional", 0, Data::Optional(first)))
-                }
-                "iterator" => {
-                    Some(ctx.rt.alloc("java/util/Iterator", 0, Data::Iter { items, pos: 0 }))
-                }
-                "stream" => {
-                    let providers: Vec<V> = items
-                        .into_iter()
-                        .map(|inst| {
-                            let p = ctx.rt.new_instance("java/util/ServiceLoader$Provider", 0);
-                            ctx.rt.put_field(p, "$inst", inst);
-                            p
-                        })
-                        .collect();
-                    Some(ctx.rt.alloc("java/util/stream/Stream", 0, Data::Stream(providers)))
-                }
-                _ => None,
-            };
-        }
-    }
-    if owner == "java/util/ServiceLoader$Provider" && !is_static {
-        let inst = ctx.rt.get_field(args[0], "$inst");
-        return match name {
-            "get" => Some(inst),
-            "type" => {
-                let cls = ctx.rt.class_of(inst).unwrap_or("java/lang/Object").to_owned();
-                Some(ctx.rt.new_pinned_handle("java/lang/Class", "class", 0, cls))
-            }
-            _ => None,
-        };
     }
 
     // `java/util/Optional`
