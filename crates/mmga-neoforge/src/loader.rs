@@ -1678,6 +1678,9 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::attribute_modifier::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
+        if let Some(value) = crate::dye_color::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
         if let Some(value) = crate::string_representable::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
@@ -1809,6 +1812,9 @@ impl HostApi for FmlLoader {
             return Some(value);
         }
         if let Some(value) = crate::attribute_modifier::call(rt, linked, self, member, is_static, args) {
+            return Some(value);
+        }
+        if let Some(value) = crate::dye_color::call(rt, member, is_static, args) {
             return Some(value);
         }
         if let Some(value) = crate::dfu::call(rt, linked, self, member, is_static, args) {
@@ -2048,6 +2054,9 @@ impl HostApi for FmlLoader {
             return true;
         }
         if crate::attribute_modifier::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::dye_color::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::capabilities::is_subtype(sub_class, super_class) {
