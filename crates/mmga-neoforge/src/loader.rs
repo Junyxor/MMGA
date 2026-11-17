@@ -23,6 +23,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const REGISTER_EVENT: &str = "net/neoforged/neoforge/registries/RegisterEvent";
 
+#[path = "fml_post.rs"]
+mod fml_post;
+
 /// Minecraft and NeoForge versions this host claims when checking `versionRange`.
 ///
 /// Chosen from published compatibility, not a guess: YSM 2.6.5 accepts NeoForge
@@ -1067,8 +1070,23 @@ impl FmlLoader {
                     return Some(V::Void);
                 }
                 ("net/neoforged/fml/ModLoadingContext", "getActiveContainer") => {
-                    let id = self.constructing.clone()?;
+                    // Official FML falls back to its Minecraft container after a
+                    // wrapper clears activeContainer; it does not return null.
+                    let id = self.constructing.clone().unwrap_or_else(||"minecraft".into());
                     return Some(self.mod_container_handle(rt, &id));
+                }
+                ("net/neoforged/fml/ModLoadingContext", "setActiveContainer")
+                    if member.desc == "(Lnet/neoforged/fml/ModContainer;)V" => {
+                    let container = *args.get(1)?;
+                    if container.is_null() {
+                        self.constructing = None;
+                        return Some(V::Void);
+                    }
+                    let Some(("mod_container",_,id,_)) = rt.handle_of(container) else {
+                        return Some(rt.throw_exception("java/lang/UnsupportedOperationException","Unmodeled ModContainer active context"));
+                    };
+                    self.constructing = Some(id.to_owned());
+                    return Some(V::Void);
                 }
                 ("net/neoforged/fml/ModLoadingIssue", "withAffectedMod") => {
                     if let Some(info) = args.get(1).copied() {
@@ -1807,6 +1825,10 @@ impl HostApi for FmlLoader {
         is_static: bool,
         args: &[V],
     ) -> Option<V> {
+        if is_static && member.owner == "net/neoforged/fml/ModLoader" && member.name == "postEventWrapContainerInModOrder"
+            && member.desc == "(Lnet/neoforged/bus/api/Event;)V" {
+            return Some(fml_post::post_wrapped_in_mod_order(self,rt,linked,*args.first()?));
+        }
         {
             let mut ctx = ExecCtx { rt, linked, host: self, depth: 0 };
             if let Some(value) = crate::bus::event_api_call(&mut ctx,member,is_static,args) { return Some(value); }

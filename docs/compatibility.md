@@ -22,6 +22,7 @@
 - `Registry.holderByNameCodec` 构造真实 DFU 映射，保留 registry，解码调用真实 getHolder，编码检查引用/key/owner/绑定和 registrationInfo；任何尚未实现的引用操作明确失败，不新造一个假 holder。两个新回归先失败后通过、registry codec 共四项通过；原 Mekanism 越过此 codec 构造，下一处 `DefaultedRegistry.createIntrusiveHolder(Object)`（`Chemical.<init>`），仍未构造完成。
 - Create 新增的 NeoForge Blocks/Items 和 vanilla BuilderTransformers tag 常量按官方字面量映射，静态/direct 身份一致，不含 tag membership 猜测；四项 tag 回归通过。原 jar 越过 AllBlocks/TagGen，进入 AllItems，下一处 `NeoForgeDataMaps.FURNACE_FUELS`（`ItemBuilder.burnTime`），仍在构造，组合注册/setup 未到达。
 - ExtraCodecs.NON_NEGATIVE_INT/POSITIVE_INT 真实整数边界和官方错误信息、static identity、encode 前验证经过失败后通过回归。事件分类收紧暴露并修复 Core/Backpacks 真实引用的外部事件目录缺项后，原始组合已恢复构造完成和 **60 项**注册，越过 NON_NEGATIVE_INT，下一处为 `Codec.unboundedMap`（`CookingLogic.<clinit>`，注册 `recipes_used`）。证据 `.local/probes/backpacks-integer-codec.log`；未宣称整个注册阶段或 setup 完成。
+- FML ordered post 真实执行“优先级外层、模组顺序内层”，保留 original event、active container 清理和原异常；三项 VM 回归先失败后通过，回调之后 Minecraft context 按官方回退。Curios 已越过 ordered post，执行 common setup 的排队任务后停在 `EntitySelectorOptions.register`；CommonSetup 尚未完成，最后完成阶段仍为 Registered。Core/Backpacks event-handler lambda 描述符按真实 jar 批量核查，新增目录项均核对官方 source。
 
 ## 2026-11-17 持续修复增量（进行中）
 

@@ -78,6 +78,22 @@ pub const BUILTIN_EVENTS: &[BuiltinEventSpec] = &[
         is_cancellable: false,
         is_abstract: false,
     },
+    // FancyModLoader 1.21.1 source blob 48b2326d472ca088533b74e031657a2bb536c501.
+    BuiltinEventSpec {
+        class: "net/neoforged/fml/event/lifecycle/FMLConstructModEvent",
+        superclass: "net/neoforged/fml/event/lifecycle/ParallelDispatchEvent",
+        is_mod_bus: true,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    // NeoForge 1.21.1 source blob c8b6dfff8f317a13305b40addaf78c915d2ffc81.
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/data/event/GatherDataEvent",
+        superclass: "net/neoforged/bus/api/Event",
+        is_mod_bus: true,
+        is_cancellable: false,
+        is_abstract: false,
+    },
     BuiltinEventSpec {
         class: "net/neoforged/fml/event/lifecycle/FMLClientSetupEvent",
         superclass: "net/neoforged/fml/event/lifecycle/ParallelDispatchEvent",
@@ -769,6 +785,75 @@ pub const BUILTIN_EVENTS: &[BuiltinEventSpec] = &[
     BuiltinEventSpec {
         class: "net/neoforged/neoforge/client/event/RecipesUpdatedEvent",
         superclass: "net/neoforged/bus/api/Event",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    // Actual Sophisticated Backpacks CommonEventHandler lambda/event signatures.
+    // EntityMobGriefingEvent 3a26d1944eb058c9e2416d9a8b5c00fbde9b9e62;
+    // FinalizeSpawnEvent f47fc67b700c9093f6cefba6178665eb935efaac;
+    // MobSpawnEvent 5362dcc35164def51a8a94be866eca2c6f25af46;
+    // LivingConversionEvent 84100d798ca1332e7f7c404f0a1a4efaea5e1d9b;
+    // ItemEntityPickupEvent 70c69ac5a34f132214b5bf6fefd389af4f8f7629.
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/EntityMobGriefingEvent",
+        superclass: "net/neoforged/neoforge/event/entity/EntityEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/living/MobSpawnEvent",
+        superclass: "net/neoforged/neoforge/event/entity/EntityEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: true,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/living/FinalizeSpawnEvent",
+        superclass: "net/neoforged/neoforge/event/entity/living/MobSpawnEvent",
+        is_mod_bus: false,
+        is_cancellable: true,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/living/LivingConversionEvent",
+        superclass: "net/neoforged/neoforge/event/entity/living/LivingEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: true,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/living/LivingConversionEvent$Pre",
+        superclass: "net/neoforged/neoforge/event/entity/living/LivingConversionEvent",
+        is_mod_bus: false,
+        is_cancellable: true,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/living/LivingConversionEvent$Post",
+        superclass: "net/neoforged/neoforge/event/entity/living/LivingConversionEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/player/ItemEntityPickupEvent",
+        superclass: "net/neoforged/bus/api/Event",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: true,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/player/ItemEntityPickupEvent$Pre",
+        superclass: "net/neoforged/neoforge/event/entity/player/ItemEntityPickupEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/player/ItemEntityPickupEvent$Post",
+        superclass: "net/neoforged/neoforge/event/entity/player/ItemEntityPickupEvent",
         is_mod_bus: false,
         is_cancellable: false,
         is_abstract: false,
