@@ -1,5 +1,39 @@
 # 未修改 NeoForge 模组的兼容性记录
 
+同步说明：Windows 续作期间远端另新增 `ca5f00e`。合并时按 Mojang 官方 1.21.1 字节码纠正了其 TextColor 测试：构造器去掉 alpha，`serialize()` 返回名称或 `#RRGGBB` 字符串。该远端提交还引用了未提交的 `RegistryStore.bind_holder`，本轮补齐 deferred holder 的延迟绑定与未绑定访问异常，避免将远端未编译的状态当成已验证基线。
+
+## 2026-11-17 继续推进（Linux，基线仍是 1.21.1 / NeoForge 21.1.266）
+
+本轮在 `12472a2`（ARGB32）之上实现了 Create 实际读取的原版 `SoundEvents`（按 jar 里的字段类型返回 `SoundEvent` 或 `Holder`）、Mekanism 用到的 `Attributes` 默认值、`TextColor.fromRgb`、`ArmorMaterial` 数据、`ArmorItem.Type.values`，以及 Java 21 的 `List.getFirst` / `getLast`。`DeferredHolder.create(ResourceKey, ResourceLocation)` 会登记一个尚未绑定的 holder，注册同名条目后才能 `get()`。没有为了过探针填默认返回值。
+
+`cargo test --workspace --lib`：classfile 7、runtime 3、NeoForge 21。探针：
+
+```bash
+cargo run -p mmga-neoforge --release --example probe -- --dedicated-server /path/to/mod.jar
+```
+
+| 模组 | 本轮阶段 | 说明 |
+| --- | --- | --- |
+| Create 6.0.10 | 仍在构造。比上一记录更深：声音表已建完，停在 `CommonComponents.space()`（`DisplaySource.<clinit>`）。日志已有 `Create 6.0.10 initializing`。注册、setup、tick、玩法、渲染都没到 | Ponder 仍先完成构造 |
+| Mekanism 10.7.19 | 仍在构造。已过 `TextColor.fromRgb` 和 `Attributes.ATTACK_SPEED.getDefaultValue`。停在 `ArmorMaterial.defense()`（`MekanismStartupConfig`）。注册及之后未到 | 客户端入口继续被跳过 |
+| Jade 15.10.6 | **构造完成，进入注册**。`RegisterPayloadHandlersEvent` 上停在 `StreamCodec$CodecOperation.apply`。setup / tick / 看方块提示 / 渲染未到 | 单独测，JEI 可选未装 |
+| AppleSkin 3.0.9 | 加载器跑完到 `Running`：1 条配置、2 个 payload 通道、3 个监听器、1 次回调、31 次加载器事件。这是注册和一次 setup/tick 回调，不是饥饿 HUD | NeoForge 依赖只要求客户端；专用服务器探针仍执行了带 `IEventBus` 的构造 |
+| FerriteCore 7.0.3 | 加载器阶段返回成功，0 个注册项、0 个监听器。入口构造函数是空的，效果全在 Mixin，MMGA 没有把它接到真实区块内存上 | 不能当成内存优化已生效 |
+| Cloth Config 15.0.140 | 同上，空构造，加载器阶段结束。配置界面是客户端，没有打开 | 库本身没有注册方块 |
+| Clumps 19.0.0.1 | 加载器阶段返回成功，0 个监听器。没有观察到经验球合并 | Mixin / 事件若未挂上，就不算玩法 |
+
+新增 jar 只放在本机 `/tmp/mmga-mods`，不进 Git。sha1 与 Modrinth 一致。
+
+| 文件 | 许可证 | sha1 | 来源 |
+| --- | --- | --- | --- |
+| `ferritecore-7.0.3-neoforge.jar` | MIT | `9563692efb708b6b568df27a01ec52f6311928ef` | https://cdn.modrinth.com/data/uXXizFIs/versions/x7kQWVju/ferritecore-7.0.3-neoforge.jar |
+| `cloth-config-15.0.140-neoforge.jar` | GNU LGPLv3 | `c3e5733ba4503b102589a026000fd5ce0212f6f2` | https://cdn.modrinth.com/data/9s6osm5g/versions/izKINKFg/cloth-config-15.0.140-neoforge.jar |
+| `appleskin-neoforge-mc1.21-3.0.9.jar` | The Unlicense | `81cf0e668f991f83ac8820c386fbd6c9c3602246` | https://cdn.modrinth.com/data/EsAfCjCV/versions/uAKA6Laj/appleskin-neoforge-mc1.21-3.0.9.jar |
+| `Clumps-neoforge-1.21.1-19.0.0.1.jar` | MIT | `fa2576297c7bd12b28aa7070e8141792bd66da4c` | https://cdn.modrinth.com/data/Wnxd13zP/versions/jo7lDoK4/Clumps-neoforge-1.21.1-19.0.0.1.jar |
+| `Jade-1.21.1-NeoForge-15.10.6.jar` | CC-BY-NC-SA-4.0 | `88ee316e68900080b017f60c12162e2731924cf8` | https://cdn.modrinth.com/data/nvQzSEkH/versions/eYz2YBGT/Jade-1.21.1-NeoForge-15.10.6.jar |
+
+本轮没有再跑官方 NeoForge 对照，也不比较性能。YSM 的 JNI 缺口维持上一记录，没有假装本地库已加载。
+
 ## 2026-11-17 增量复测（Windows x86_64）
 
 本轮先 `git fetch origin`，以远端 `68c50cd` 为基线。该提交以及 `f8005c7`、`0c06e55` 均已存在。本机检查未找到上一轮 checkout 或可恢复的未提交修改。`cargo test --workspace` 基线通过：classfile 7、runtime 3、NeoForge 17，共 27 项；包括 javac 编译的字节码测试。下面的增量记录取代后文 2026-11-15 的旧阻塞描述。

@@ -1580,12 +1580,12 @@ impl FmlLoader {
         }
     }
 
-    fn holder_get(&self, rt: &Rt, args: &[V]) -> Option<V> {
+    fn holder_get(&self, rt: &mut Rt, args: &[V]) -> Option<V> {
         let (kind, id, _, _) = rt.handle_of(*args.first()?)?;
         if kind != "deferred_holder" {
             return None;
         }
-        Some(self.state.registries.holder_value(id).unwrap_or(V::NULL))
+        Some(self.state.registries.require_holder_value(rt, id))
     }
 }
 
@@ -1775,6 +1775,9 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::minecraft::call_fast_color(member, is_static, args) {
             return Some(value);
         }
+        if let Some(value) = crate::minecraft::call_armor_layer(rt, member, is_static, args) {
+            return Some(value);
+        }
         if let Some(value) = crate::minecraft::call_network_and_codecs(
             rt,
             linked,
@@ -1891,6 +1894,21 @@ impl HostApi for FmlLoader {
                 }
                 _ => None,
             };
+        }
+        if owner.ends_with("DeferredHolder") && is_static && member.name == "create" {
+            // `ResourceKey<Registry<T>>` lives in the root registry; its location is the target registry id.
+            let (_, registry) = crate::minecraft::resource_key_parts(rt, *args.first()?)?;
+            let location = rt
+                .handle_of(*args.get(1)?)
+                .filter(|(kind, _, _, _)| *kind == "resource_location")
+                .map(|(_, _, tag, _)| tag.to_owned())
+                .or_else(|| rt.str_of(*args.get(1)?).map(str::to_owned))?;
+            return Some(self.state.registries.bind_holder(
+                rt,
+                &registry,
+                &location,
+                "net/neoforged/neoforge/registries/DeferredHolder",
+            ));
         }
         if owner.ends_with("DeferredHolder") && !is_static && member.name == "get" {
             return self.holder_get(rt, args);

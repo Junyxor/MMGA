@@ -278,6 +278,29 @@ impl RegistryStore {
         Some(holder_v)
     }
 
+    /// Creates a reference to an entry without registering an entry or supplier.
+    /// Like `DeferredHolder.create`, the reference can be created before its
+    /// registry or value exists and resolves when registration supplies a value.
+    pub fn bind_holder(
+        &mut self,
+        rt: &mut Rt,
+        registry_key: &str,
+        full_id: &str,
+        holder_class: &str,
+    ) -> V {
+        let registry_key = canonical_registry_key(registry_key);
+        let resolved = self
+            .lookup(&registry_key, full_id)
+            .map(|entry| entry.value)
+            .filter(|value| !value.is_null());
+        self.next_holder_id += 1;
+        let id = self.next_holder_id;
+        let holder = rt.new_pinned_handle(holder_class, "deferred_holder", id, full_id);
+        self.holders
+            .insert(id, (registry_key, full_id.to_owned(), resolved));
+        holder
+    }
+
     pub fn register_direct(
         &mut self,
         rt: &mut Rt,
@@ -314,13 +337,70 @@ impl RegistryStore {
 
     pub fn holder_value(&self, holder_id: u64) -> Option<V> {
         let (reg, full_id, cached) = self.holders.get(&holder_id)?;
-        if let Some(v) = cached {
-            return Some(*v);
+        if let Some(v) = cached.filter(|value| !value.is_null()) {
+            return Some(v);
         }
         self.entries
             .get(reg)
             .and_then(|m| m.get(full_id))
             .map(|e| e.value)
+            .filter(|value| !value.is_null())
+    }
+
+    /// `DeferredHolder.value/get`: absence is observable as a Java exception,
+    /// never as a fabricated value. NeoForge's `bind(true)` distinguishes a
+    /// missing registry from an existing registry with an unbound entry.
+    pub fn require_holder_value(&self, rt: &mut Rt, holder_id: u64) -> V {
+        if let Some(value) = self.holder_value(holder_id) {
+            return value;
+        }
+        let Some((registry, location, _)) = self.holders.get(&holder_id) else {
+            return rt.throw_exception(
+                "java/lang/IllegalStateException",
+                "DeferredHolder has no resource key",
+            );
+        };
+        let key = format!("ResourceKey[{registry} / {location}]");
+        if !self.registry_is_present(registry) {
+            return rt.throw_exception(
+                "java/lang/IllegalStateException",
+                &format!("Registry not present for DeferredHolder{{{key}}}: {registry}"),
+            );
+        }
+        rt.throw_exception(
+            "java/lang/NullPointerException",
+            &format!("Trying to access unbound value: {key}"),
+        )
+    }
+
+    fn registry_is_present(&self, registry: &str) -> bool {
+        if self.entries.contains_key(registry)
+            || self.custom_registries.iter().any(|key| key == registry)
+        {
+            return true;
+        }
+        // Built-in registries exist even when none of their values have been
+        // materialized in this host. Reuse the explicit known field mapping.
+        let field = match registry {
+            "minecraft:root" => "REGISTRY".to_owned(),
+            "minecraft:trigger_type" => "TRIGGER_TYPES".to_owned(),
+            "minecraft:worldgen/block_state_provider_type" => "BLOCKSTATE_PROVIDER_TYPE".to_owned(),
+            "neoforge:fluid_type" => "FLUID_TYPES".to_owned(),
+            "neoforge:ingredient_serializer" => "INGREDIENT_TYPES".to_owned(),
+            "neoforge:fluid_ingredient_type" => "FLUID_INGREDIENT_TYPES".to_owned(),
+            "neoforge:holder_set_type" => "HOLDER_SET_TYPES".to_owned(),
+            _ => registry
+                .rsplit([':', '/'])
+                .next()
+                .unwrap_or("")
+                .to_ascii_uppercase(),
+        };
+        [
+            "net/minecraft/core/registries/BuiltInRegistries",
+            "net/neoforged/neoforge/registries/NeoForgeRegistries",
+        ]
+        .iter()
+        .any(|owner| crate::minecraft::lookup_builtin_registry_key(owner, &field) == Some(registry))
     }
 
     pub fn total_mod_entries(&self) -> usize {
@@ -336,6 +416,93 @@ impl RegistryStore {
 mod tests {
     use super::*;
     use mmga_runtime::Rt;
+
+    #[test]
+    fn standalone_holder_throws_until_actual_value_is_registered() {
+        let mut rt = Rt::new();
+        let mut store = RegistryStore::new();
+        let holder = store.bind_holder(
+            &mut rt,
+            "SOUND_EVENT",
+            "example:bell",
+            "net/neoforged/neoforge/registries/DeferredHolder",
+        );
+        let id = rt.handle_of(holder).unwrap().1;
+        assert!(store.pending_suppliers().is_empty());
+        assert!(store.lookup("SOUND_EVENT", "example:bell").is_none());
+        assert!(store.holder_value(id).is_none());
+        store.require_holder_value(&mut rt, id);
+        let exception = rt.take_exception().expect("unbound access must throw");
+        assert_eq!(
+            rt.class_of(exception),
+            Some("java/lang/NullPointerException")
+        );
+        assert!(rt.exception_summary(exception).contains("example:bell"));
+
+        let sound = rt.new_instance("net/minecraft/sounds/SoundEvent", 0);
+        store.register_direct(
+            &mut rt,
+            "SOUND_EVENT",
+            "example:bell",
+            "example",
+            sound,
+            ContentProperties::default(),
+        );
+        assert_eq!(store.require_holder_value(&mut rt, id), sound);
+        assert!(rt.pending_exception.is_none());
+        let later = store.bind_holder(
+            &mut rt,
+            "SOUND_EVENT",
+            "example:bell",
+            "net/neoforged/neoforge/registries/DeferredHolder",
+        );
+        let later_id = rt.handle_of(later).unwrap().1;
+        assert_ne!(id, later_id);
+        assert_eq!(store.require_holder_value(&mut rt, later_id), sound);
+    }
+
+    #[test]
+    fn missing_registry_and_null_seed_are_not_bound_values() {
+        let mut rt = Rt::new();
+        let mut store = RegistryStore::new();
+        let missing = store.bind_holder(
+            &mut rt,
+            "example:custom",
+            "example:value",
+            "net/neoforged/neoforge/registries/DeferredHolder",
+        );
+        let missing_id = rt.handle_of(missing).unwrap().1;
+        store.require_holder_value(&mut rt, missing_id);
+        let exception = rt.take_exception().expect("missing registry must throw");
+        assert_eq!(
+            rt.class_of(exception),
+            Some("java/lang/IllegalStateException")
+        );
+        store.custom_registries.push("example:custom".into());
+        store.require_holder_value(&mut rt, missing_id);
+        let exception = rt
+            .take_exception()
+            .expect("existing registry has no value yet");
+        assert_eq!(
+            rt.class_of(exception),
+            Some("java/lang/NullPointerException")
+        );
+
+        let seed = store.bind_holder(
+            &mut rt,
+            "ITEM",
+            "minecraft:stone",
+            "net/neoforged/neoforge/registries/DeferredHolder",
+        );
+        let seed_id = rt.handle_of(seed).unwrap().1;
+        assert!(store.holder_value(seed_id).is_none());
+        store.require_holder_value(&mut rt, seed_id);
+        let exception = rt.take_exception().expect("unmaterialized seed must throw");
+        assert_eq!(
+            rt.class_of(exception),
+            Some("java/lang/NullPointerException")
+        );
+    }
 
     #[test]
     fn canonicalizes_registry_names() {
