@@ -92,6 +92,39 @@
 - `guideme/internal/GuideME.class` 引用 DeferredRegister 和 `RegisterPayloadHandlersEvent`；`GuideMEClient.class` 引用 `GatherDataEvent`；`GuideMEClient$ClientConfig.class` 引用 `ModConfigSpec`。客户端入口在专用服务器上跳过。
 - 独立探测同样在构造停于 `DeferredRegister$Items.registerItem(String,Function,Item$Properties)`；注册、setup、tick、书本内容交互、渲染未到达。
 
+## 并发远端记录中的四个模组：本机重新下载与核验
+
+以下四项没有沿用远端 Linux 会话的测试结论。本机重新请求准确版本 API、项目 API，下载官方文件，并分别比对 SHA-1 与 SHA-512。版本 API 均含 `neoforge` 和 `1.21.1`，均未声明额外的 Modrinth 模组依赖；项目 API 的客户端与服务器状态均为 `optional`。下列运行结果来自 Windows 专用服务器 probe，不能据此推定客户端或 Mixin 功能已经生效。
+
+### FerriteCore 7.0.3
+
+- [版本 API x7kQWVju](https://api.modrinth.com/v2/version/x7kQWVju)、[项目 API uXXizFIs](https://api.modrinth.com/v2/project/uXXizFIs)、[官方源码](https://github.com/malte0811/FerriteCore)。版本号 `7.0.3-neoforge`，MIT；jar 元数据同为 MIT。
+- [官方 jar](https://cdn.modrinth.com/data/uXXizFIs/versions/x7kQWVju/ferritecore-7.0.3-neoforge.jar)：`ferritecore-7.0.3-neoforge.jar`，121,559 bytes。SHA-1 `9563692efb708b6b568df27a01ec52f6311928ef`；SHA-512 `19af89a2075bb10a63884fa853ebf84b02c79dc3242430ecdad056fd764fdcde367a7303276b329df01b0736e2ef264c5d80c7dc92c6aebd244f556a230bb417`。
+- jar 要求 NeoForge `[21.1.218,)`、Minecraft `[1.21.1,1.22)`，均为 BOTH。目标 21.1.266 / 1.21.1 满足范围。
+- 本机解析 77 个 class，实际发现并构造 `malte0811/ferritecore/ModMainForge`。`javap` 确认构造器只调用 `Object.<init>`；注册、setup 走完加载器阶段，0 注册项、0 配置、0 通道、0 监听器、0 回调，单次建模 tick 返回成功。jar 声明十个 Mixin 配置；真实区块、状态表、模型内存路径未验证，不能据此声称内存优化有效或更快。
+
+### Cloth Config 15.0.140
+
+- [版本 API izKINKFg](https://api.modrinth.com/v2/version/izKINKFg)、[项目 API 9s6osm5g](https://api.modrinth.com/v2/project/9s6osm5g)、[官方源码](https://github.com/shedaniel/ClothConfig/)。版本号 `15.0.140+neoforge`；项目许可证 `LGPL-3.0-only`，jar 标为 GNU LGPLv3 并附 `LICENSE.md`。
+- [官方 jar](https://cdn.modrinth.com/data/9s6osm5g/versions/izKINKFg/cloth-config-15.0.140-neoforge.jar)：`cloth-config-15.0.140-neoforge.jar`，1,163,890 bytes。SHA-1 `c3e5733ba4503b102589a026000fd5ce0212f6f2`；SHA-512 `aaf9b010955b8cd294e5a92f069985b18729fd5e2cf22d351f1dff9680f15488688803ec41e77e941cbde130ceb535014ca4c868047d80ab69c2d508e216654d`。
+- jar 要求 NeoForge `[21.0.110-beta,)`，BOTH；Minecraft 1.21.1 由版本 API 确认，jar 未声明单独范围。没有额外必需模组。
+- 本机解析 633 个 class，构造 `me/shedaniel/clothconfig/ClothConfigForge`，加载器运行至 Running，0 注册项、0 配置、0 通道、0 监听器、0 回调，单次建模 tick 返回成功。构造器不是空的：它检查 `FMLEnvironment.dist.isClient()`；本次服务器分支跳过 `ClothConfigForgeDemo.registerModsPage()`，配置界面及渲染未执行。
+
+### AppleSkin 3.0.9
+
+- [版本 API uAKA6Laj](https://api.modrinth.com/v2/version/uAKA6Laj)、[项目 API EsAfCjCV](https://api.modrinth.com/v2/project/EsAfCjCV)、[官方源码](https://github.com/squeek502/AppleSkin)。版本号 `3.0.9+mc1.21`；The Unlicense，项目 API 与 jar 一致。
+- [官方 jar](https://cdn.modrinth.com/data/EsAfCjCV/versions/uAKA6Laj/appleskin-neoforge-mc1.21-3.0.9.jar)：`appleskin-neoforge-mc1.21-3.0.9.jar`，75,804 bytes。SHA-1 `81cf0e668f991f83ac8820c386fbd6c9c3602246`；SHA-512 `f4ea46273e407334b63e262e2555c9a8204f7b5e60f23f272fbaa83ad9e88800e0ee186aca840710df2dbe0a18b37758695fef2ae1a902c10b3706e3de772937`。
+- jar 要求 NeoForge `[21.0.0-beta,)`，依赖端标 CLIENT；版本 API 同时列出 Minecraft 1.21、1.21.1、1.21.2。实际 `@Mod` 入口未限定 CLIENT，服务器 probe 选择了 `squeek/appleskin/AppleSkin(IEventBus,ModContainer)`。
+- 本机解析 36 个 class，构造、加载器注册及 setup 完成，0 注册项、1 配置、2 payload 通道、3 监听器、1 次回调、31 次加载器事件，单次建模 tick 返回成功。没有进行客户端连接、实际 payload 交换、饥饿/饱和度 HUD 或渲染检查。
+
+### Clumps 19.0.0.1
+
+- [版本 API jo7lDoK4](https://api.modrinth.com/v2/version/jo7lDoK4)、[项目 API Wnxd13zP](https://api.modrinth.com/v2/project/Wnxd13zP)、[官方源码](https://github.com/jaredlll08/Clumps)。版本号 `19.0.0.1`；MIT，项目 API 与 jar 一致。
+- [官方 jar](https://cdn.modrinth.com/data/Wnxd13zP/versions/jo7lDoK4/Clumps-neoforge-1.21.1-19.0.0.1.jar)：`Clumps-neoforge-1.21.1-19.0.0.1.jar`，18,382 bytes。SHA-1 `fa2576297c7bd12b28aa7070e8141792bd66da4c`；SHA-512 `314d8d8e640d73041f27e0f3f2cad7aad8b4c77dbd7fb31700ef7760362261f77085eed5289555c725d99c3f47a114e7290cd608f39c9f0f12ef74958463bdcc`。
+- jar 明确写入 NeoForge `[4,)`、Minecraft `[1.21.1]`，BOTH；前者按发布原始范围记录，没有擅自改成 `[21.1,)`。
+- 本机解析 15 个 class，确实发现并执行 `@Mod("clumps")` 的 `com/blamejared/clumps/Clumps`。构造器将一个 `BiPredicate` 赋给 `ClumpsCommon.pickupXPEvent`，没有注册事件监听器；该 lambda 被调用时会创建并发布 `PlayerXpEvent.PickupXp`。因此 probe 的 0 监听器不能直接归因为遗漏 `@Mod` 或事件订阅扫描。
+- 加载器构造、注册、setup 返回成功，0 注册项、0 配置、0 通道、0 监听器、0 回调，单次建模 tick 返回成功。`clumps.mixins.json` 要求 `ExperienceOrbAccess` 和 `MixinExperienceOrb`，真正的经验球实体、合并、拾取和修补路径未执行；缺少这些行为证据时不算 Clumps 玩法兼容。
+
 ## 复现命令
 
 以下 PowerShell 命令在仓库根目录执行。一次只加载一个主要模组及其必需依赖，避免可选集成改变首个失败点。
@@ -106,4 +139,4 @@ cargo build -p mmga-neoforge --release --example probe
 & target/release/examples/probe.exe --dedicated-server '.local/mods/ponder-neoforge-1.0.82+mc1.21.1.jar'
 ```
 
-首次结果使用远端起点 `68c50cd` 构建的 release probe。Ponder 独立运行的 trace 为 `discovered → constructed → registered → common-setup → sided-setup → load-complete → server-started → running`，有 1 个模组注册条目、1 个配置、3 个命令、5 个监听器，无 loading issue；`tick_server(1)` 返回成功。但这是 MMGA 的建模生命周期和单次建模 tick，不证明 Ponder 客户端场景、世界模拟或渲染可用，也没有构成与官方 NeoForge 的性能对照。
+最初五个主要新增模组的结果使用远端起点 `68c50cd` 构建的 release probe；四个补充模组使用后续构建，并在最终 `a417383` 统一复测。Ponder 独立运行的 trace 为 `discovered → constructed → registered → common-setup → sided-setup → load-complete → server-started → running`，有 1 个模组注册条目、1 个配置、3 个命令、5 个监听器，无 loading issue；`tick_server(1)` 返回成功。但这是 MMGA 的建模生命周期和单次建模 tick，不证明 Ponder 客户端场景、世界模拟或渲染可用，也没有构成与官方 NeoForge 的性能对照。最终阻塞与各阶段结论以 [compatibility.md](compatibility.md) 为准。
