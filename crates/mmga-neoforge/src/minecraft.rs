@@ -132,23 +132,6 @@ pub fn get_static_field(rt: &mut Rt, owner: &str, name: &str) -> Option<V> {
         rt.pin(obj);
         return Some(obj);
     }
-    if owner == "net/minecraft/core/Direction" {
-        let ord = match name {
-            "DOWN" => 0,
-            "UP" => 1,
-            "NORTH" => 2,
-            "SOUTH" => 3,
-            "WEST" => 4,
-            "EAST" => 5,
-            _ => return None,
-        };
-        let obj = rt.new_instance(owner, 0);
-        let en = rt.intern_str(name);
-        rt.put_field(obj, "$name", en);
-        rt.put_field(obj, "$ordinal", V::I(ord));
-        rt.pin(obj);
-        return Some(obj);
-    }
     if owner == "net/minecraft/world/level/material/MapColor" {
         return map_color_constant(rt, name);
     }
@@ -3765,6 +3748,25 @@ mod tests {
         let bold = chat_formatting_constant(&mut rt, "BOLD").unwrap();
         let no_color = call_chat(&mut rt, &lang, &MemberRef::new(owner, "fromLegacyFormat", "(Lnet/minecraft/ChatFormatting;)Lnet/minecraft/network/chat/TextColor;"), true, &[bold]).unwrap();
         assert!(no_color.is_null());
+    }
+
+    #[test]
+    fn text_color_object_overrides_run_through_the_vm() {
+        let mut prepared = crate::PreparedLoad::from_jars(Vec::new(), true).unwrap();
+        let mut rt = Rt::new();
+        let mut ctx = ExecCtx { rt: &mut rt, linked: &prepared.linked, host: &mut prepared.loader, depth: 0 };
+        let ctor = MemberRef::new("net/minecraft/network/chat/TextColor", "fromRgb", "(I)Lnet/minecraft/network/chat/TextColor;");
+        let left = mmga_runtime::invoke_member(&mut ctx, mmga_classfile::op::INVOKESTATIC, &ctor, &[V::I(0xff123456u32 as i32)]);
+        let right = mmga_runtime::invoke_member(&mut ctx, mmga_classfile::op::INVOKESTATIC, &ctor, &[V::I(0x123456)]);
+        for owner in ["net/minecraft/network/chat/TextColor", "java/lang/Object"] {
+            let same = mmga_runtime::invoke_member(&mut ctx, mmga_classfile::op::INVOKEVIRTUAL, &MemberRef::new(owner, "equals", "(Ljava/lang/Object;)Z"), &[left, right]);
+            assert_eq!(same, V::TRUE);
+            let hash = mmga_runtime::invoke_member(&mut ctx, mmga_classfile::op::INVOKEVIRTUAL, &MemberRef::new(owner, "hashCode", "()I"), &[left]);
+            assert_eq!(hash.i(), (31i32 + 0x123456) * 31);
+            let text = mmga_runtime::invoke_member(&mut ctx, mmga_classfile::op::INVOKEVIRTUAL, &MemberRef::new(owner, "toString", "()Ljava/lang/String;"), &[left]);
+            assert_eq!(ctx.rt.str_of(text), Some("#123456"));
+        }
+        assert!(ctx.rt.pending_exception.is_none());
     }
 
     #[test]

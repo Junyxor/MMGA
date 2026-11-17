@@ -1666,6 +1666,9 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::attributes::get_static_field(rt, &mut self.state.registries, owner, name, desc) {
             return Some(value);
         }
+        if let Some(value) = crate::direction::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
         if let Some(value) = crate::codecs::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
@@ -1791,6 +1794,9 @@ impl HostApi for FmlLoader {
             return Some(value);
         }
         if let Some(value) = crate::minecraft::call_fast_color(member, is_static, args) {
+            return Some(value);
+        }
+        if let Some(value) = crate::direction::call(rt, member, is_static, args) {
             return Some(value);
         }
         if let Some(value) = crate::attributes::call(rt, member, is_static, args) {
@@ -1954,6 +1960,37 @@ impl HostApi for FmlLoader {
 
     fn is_api_subtype(&self, sub_class: &str, super_class: &str) -> bool {
         if sub_class == super_class {
+            return true;
+        }
+        // These host-owned values have no bytecode superclass/interface table.
+        // Keep the exact 1.21.1 hierarchy visible to CHECKCAST, INSTANCEOF, and Class.
+        if sub_class == "net/minecraft/network/codec/StreamCodec"
+            && matches!(super_class,
+                "net/minecraft/network/codec/StreamEncoder"
+                    | "net/minecraft/network/codec/StreamDecoder")
+        {
+            return true;
+        }
+        if sub_class == "net/minecraft/world/entity/ai/attributes/RangedAttribute"
+            && super_class == "net/minecraft/world/entity/ai/attributes/Attribute"
+        {
+            return true;
+        }
+        if matches!(sub_class,
+            "net/minecraft/core/Direction"
+                | "net/minecraft/world/item/ArmorItem$Type"
+                | "net/minecraft/world/entity/EquipmentSlot"
+                | "net/minecraft/world/entity/EquipmentSlot$Type")
+            && matches!(super_class, "java/lang/Enum" | "java/lang/Comparable" | "java/io/Serializable")
+        {
+            return true;
+        }
+        if matches!(sub_class,
+            "net/minecraft/core/Direction"
+                | "net/minecraft/world/item/ArmorItem$Type"
+                | "net/minecraft/world/entity/EquipmentSlot")
+            && super_class == "net/minecraft/util/StringRepresentable"
+        {
             return true;
         }
         if crate::components::is_subtype(sub_class, super_class) {
@@ -2803,5 +2840,118 @@ side = "BOTH"
             String::from_utf8_lossy(&packed.stderr)
         );
         Some(jar_path)
+    }
+
+    #[test]
+    fn modeled_api_values_preserve_reflective_assignability() {
+        let mut prepared = PreparedLoad::from_jars(Vec::new(), true).unwrap();
+        let mut rt = Rt::new();
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &prepared.linked,
+            host: &mut prepared.loader,
+            depth: 0,
+        };
+        for (owner, field, desc, parents, unrelated) in [
+            (
+                "net/minecraft/network/codec/ByteBufCodecs",
+                "INT",
+                "Lnet/minecraft/network/codec/StreamCodec;",
+                &[
+                    "net/minecraft/network/codec/StreamEncoder",
+                    "net/minecraft/network/codec/StreamDecoder",
+                ][..],
+                "net/minecraft/network/codec/StreamMemberEncoder",
+            ),
+            (
+                "net/minecraft/core/Direction",
+                "NORTH",
+                "Lnet/minecraft/core/Direction;",
+                &[
+                    "java/lang/Enum",
+                    "java/lang/Comparable",
+                    "java/io/Serializable",
+                    "net/minecraft/util/StringRepresentable",
+                ][..],
+                "net/minecraft/world/item/ArmorItem$Type",
+            ),
+            (
+                "net/minecraft/world/item/ArmorItem$Type",
+                "HELMET",
+                "Lnet/minecraft/world/item/ArmorItem$Type;",
+                &["java/lang/Enum", "net/minecraft/util/StringRepresentable"][..],
+                "net/minecraft/core/Direction",
+            ),
+            (
+                "net/minecraft/world/entity/EquipmentSlot",
+                "HEAD",
+                "Lnet/minecraft/world/entity/EquipmentSlot;",
+                &["java/lang/Enum", "net/minecraft/util/StringRepresentable"][..],
+                "net/minecraft/world/entity/EquipmentSlot$Type",
+            ),
+            (
+                "net/minecraft/world/entity/EquipmentSlot$Type",
+                "HUMANOID_ARMOR",
+                "Lnet/minecraft/world/entity/EquipmentSlot$Type;",
+                &["java/lang/Enum", "java/io/Serializable"][..],
+                "net/minecraft/util/StringRepresentable",
+            ),
+        ] {
+            let instance = mmga_runtime::read_static_field(&mut ctx, owner, field, desc);
+            assert!(ctx.rt.pending_exception.is_none(), "missing {owner}.{field}");
+            let actual_class = invoke_member(
+                &mut ctx,
+                op::INVOKEVIRTUAL,
+                &MemberRef::new("java/lang/Object", "getClass", "()Ljava/lang/Class;"),
+                &[instance],
+            );
+            for (parent, expected) in parents.iter().copied().map(|p| (p, V::TRUE))
+                .chain(std::iter::once((unrelated, V::FALSE)))
+            {
+                let target = ctx.rt.new_pinned_handle("java/lang/Class", "class", 0, parent);
+                let assignable = invoke_member(
+                    &mut ctx,
+                    op::INVOKEVIRTUAL,
+                    &MemberRef::new("java/lang/Class", "isAssignableFrom", "(Ljava/lang/Class;)Z"),
+                    &[target, actual_class],
+                );
+                assert_eq!(assignable, expected, "{owner}.{field} assignable to {parent}");
+                let is_instance = invoke_member(
+                    &mut ctx,
+                    op::INVOKEVIRTUAL,
+                    &MemberRef::new("java/lang/Class", "isInstance", "(Ljava/lang/Object;)Z"),
+                    &[target, instance],
+                );
+                assert_eq!(is_instance, expected, "{owner}.{field} instanceof {parent}");
+                assert_eq!(invoke_member(
+                    &mut ctx,
+                    op::INVOKEVIRTUAL,
+                    &MemberRef::new("java/lang/Class", "isAssignableFrom", "(Ljava/lang/Class;)Z"),
+                    &[actual_class, target],
+                ), V::FALSE, "{parent} is not a subtype of the concrete value");
+            }
+        }
+        let ranged = ctx.rt.new_pinned_handle(
+            "java/lang/Class", "class", 0,
+            "net/minecraft/world/entity/ai/attributes/RangedAttribute",
+        );
+        let attribute = ctx.rt.new_pinned_handle(
+            "java/lang/Class", "class", 0,
+            "net/minecraft/world/entity/ai/attributes/Attribute",
+        );
+        assert_eq!(invoke_member(
+            &mut ctx,
+            op::INVOKEVIRTUAL,
+            &MemberRef::new("java/lang/Class", "isAssignableFrom", "(Ljava/lang/Class;)Z"),
+            &[attribute, ranged],
+        ), V::TRUE);
+        assert_eq!(invoke_member(
+            &mut ctx,
+            op::INVOKEVIRTUAL,
+            &MemberRef::new("java/lang/Class", "isAssignableFrom", "(Ljava/lang/Class;)Z"),
+            &[ranged, attribute],
+        ), V::FALSE);
+        assert!(!ctx.linked.is_subtype("example/UnknownEnum", "java/lang/Enum", ctx.host));
+        assert!(ctx.rt.pending_exception.is_none());
     }
 }

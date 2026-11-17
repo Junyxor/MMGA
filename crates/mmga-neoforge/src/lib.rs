@@ -10,6 +10,7 @@ pub mod bus;
 pub mod codecs;
 pub mod common_components;
 pub mod components;
+pub mod direction;
 pub mod loader;
 pub mod minecraft;
 pub mod registries;

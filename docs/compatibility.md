@@ -18,6 +18,8 @@ CommonComponents 检查点：`space()` 每次构造独立的单空格 MutableCom
 
 属性注册审查修复：原版 Attributes 常量现在将真实值登记到 `minecraft:attribute` 并返回稳定的 `Holder$Reference`，`Registry.get/getKey` 与常量指向同一值。两个回归通过真实 VM 检查双向查找、静态身份、默认值和错误签名，不再出现常量可读而注册表返回 null 的矛盾。
 
+Direction 检查点：六个 enum 常量保持原版顺序和身份，`values()` 返回独立数组，非法/null valueOf 抛准确异常，字符串按原版为小写。两个回归通过实际 VM。Mekanism 原 jar 当前停在 `RelativeSide.<clinit>` 的 `StringRepresentable.fromEnum(Supplier)`，需要真实枚举/DFU codec；构造未完成，注册/setup/tick/玩法/渲染尚未到达。同步补齐 StreamCodec 的 Encoder/Decoder、枚举的 Enum/StringRepresentable 等精确继承关系，并通过真实 Class.isAssignableFrom/isInstance 验证。
+
 ## 2026-11-17 继续推进（Linux，基线仍是 1.21.1 / NeoForge 21.1.266）
 
 本轮在 `12472a2`（ARGB32）之上实现了 Create 实际读取的原版 `SoundEvents`（按 jar 里的字段类型返回 `SoundEvent` 或 `Holder`）、Mekanism 用到的 `Attributes` 默认值、`TextColor.fromRgb`、`ArmorMaterial` 数据、`ArmorItem.Type.values`，以及 Java 21 的 `List.getFirst` / `getLast`。`DeferredHolder.create(ResourceKey, ResourceLocation)` 会登记一个尚未绑定的 holder，注册同名条目后才能 `get()`。没有为了过探针填默认返回值。
