@@ -1778,6 +1778,9 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::wood_types::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
+        if let Some(value) = crate::weathering_copper::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
         if let Some(value) = crate::block_entities::get_static_field(rt, &mut self.state.registries, owner, name, desc) {
             return Some(value);
         }
@@ -2001,6 +2004,9 @@ impl HostApi for FmlLoader {
             return Some(value);
         }
         if let Some(value) = crate::wood_types::call(rt, member, is_static, args) {
+            return Some(value);
+        }
+        if let Some(value) = crate::weathering_copper::call(rt, member, is_static, args) {
             return Some(value);
         }
         if let Some(value) = crate::registry_holders::call(rt, &mut self.state.registries, member, is_static, args) {
@@ -2333,6 +2339,9 @@ impl HostApi for FmlLoader {
             return true;
         }
         if crate::wood_types::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::weathering_copper::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::entity_selector_options::is_subtype(sub_class, super_class) {
