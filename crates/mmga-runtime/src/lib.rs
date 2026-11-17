@@ -7,6 +7,7 @@ mod guava_views;
 mod enum_sets;
 mod jdk_state;
 mod reflection;
+mod class_loading;
 pub mod linked;
 pub mod stdlib;
 pub mod value;

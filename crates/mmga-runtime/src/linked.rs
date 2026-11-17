@@ -8,6 +8,9 @@ use mmga_classfile::{
     ClassFile, MemberRef, MethodInfo, MixinWeaveReport, SyntheticBridge, TargetWeavePlan,
 };
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_CLASS_SPACE: AtomicU64 = AtomicU64::new(1);
 
 /// Compiled native Rust method signature emitted by `mmga-aot`.
 /// For instance methods & constructors, `args[0]` is `this` (`V::R(id)`).
@@ -37,6 +40,11 @@ pub struct NativeModuleRegistry {
 
 /// External host boundary (implemented by `mmga-neoforge` / `mmga-horizon`).
 pub trait HostApi {
+    /// Actual resources visible to this linked application classpath. An unknown
+    /// host catalogue is an error, while a known absent resource is `Ok(None)`.
+    fn classpath_resource(&self, _path: &str) -> Result<Option<Vec<u8>>, String> {
+        Err("Host classpath resource catalogue is unavailable".into())
+    }
     /// Resolves a static field read (`GETSTATIC`) on an external/API class.
     fn get_static_field(&mut self, rt: &mut Rt, owner: &str, name: &str, desc: &str) -> Option<V>;
 
@@ -135,8 +143,9 @@ pub enum ResolvedMethod {
 }
 
 /// Unified linked class space holding bytecode classes, woven Mixin plans, and AOT native classes.
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct LinkedSpace {
+    class_space_id: u64,
     pub bytecode_classes: BTreeMap<String, ClassFile>,
     pub mixin_report: MixinWeaveReport,
     /// `META-INF/services/<spi_internal_name>` -> implementation internal class names.
@@ -149,13 +158,29 @@ pub struct LinkedSpace {
     native_lambdas: FxHashMap<u32, NativeLambdaFn>,
 }
 
-impl LinkedSpace {
-    pub fn new() -> Self {
+impl Default for LinkedSpace {
+    fn default() -> Self {
         Self {
-            id_to_class: vec![String::new()], // cid 0 = unlinked
-            ..Default::default()
+            class_space_id: NEXT_CLASS_SPACE.fetch_add(1, Ordering::Relaxed),
+            bytecode_classes: BTreeMap::new(),
+            mixin_report: MixinWeaveReport::default(),
+            services: BTreeMap::new(),
+            class_ids: FxHashMap::default(),
+            id_to_class: vec![String::new()],
+            superclasses: FxHashMap::default(),
+            interfaces: FxHashMap::default(),
+            native_methods: FxHashMap::default(),
+            native_lambdas: FxHashMap::default(),
         }
     }
+}
+
+impl LinkedSpace {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn class_space_id(&self) -> u64 { self.class_space_id }
 
     fn intern_cid(&mut self, class_name: &str) -> u32 {
         if let Some(&cid) = self.class_ids.get(class_name) {
@@ -247,6 +272,11 @@ impl LinkedSpace {
 
     pub fn has_class(&self, class_name: &str) -> bool {
         self.class_ids.contains_key(class_name)
+    }
+
+    /// Presence of an explicit native class definition, even with no methods.
+    pub fn has_native_class(&self, class_name: &str) -> bool {
+        self.native_methods.contains_key(class_name)
     }
 
     pub fn superclass_of<'a>(&'a self, class_name: &str) -> Option<&'a str> {
@@ -490,8 +520,19 @@ pub struct ExecCtx<'a> {
     pub depth: usize,
 }
 
+/// Presence in the finite native JDK declaration table establishes known
+/// bootstrap origin; arbitrary java.* names are not inferred from their prefix.
+pub(crate) fn known_native_jdk_class(cls: &str) -> bool {
+    cls.starts_with("java/") && !jdk_supertypes(cls).is_empty()
+}
+
 fn jdk_supertypes(cls: &str) -> &'static [&'static str] {
     match cls {
+        "mmga/internal/ApplicationClassLoader" | "mmga/internal/PlatformClassLoader" => &["java/lang/ClassLoader"],
+        "mmga/internal/ServiceIterator" => &["java/util/Iterator"],
+        "mmga/internal/ServiceProvider" => &["java/util/ServiceLoader$Provider"],
+        "mmga/internal/ServiceStream" => &["java/util/stream/Stream"],
+        "java/util/ServiceConfigurationError" => &["java/lang/Error"],
         "mmga/internal/IdentityFunction" => &["java/util/function/Function"],
         "java/lang/ThreadLocal$SuppliedThreadLocal" => &["java/lang/ThreadLocal"],
         "java/lang/Throwable" => &["java/io/Serializable"],
@@ -509,7 +550,7 @@ fn jdk_supertypes(cls: &str) -> &'static [&'static str] {
         "java/lang/RuntimeException"
         | "java/io/IOException"
         | "java/lang/ReflectiveOperationException" => &["java/lang/Exception"],
-        "java/lang/reflect/InvocationTargetException" | "java/lang/IllegalAccessException"
+        "java/lang/reflect/InvocationTargetException" | "java/lang/IllegalAccessException" | "java/lang/ClassNotFoundException" | "java/lang/InstantiationException"
         | "java/lang/NoSuchMethodException" | "java/lang/NoSuchFieldException" => &["java/lang/ReflectiveOperationException"],
         "java/io/EOFException" | "java/io/FileNotFoundException" => &["java/io/IOException"],
         "java/io/UncheckedIOException"

@@ -1622,6 +1622,9 @@ impl FmlLoader {
 }
 
 impl HostApi for FmlLoader {
+    fn classpath_resource(&self, path: &str) -> Result<Option<Vec<u8>>, String> {
+        Ok(self.jar_resources.get(path).cloned())
+    }
     fn get_static_field(&mut self, rt: &mut Rt, owner: &str, name: &str, desc: &str) -> Option<V> {
         if owner == "net/neoforged/neoforge/common/NeoForge" && name == "EVENT_BUS" {
             return Some(self.game_bus_handle(rt));
