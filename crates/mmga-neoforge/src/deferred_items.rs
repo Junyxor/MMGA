@@ -26,22 +26,22 @@ pub fn register(
         return None;
     }
     let id = id;
-    if args[1].is_null() {
-        return Some(rt.throw_exception("java/lang/NullPointerException", "Deferred item name"));
-    }
-    let entry_name = rt.str_of(args[1])?.to_owned();
     let Some(register) = registries.deferred_registers.get(&id) else {
         return None;
     };
     if register.registry_key != "minecraft:item" {
         return None;
     }
-    if registries.frozen {
+    if registries.deferred_registration_closed(id) {
         return Some(rt.throw_exception(
             "java/lang/IllegalStateException",
             "Cannot register items after the register event",
         ));
     }
+    if args[1].is_null() {
+        return Some(rt.throw_exception("java/lang/NullPointerException", "Deferred item name"));
+    }
+    let entry_name = rt.str_of(args[1])?.to_owned();
     if register.entries.iter().any(|e| e.name == entry_name) {
         return Some(rt.throw_exception(
             "java/lang/IllegalArgumentException",
@@ -237,5 +237,31 @@ mod tests {
             .registries
             .lookup("item", "test:invalid")
             .is_none());
+    }
+
+    #[test]
+    fn item_registration_from_a_later_registry_supplier_is_rejected_before_global_freeze() {
+        fn late(ctx:&mut ExecCtx<'_>,args:&[V])->V {
+            let dr=ctx.rt.get_field(args[0],"register");
+            let name=ctx.rt.intern_str("too_late");
+            invoke_member(ctx,op::INVOKEVIRTUAL,&MemberRef::new(ITEMS,"registerItem",&format!("(Ljava/lang/String;Ljava/util/function/Function;Lnet/minecraft/world/item/Item$Properties;)L{HOLDER};")),&[dr,name,V::NULL,V::NULL]);
+            ctx.rt.new_instance("test/BlockEntityType",0)
+        }
+        let mut prepared=crate::PreparedLoad::from_jars(Vec::new(),true).unwrap();
+        prepared.linked.register_native_module(NativeModuleRegistry{classes:&[NativeClassDef{
+            name:"test/LateItemRegistration",superclass:Some("java/lang/Object"),interfaces:&["java/util/function/Supplier"],is_interface:false,
+            methods:&[("get.()Ljava/lang/Object;",late,false,false)],
+        }],lambdas:&[]});
+        let mut rt=Rt::new();
+        let dr=prepared.loader.state.registries.create_deferred_register("item","test");
+        let register=rt.new_pinned_handle(ITEMS,"deferred_register",dr,"minecraft:item");
+        let later=prepared.loader.state.registries.create_deferred_register("block_entity_type","test");
+        let supplier=rt.new_instance("test/LateItemRegistration",0);rt.put_field(supplier,"register",register);
+        prepared.loader.state.registries.enqueue_deferred_entry(&mut rt,later,"net/neoforged/neoforge/registries/DeferredHolder","trigger",supplier).unwrap();
+        let result=prepared.bootstrap(&mut rt);
+        assert!(result.is_err(),"late item must not be silently skipped");
+        assert!(result.unwrap_err().contains("IllegalStateException"));
+        assert!(!prepared.loader.state.registries.frozen);
+        assert!(prepared.loader.state.registries.deferred_registers[&dr].entries.is_empty());
     }
 }

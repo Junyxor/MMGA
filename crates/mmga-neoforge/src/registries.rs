@@ -3,7 +3,7 @@
 
 use mmga_runtime::{Rt, V};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// NeoForge canonical `RegisterEvent` dispatch order (matching `GameData.getRegistrationOrder`).
 pub const REGISTRATION_ORDER: &[&str] = &[
@@ -92,6 +92,8 @@ pub struct DeferredRegisterRecord {
     pub namespace: String,
     pub bound_mod_bus: Option<String>,
     pub entries: Vec<PendingDeferredItem>,
+    /// Matches DeferredRegister.seenRegisterEvent: set before its suppliers run.
+    pub seen_register_event: bool,
 }
 
 /// One supplier still waiting for its registry's `RegisterEvent`.
@@ -116,6 +118,8 @@ pub struct RegistryStore {
     /// `registry_key -> (entry_id -> RegisteredEntry)`
     pub entries: BTreeMap<String, BTreeMap<String, RegisteredEntry>>,
     pub custom_registries: Vec<String>,
+    /// Registry event passes already completed, even before the global freeze.
+    pub completed_registries: BTreeSet<String>,
     pub frozen: bool,
 }
 
@@ -134,6 +138,7 @@ impl RegistryStore {
             holders: BTreeMap::new(),
             entries: BTreeMap::new(),
             custom_registries: Vec::new(),
+            completed_registries: BTreeSet::new(),
             frozen: false,
         };
         store.seed_vanilla_defaults();
@@ -191,14 +196,17 @@ impl RegistryStore {
     pub fn create_deferred_register(&mut self, registry_key: &str, namespace: &str) -> u64 {
         self.next_dr_id += 1;
         let id = self.next_dr_id;
+        let registry_key = canonical_registry_key(registry_key);
+        let seen_register_event = self.completed_registries.contains(&registry_key);
         self.deferred_registers.insert(
             id,
             DeferredRegisterRecord {
                 handle_id: id,
-                registry_key: canonical_registry_key(registry_key),
+                registry_key,
                 namespace: namespace.to_owned(),
                 bound_mod_bus: None,
                 entries: Vec::new(),
+                seen_register_event,
             },
         );
         id
@@ -218,6 +226,28 @@ impl RegistryStore {
     /// Freezes registries the way `Registry#freeze` does after the register phase.
     pub fn freeze(&mut self) {
         self.frozen = true;
+    }
+
+    /// The native loader invokes these deferred-register listeners during its
+    /// flush before explicit RegisterEvent callbacks. NeoForge closes each
+    /// DeferredRegister at listener entry, not after its factory returns.
+    pub fn begin_deferred_registration(&mut self, registry_key: &str) {
+        let key = canonical_registry_key(registry_key);
+        for register in self.deferred_registers.values_mut() {
+            if register.registry_key == key {
+                register.seen_register_event = true;
+            }
+        }
+    }
+
+    pub fn finish_registry_event(&mut self, registry_key: &str) {
+        self.completed_registries.insert(canonical_registry_key(registry_key));
+    }
+
+    pub fn deferred_registration_closed(&self, dr_id: u64) -> bool {
+        self.frozen || self.deferred_registers.get(&dr_id).is_some_and(|register| {
+            register.seen_register_event || self.completed_registries.contains(&register.registry_key)
+        })
     }
 
     /// Suppliers in `RegisterEvent` order: `REGISTRATION_ORDER`, then any custom registry keys.
@@ -261,6 +291,13 @@ impl RegistryStore {
         entry_name: &str,
         supplier: V,
     ) -> Option<V> {
+        self.deferred_registers.get(&dr_id)?;
+        if self.deferred_registration_closed(dr_id) {
+            return Some(rt.throw_exception(
+                "java/lang/IllegalStateException",
+                "Cannot register new entries to DeferredRegister after RegisterEvent has been fired.",
+            ));
+        }
         rt.pin(supplier);
         let dr = self.deferred_registers.get_mut(&dr_id)?;
         let full_id = format!("{}:{entry_name}", dr.namespace);
@@ -513,6 +550,25 @@ mod tests {
             "neoforge:attachment_types"
         );
         assert_eq!(canonical_registry_key("FLUID_TYPE"), "neoforge:fluid_type");
+    }
+
+    #[test]
+    fn deferred_register_closes_before_factory_and_after_registry_pass() {
+        let mut store=RegistryStore::new();let mut rt=Rt::new();
+        let items=store.create_deferred_register("item","test");
+        let other=store.create_deferred_register("block_entity_type","test");
+        store.begin_deferred_registration("item");
+        assert!(store.deferred_registration_closed(items));
+        assert!(!store.deferred_registration_closed(other));assert!(!store.frozen);
+        store.enqueue_deferred_entry(&mut rt,items,"net/neoforged/neoforge/registries/DeferredItem","reentrant",V::NULL);
+        let error=rt.take_exception().unwrap();assert!(rt.exception_summary(error).contains("IllegalStateException"));
+        assert!(store.deferred_registers[&items].entries.is_empty());
+        store.finish_registry_event("item");
+        let new_items=store.create_deferred_register("item","later");
+        assert!(store.deferred_registration_closed(new_items));
+        store.enqueue_deferred_entry(&mut rt,new_items,"net/neoforged/neoforge/registries/DeferredItem","late",V::NULL);
+        let error=rt.take_exception().unwrap();assert!(rt.exception_summary(error).contains("IllegalStateException"));
+        assert!(store.deferred_registers[&new_items].entries.is_empty());
     }
 
     #[test]

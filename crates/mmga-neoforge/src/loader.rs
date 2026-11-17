@@ -553,6 +553,7 @@ impl FmlLoader {
                 res?;
             }
             self.flush_registry(rt, linked, key)?;
+            self.state.registries.finish_registry_event(key);
         }
         self.state.registries.freeze();
         Ok(())
@@ -564,6 +565,7 @@ impl FmlLoader {
         linked: &LinkedSpace,
         key: &str,
     ) -> Result<(), String> {
+        self.state.registries.begin_deferred_registration(key);
         let pending: Vec<DeferredSupplier> = self
             .state
             .registries

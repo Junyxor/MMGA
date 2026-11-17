@@ -19,6 +19,7 @@
 - BlockEntityType.COMMAND_BLOCK / ENCHANTING_TABLE 保存真实注册键、holder 和实际构造器 method handle；调用 create 会进入该构造器并在未实现部分明确失败，不返回假实体。两项回归通过；全局未完成 registry 枚举拒绝。Create 显示源初始化推进到 `Util.make(Supplier)`；加入真实 make 回调后进入 AllDisplayTargets，下一阻塞 `BlockEntityType.SIGN`。
 - `Util.make(Supplier)` 与 `make(Object,Consumer)` 真正调用传入函数并保留返回对象、null 和异常行为，两项回归通过。Create 当前推进到显示目标静态初始化 `BlockEntityType.SIGN`；不会把 Supplier 未调用算作成功。
 - NeoForge 的 54 个明确 item tag 常量按官方 source 固定提交逐项映射 `c:` 与 `neoforge:` 路径，未知名称仍失败，不声称 tag 内容已加载。两项回归通过。Mekanism 越过 `Tags$Items.ORES_IRON`，下一阻塞 `PushReaction.NORMAL`（`BlockResourceInfo.<init>`）。
+- 审查补齐每个 DeferredRegister 的 register-event 截止状态：supplier 执行后或 registry 已完成后再添加项目会抛 IllegalStateException，不能接受后永不执行。回归先证明晚注册会静默通过，再修复；deferred 相关 9 项回归通过。
 
 最新验证：**2026-11-17，Windows x86_64，Minecraft 1.21.1 / NeoForge 21.1.266**。实现检查点 `a417383`，Rust `1.98.0`，Java 21。后续文档提交不改变这次探测的代码。三个 crate 仍为 `mmga-classfile`、`mmga-runtime`、`mmga-neoforge`；输入均为官方发布的原始 jar，未修改、未针对桩 API 重编译。
 
