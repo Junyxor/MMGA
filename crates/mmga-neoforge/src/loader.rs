@@ -1660,6 +1660,9 @@ impl HostApi for FmlLoader {
                 _ => None,
             };
         }
+        if let Some(value) = crate::sounds::get_static_field(rt, &mut self.state.registries, owner, name, desc) {
+            return Some(value);
+        }
         if let Some(value) = crate::minecraft::get_static_field(rt, owner, name) {
             return Some(value);
         }
@@ -1770,6 +1773,9 @@ impl HostApi for FmlLoader {
             is_static,
             args,
         ) {
+            return Some(value);
+        }
+        if let Some(value) = crate::sounds::call_sound_event(rt, member, is_static, args) {
             return Some(value);
         }
         if let Some(value) = crate::minecraft::call_fast_color(member, is_static, args) {

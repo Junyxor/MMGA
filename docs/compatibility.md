@@ -2,6 +2,8 @@
 
 同步说明：Windows 续作期间远端另新增 `ca5f00e`。合并时按 Mojang 官方 1.21.1 字节码纠正了其 TextColor 测试：构造器去掉 alpha，`serialize()` 返回名称或 `#RRGGBB` 字符串。该远端提交还引用了未提交的 `RegistryStore.bind_holder`，本轮补齐 deferred holder 的延迟绑定与未绑定访问异常，避免将远端未编译的状态当成已验证基线。
 
+声音值检查点：按官方 jar SHA-1 `30c73b1c5da787909b2f73340419fdf13b9def88` 与 mappings SHA-1 `2244b6f072256667bcd9a73df124d6c58de77992` 实现 Create 使用的 SoundEvent 常量、正确声明类型、静态身份、注册表条目与固定/可变距离。修正 `SHULKER_OPEN` 为 `entity.shulker.open`，未知字段/签名继续失败。三个声音回归测试通过。Create 原 jar 已越过声音表和 `DeferredHolder.create`，合并后复测停在 `CommonComponents.space()`；独立音频播放和渲染尚未实现。
+
 ## 2026-11-17 继续推进（Linux，基线仍是 1.21.1 / NeoForge 21.1.266）
 
 本轮在 `12472a2`（ARGB32）之上实现了 Create 实际读取的原版 `SoundEvents`（按 jar 里的字段类型返回 `SoundEvent` 或 `Holder`）、Mekanism 用到的 `Attributes` 默认值、`TextColor.fromRgb`、`ArmorMaterial` 数据、`ArmorItem.Type.values`，以及 Java 21 的 `List.getFirst` / `getLast`。`DeferredHolder.create(ResourceKey, ResourceLocation)` 会登记一个尚未绑定的 holder，注册同名条目后才能 `get()`。没有为了过探针填默认返回值。

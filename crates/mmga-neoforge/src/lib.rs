@@ -8,6 +8,7 @@ pub mod bus;
 pub mod loader;
 pub mod minecraft;
 pub mod registries;
+pub mod sounds;
 pub mod subsystems;
 pub mod world;
 

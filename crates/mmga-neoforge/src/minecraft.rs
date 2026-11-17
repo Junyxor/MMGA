@@ -48,86 +48,6 @@ pub fn extract_lang_entries(
     }
 }
 
-/// Vanilla `SoundEvents` fields Create 6.0.10 reads while building its sound list.
-/// The third column is the 1.21.1 registry id. The second column matches the
-/// field type in that jar: a bare `SoundEvent`, a `Holder`, or a `Holder$Reference`.
-fn vanilla_sound(name: &str) -> Option<(&'static str, &'static str)> {
-    Some(match name {
-        "ITEM_PICKUP" => ("event", "entity.item.pickup"),
-        "GENERIC_EXPLODE" => ("holder_ref", "entity.generic.explode"),
-        "NOTE_BLOCK_BELL" => ("holder_ref", "block.note_block.bell"),
-        "SAND_BREAK" => ("event", "block.sand.break"),
-        "ITEM_FRAME_ADD_ITEM" => ("event", "entity.item_frame.add_item"),
-        "ITEM_FRAME_ROTATE_ITEM" => ("event", "entity.item_frame.rotate_item"),
-        "WOOL_BREAK" => ("event", "block.wool.break"),
-        "SHULKER_OPEN" => ("event", "block.shulker_box.open"),
-        "SLIME_BLOCK_PLACE" => ("event", "block.slime_block.place"),
-        "ANVIL_LAND" => ("event", "block.anvil.land"),
-        "ITEM_BREAK" => ("event", "entity.item.break"),
-        "WOOL_HIT" => ("event", "block.wool.hit"),
-        "GILDED_BLACKSTONE_BREAK" => ("event", "block.gilded_blackstone.break"),
-        "NETHERRACK_BREAK" => ("event", "block.netherrack.break"),
-        "WOOD_PLACE" => ("event", "block.wood.place"),
-        "WOODEN_BUTTON_CLICK_OFF" => ("event", "block.wooden_button.click_off"),
-        "NOTE_BLOCK_BASEDRUM" => ("holder_ref", "block.note_block.basedrum"),
-        "NOTE_BLOCK_HAT" => ("holder_ref", "block.note_block.hat"),
-        "NOTE_BLOCK_BASS" => ("holder_ref", "block.note_block.bass"),
-        "WARDEN_TENDRIL_CLICKS" => ("event", "entity.warden.tendril_clicks"),
-        "FROG_TONGUE" => ("event", "entity.frog.tongue"),
-        "ITEM_FRAME_BREAK" => ("event", "entity.item_frame.break"),
-        "WEEPING_VINES_BREAK" => ("event", "block.weeping_vines.break"),
-        "WOODEN_TRAPDOOR_OPEN" => ("event", "block.wooden_trapdoor.open"),
-        "CHEST_OPEN" => ("event", "block.chest.open"),
-        "IRON_TRAPDOOR_CLOSE" => ("event", "block.iron_trapdoor.close"),
-        "WOODEN_TRAPDOOR_CLOSE" => ("event", "block.wooden_trapdoor.close"),
-        "NETHERITE_BLOCK_HIT" => ("event", "block.netherite_block.hit"),
-        "CHISELED_BOOKSHELF_BREAK" => ("event", "block.chiseled_bookshelf.break"),
-        "ARMOR_EQUIP_GOLD" => ("holder", "item.armor.equip_gold"),
-        "BOOK_PUT" => ("event", "item.book.put"),
-        "ITEM_FRAME_REMOVE_ITEM" => ("event", "entity.item_frame.remove_item"),
-        "BOAT_PADDLE_LAND" => ("event", "entity.boat.paddle_land"),
-        "UI_STONECUTTER_TAKE_RESULT" => ("event", "ui.stonecutter.take_result"),
-        "GENERIC_EAT" => ("event", "entity.generic.eat"),
-        "BARREL_OPEN" => ("event", "block.barrel.open"),
-        "NETHERITE_BLOCK_PLACE" => ("event", "block.netherite_block.place"),
-        "NETHERRACK_HIT" => ("event", "block.netherrack.hit"),
-        "GRAVEL_PLACE" => ("event", "block.gravel.place"),
-        "NETHERITE_BLOCK_BREAK" => ("event", "block.netherite_block.break"),
-        "BELL_BLOCK" => ("event", "block.bell.use"),
-        "ARMOR_EQUIP_LEATHER" => ("holder", "item.armor.equip_leather"),
-        "ARMOR_EQUIP_NETHERITE" => ("holder", "item.armor.equip_netherite"),
-        _ => return None,
-    })
-}
-
-fn new_sound_event(rt: &mut Rt, path: &str) -> V {
-    let event = rt.new_instance("net/minecraft/sounds/SoundEvent", 0);
-    let id = format!("minecraft:{path}");
-    let location = new_rl_handle(rt, &id);
-    rt.put_field(event, "location", location);
-    rt.pin(event);
-    event
-}
-
-fn sound_static(rt: &mut Rt, name: &str) -> Option<V> {
-    let (kind, path) = vanilla_sound(name)?;
-    let event = new_sound_event(rt, path);
-    if kind == "event" {
-        return Some(event);
-    }
-    let class = if kind == "holder_ref" {
-        "net/minecraft/core/Holder$Reference"
-    } else {
-        "net/minecraft/core/Holder"
-    };
-    let holder = rt.new_instance(class, 0);
-    let key = new_resource_key(rt, "minecraft:sound_event", &format!("minecraft:{path}"));
-    rt.put_field(holder, "$value", event);
-    rt.put_field(holder, "$key", key);
-    rt.pin(holder);
-    Some(holder)
-}
-
 /// 1.21.1 `Attributes` defaults. Ids still use the `generic.` prefix from that version.
 fn vanilla_attribute(name: &str) -> Option<(&'static str, f64)> {
     Some(match name {
@@ -269,9 +189,6 @@ pub fn call_armor_layer(rt: &mut Rt, member: &MemberRef, is_static: bool, args: 
 
 /// Static field lookups for `Component`, `Style`, `ChatFormatting`, and `com/sun/jna/Platform`.
 pub fn get_static_field(rt: &mut Rt, owner: &str, name: &str) -> Option<V> {
-    if owner == "net/minecraft/sounds/SoundEvents" {
-        return sound_static(rt, name);
-    }
     if owner == "net/minecraft/world/entity/ai/attributes/Attributes" {
         return attribute_static(rt, name);
     }
@@ -3030,7 +2947,7 @@ pub fn call_keys_authlib_and_libs(
         if let Some(("deferred_holder", hid, full_id, _)) = rt.handle_of(recv) {
             let full_id = full_id.to_owned();
             return match name {
-                "value" | "get" => Some(registries.holder_value(hid).unwrap_or(V::NULL)),
+                "value" | "get" => Some(registries.require_holder_value(rt, hid)),
                 "isBound" => Some(V::bool(
                     registries.holder_value(hid).is_some_and(|v| !v.is_null()),
                 )),
