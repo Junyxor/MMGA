@@ -492,6 +492,8 @@ pub struct ExecCtx<'a> {
 
 fn jdk_supertypes(cls: &str) -> &'static [&'static str] {
     match cls {
+        "mmga/internal/IdentityFunction" => &["java/util/function/Function"],
+        "java/lang/ThreadLocal$SuppliedThreadLocal" => &["java/lang/ThreadLocal"],
         "java/lang/Throwable" => &["java/io/Serializable"],
         "java/lang/Error" | "java/lang/Exception" => &["java/lang/Throwable"],
         "java/lang/LinkageError" | "java/lang/AssertionError" | "java/lang/VirtualMachineError" => {

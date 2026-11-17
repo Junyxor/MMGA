@@ -79,6 +79,10 @@ pub fn stdlib_call(
     let name = member.name.as_str();
     let desc = member.desc.as_str();
 
+    if let Some(value) = crate::jdk_state::call(ctx, member, is_static, args) {
+        return Some(value);
+    }
+
     // 0. Functional interfaces (`Consumer`, `Supplier`, `Function`, `BiFunction`, `Predicate`, `Runnable`, `Callable`, etc.)
     //    when the receiver is a `Data::Closure`!
     if !is_static {

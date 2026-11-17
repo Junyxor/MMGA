@@ -9,6 +9,7 @@
 - DeferredHolder 的 key/id/bound 状态与 factory、受保护构造器已保留真实引用，Registrate 子类不丢自身字段。4 项回归覆盖未绑定元数据、注册后绑定、异常和 subclass 构造。Create 越过 `getKey` 与 `DeferredHolder.<init>(ResourceKey)`，下一个阻塞是 `MarkerManager.getMarker`（Registrate `DebugMarkers.marker`）；仍在构造阶段。
 - 新增可执行 DFU 8.0.16 子集：JsonOps/DataResult、原始 Codec、ResourceLocation/UUID 四整数编码、字段/optional/default、list/xmap/验证、RecordCodecBuilder getter/group/apply/constructor 与 MapCodec.unit 的真实 JSON 往返和 partial error。7 项回归通过，非 JsonOps、压缩 record map、尚未实现节点明确失败。Sophisticated Core 已实际注册 8 项，当前停在 `ComponentSerialization.CODEC`（`ender_linker_target`）；Curios 推进到 `AttributeModifier.MAP_CODEC`；Balm 越过 unit 后停在 `Tables.synchronizedTable`。三者尚未完成注册/setup。
 - StringRepresentable 枚举 codec 已按真实 supplier、名称映射、16 元素阈值、byName 默认值和 compressed ordinal 规则执行，4 项 VM+JSON 回归通过；未知名称返回 DataResult error。Mekanism 越过 `RelativeSide`，推进到 `Function.identity()`（`TransmissionType.<clinit>`）；随后补齐 identity 后再推进至 `DyeColor.BLACK`，仍在构造。
+- JDK `Function.identity` 保持对象/null 原样返回；ThreadLocal 按执行线程保存值并支持 initialValue/withInitial/set/remove，未模拟 Thread.start。两个回归先失败后通过，包括跨原生线程的状态隔离。AE2 越过 ThreadLocal 构造，下一阻塞 `SidedThreadGroups.SERVER`；GuideME 构造已完成，注册/setup 未到达。
 
 最新验证：**2026-11-17，Windows x86_64，Minecraft 1.21.1 / NeoForge 21.1.266**。实现检查点 `a417383`，Rust `1.98.0`，Java 21。后续文档提交不改变这次探测的代码。三个 crate 仍为 `mmga-classfile`、`mmga-runtime`、`mmga-neoforge`；输入均为官方发布的原始 jar，未修改、未针对桩 API 重编译。
 
