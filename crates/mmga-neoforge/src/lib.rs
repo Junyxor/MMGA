@@ -27,6 +27,7 @@ pub mod resource_reload;
 pub mod sounds;
 pub mod string_representable;
 pub mod subsystems;
+pub mod tags;
 pub mod util_values;
 pub mod world;
 
