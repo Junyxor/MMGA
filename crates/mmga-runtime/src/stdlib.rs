@@ -82,6 +82,9 @@ pub fn stdlib_call(
     if let Some(value) = crate::jdk_state::call(ctx, member, is_static, args) {
         return Some(value);
     }
+    if let Some(value) = crate::reflection::call(ctx, member, is_static, args) {
+        return Some(value);
+    }
 
     // 0. Functional interfaces (`Consumer`, `Supplier`, `Function`, `BiFunction`, `Predicate`, `Runnable`, `Callable`, etc.)
     //    when the receiver is a `Data::Closure`!

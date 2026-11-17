@@ -255,13 +255,26 @@ impl Rt {
         id: u64,
         tag: impl Into<String>,
     ) -> V {
+        let class = class.into();
+        let tag = tag.into();
+        // One Class object per linked class-space name, including literals and
+        // reflection metadata. Java code legitimately compares these with ==.
+        if class == "java/lang/Class" && kind == "class" {
+            let key = format!("$class:{tag}");
+            if let Some(value) = self.get_static("mmga/internal/ClassObjects", &key) {
+                return value;
+            }
+            let value = self.alloc_pinned(class, 0, Data::NativeHandle { kind, id, tag, payload: [0, 0] });
+            self.put_static("mmga/internal/ClassObjects", &key, value);
+            return value;
+        }
         self.alloc_pinned(
             class,
             0,
             Data::NativeHandle {
                 kind,
                 id,
-                tag: tag.into(),
+                tag,
                 payload: [0, 0],
             },
         )
