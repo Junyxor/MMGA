@@ -27,6 +27,7 @@
 - AE2 的构造器与 public 方法反射直接读取 linked 原始 classfile，保留签名、public/default 方法 declaring class；外部祖先元数据不全会明确失败，不伪称 NoSuchMethod。Class 对象按 class-space 名称保持身份。两项回归通过；AE2 越过 GridServices 反射检查，推进到 PartModelsHelper 的 `Class.getDeclaredFields()`；仍未完成构造。
 - CustomData/CompoundTag 的已实现 JSON 路径保留 NBT 数值类型、数组/list/compound 和深拷贝；getUnsafe 保留引用，SNBT/binary/未实现实体数据明确失败。ItemStack.EMPTY 与 optional JSON codec 保持空栈规则，已知非空 item 使用真实 registry 和 item prototype；未知组件原型不伪造。Codec.orElse 只处理真实 DataResult error，绝不吞未实现异常，decode remainder 保留原输入。Core/Backpacks 已实际注册 **21 项**，下一阻塞 `Codec.lazyInitialized(Supplier)`（`cooking_inventory`）；玩法/渲染未验证。
 - PushReaction 五个值按官方 enum 顺序及身份实现，values/valueOf 与异常两项回归通过。Mekanism 越过方块资源反应初始化，下一阻塞 NoteBlockInstrument.BASEDRUM；不代表活塞行为已实现。
+- AttachmentType serializable builder 保留 default supplier、serializer、copy handler 与 flags；read/write/copy 真正调用原始 INBTSerializable 方法，不伪造 NBT。3 项回归验证延迟创建、原对象/holder/provider/tag 传递与异常。Curios 已注册 4 项，下一阻塞为继承的 LootItemConditionalFunction.commonFields；世界实体 attachment 存储路径仍未验证。
 
 最新验证：**2026-11-17，Windows x86_64，Minecraft 1.21.1 / NeoForge 21.1.266**。实现检查点 `a417383`，Rust `1.98.0`，Java 21。后续文档提交不改变这次探测的代码。三个 crate 仍为 `mmga-classfile`、`mmga-runtime`、`mmga-neoforge`；输入均为官方发布的原始 jar，未修改、未针对桩 API 重编译。
 

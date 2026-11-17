@@ -6,6 +6,7 @@
 
 pub mod armor;
 pub mod attributes;
+pub mod attachments;
 pub mod attribute_modifier;
 pub mod blocks;
 pub mod block_entities;
