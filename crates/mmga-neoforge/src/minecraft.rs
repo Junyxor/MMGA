@@ -1817,7 +1817,7 @@ fn chat_formatting_constant(rt: &mut Rt, name: &str) -> Option<V> {
 
 fn extract_varargs(rt: &Rt, arr: V) -> Vec<V> {
     match rt.get_obj(arr).map(|o| &o.data) {
-        Some(Data::Array(xs) | Data::List(xs)) => xs.clone(),
+        Some(Data::Array(xs) | Data::List(xs) | Data::Set(xs)) => xs.clone(),
         _ => Vec::new(),
     }
 }

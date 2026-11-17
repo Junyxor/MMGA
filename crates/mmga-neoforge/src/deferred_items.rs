@@ -17,6 +17,21 @@ pub fn register(
     is_static: bool,
     args: &[V],
 ) -> Option<V> {
+    if !is_static
+        && member.owner == ITEMS
+        && member.name == "registerItem"
+        && member.desc == format!("(Ljava/lang/String;Ljava/util/function/Function;)L{HOLDER};")
+    {
+        let props = rt.new_instance("net/minecraft/world/item/Item$Properties", 0);
+        let flags = crate::menu_types::get_static_field(
+            rt,
+            "net/minecraft/world/flag/FeatureFlags",
+            "DEFAULT_FLAGS",
+            "Lnet/minecraft/world/flag/FeatureFlagSet;",
+        )?;
+        rt.put_field(props, "requiredFeatures", flags);
+        return register(rt, registries, &MemberRef::new(ITEMS, "registerItem", format!("(Ljava/lang/String;Ljava/util/function/Function;Lnet/minecraft/world/item/Item$Properties;)L{HOLDER};")), false, &[args[0],args[1],args[2],props]);
+    }
     if is_static || member.owner != ITEMS || member.name != "registerItem"
         || member.desc != format!("(Ljava/lang/String;Ljava/util/function/Function;Lnet/minecraft/world/item/Item$Properties;)L{HOLDER};") {
         return None;
@@ -240,28 +255,111 @@ mod tests {
     }
 
     #[test]
+    fn ae2_default_properties_overload_keeps_a_fresh_vanilla_feature_set() {
+        let mut prepared = crate::PreparedLoad::from_jars(Vec::new(), true).unwrap();
+        let mut rt = Rt::new();
+        let dr = prepared
+            .loader
+            .state
+            .registries
+            .create_deferred_register("item", "test");
+        let register_v = rt.new_pinned_handle(ITEMS, "deferred_register", dr, "minecraft:item");
+        let name = rt.intern_str("first");
+        let method = MemberRef::new(
+            ITEMS,
+            "registerItem",
+            format!("(Ljava/lang/String;Ljava/util/function/Function;)L{HOLDER};"),
+        );
+        register(
+            &mut rt,
+            &mut prepared.loader.state.registries,
+            &method,
+            false,
+            &[register_v, name, V::NULL],
+        )
+        .unwrap();
+        let name = rt.intern_str("second");
+        register(
+            &mut rt,
+            &mut prepared.loader.state.registries,
+            &method,
+            false,
+            &[register_v, name, V::NULL],
+        )
+        .unwrap();
+        let suppliers = prepared.loader.state.registries.pending_suppliers();
+        let properties = suppliers
+            .iter()
+            .map(|s| match &rt.get_obj(s.supplier).unwrap().data {
+                Data::Closure(c) => c.captures[1],
+                _ => panic!(),
+            })
+            .collect::<Vec<_>>();
+        assert_ne!(properties[0], properties[1]);
+        let flags = crate::menu_types::get_static_field(
+            &mut rt,
+            "net/minecraft/world/flag/FeatureFlags",
+            "DEFAULT_FLAGS",
+            "Lnet/minecraft/world/flag/FeatureFlagSet;",
+        )
+        .unwrap();
+        assert_eq!(rt.get_field(properties[0], "requiredFeatures"), flags);
+        assert!(rt.pending_exception.is_none());
+    }
+
+    #[test]
     fn item_registration_from_a_later_registry_supplier_is_rejected_before_global_freeze() {
-        fn late(ctx:&mut ExecCtx<'_>,args:&[V])->V {
-            let dr=ctx.rt.get_field(args[0],"register");
-            let name=ctx.rt.intern_str("too_late");
+        fn late(ctx: &mut ExecCtx<'_>, args: &[V]) -> V {
+            let dr = ctx.rt.get_field(args[0], "register");
+            let name = ctx.rt.intern_str("too_late");
             invoke_member(ctx,op::INVOKEVIRTUAL,&MemberRef::new(ITEMS,"registerItem",&format!("(Ljava/lang/String;Ljava/util/function/Function;Lnet/minecraft/world/item/Item$Properties;)L{HOLDER};")),&[dr,name,V::NULL,V::NULL]);
-            ctx.rt.new_instance("test/BlockEntityType",0)
+            ctx.rt.new_instance("test/BlockEntityType", 0)
         }
-        let mut prepared=crate::PreparedLoad::from_jars(Vec::new(),true).unwrap();
-        prepared.linked.register_native_module(NativeModuleRegistry{classes:&[NativeClassDef{
-            name:"test/LateItemRegistration",superclass:Some("java/lang/Object"),interfaces:&["java/util/function/Supplier"],is_interface:false,
-            methods:&[("get.()Ljava/lang/Object;",late,false,false)],
-        }],lambdas:&[]});
-        let mut rt=Rt::new();
-        let dr=prepared.loader.state.registries.create_deferred_register("item","test");
-        let register=rt.new_pinned_handle(ITEMS,"deferred_register",dr,"minecraft:item");
-        let later=prepared.loader.state.registries.create_deferred_register("block_entity_type","test");
-        let supplier=rt.new_instance("test/LateItemRegistration",0);rt.put_field(supplier,"register",register);
-        prepared.loader.state.registries.enqueue_deferred_entry(&mut rt,later,"net/neoforged/neoforge/registries/DeferredHolder","trigger",supplier).unwrap();
-        let result=prepared.bootstrap(&mut rt);
-        assert!(result.is_err(),"late item must not be silently skipped");
+        let mut prepared = crate::PreparedLoad::from_jars(Vec::new(), true).unwrap();
+        prepared
+            .linked
+            .register_native_module(NativeModuleRegistry {
+                classes: &[NativeClassDef {
+                    name: "test/LateItemRegistration",
+                    superclass: Some("java/lang/Object"),
+                    interfaces: &["java/util/function/Supplier"],
+                    is_interface: false,
+                    methods: &[("get.()Ljava/lang/Object;", late, false, false)],
+                }],
+                lambdas: &[],
+            });
+        let mut rt = Rt::new();
+        let dr = prepared
+            .loader
+            .state
+            .registries
+            .create_deferred_register("item", "test");
+        let register = rt.new_pinned_handle(ITEMS, "deferred_register", dr, "minecraft:item");
+        let later = prepared
+            .loader
+            .state
+            .registries
+            .create_deferred_register("block_entity_type", "test");
+        let supplier = rt.new_instance("test/LateItemRegistration", 0);
+        rt.put_field(supplier, "register", register);
+        prepared
+            .loader
+            .state
+            .registries
+            .enqueue_deferred_entry(
+                &mut rt,
+                later,
+                "net/neoforged/neoforge/registries/DeferredHolder",
+                "trigger",
+                supplier,
+            )
+            .unwrap();
+        let result = prepared.bootstrap(&mut rt);
+        assert!(result.is_err(), "late item must not be silently skipped");
         assert!(result.unwrap_err().contains("IllegalStateException"));
         assert!(!prepared.loader.state.registries.frozen);
-        assert!(prepared.loader.state.registries.deferred_registers[&dr].entries.is_empty());
+        assert!(prepared.loader.state.registries.deferred_registers[&dr]
+            .entries
+            .is_empty());
     }
 }

@@ -566,6 +566,10 @@ impl FmlLoader {
         key: &str,
     ) -> Result<(), String> {
         self.state.registries.begin_deferred_registration(key);
+        if let Err(message) = self.state.registries.apply_deferred_aliases(key) {
+            rt.throw_exception("java/lang/IllegalArgumentException", &message);
+            raise_if_pending(rt, &format!("applying aliases for `{key}`"))?;
+        }
         let pending: Vec<DeferredSupplier> = self
             .state
             .registries
@@ -1355,7 +1359,8 @@ impl FmlLoader {
     fn deferred_register(&mut self, rt: &mut Rt, args: &[V], desc: &str) -> Option<V> {
         let receiver = *args.first()?;
         let (dr_id, registry_key) = {
-            let (kind, id, tag, _) = rt.handle_of(receiver)?;
+            let native = crate::deferred_registers::handle(rt, receiver)?;
+            let (kind, id, tag, _) = rt.handle_of(native)?;
             if kind != "deferred_register" {
                 return None;
             }
@@ -1680,7 +1685,25 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::block_entities::get_static_field(rt, &mut self.state.registries, owner, name, desc) {
             return Some(value);
         }
-        if let Some(value) = crate::dfu::get_static_field(rt, owner, name, desc) {
+        if let Some(value) = crate::string_representable::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
+        if let Some(value) = crate::dye_color::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
+        if let Some(value) = crate::attribute_modifier::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
+        if let Some(value) = crate::number_providers::get_static_field(rt, &mut self.state.registries, owner, name, desc) {
+            return Some(value);
+        }
+        if let Some(value) = crate::loot_functions::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
+        if let Some(value) = crate::fluid_content::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
+        if let Some(value) = crate::container_items::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
         if let Some(value) = crate::item_stack::get_static_field(rt, owner, name, desc) {
@@ -1689,22 +1712,10 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::custom_data::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
-        if let Some(value) = crate::attribute_modifier::get_static_field(rt, owner, name, desc) {
+        if let Some(value) = crate::dfu::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
-        if let Some(value) = crate::dye_color::get_static_field(rt, owner, name, desc) {
-            return Some(value);
-        }
-        if let Some(value) = crate::string_representable::get_static_field(rt, owner, name, desc) {
-            return Some(value);
-        }
-        if let Some(value) = crate::tags::get_static_field(rt, owner, name, desc) {
-            return Some(value);
-        }
-        if let Some(value) = crate::vanilla_block_tags::get_static_field(rt, owner, name, desc) {
-            return Some(value);
-        }
-        if let Some(value) = crate::sided_threads::get_static_field(rt, owner, name, desc) {
+        if let Some(value) = crate::note_instruments::get_static_field(rt, &mut self.state.registries, owner, name, desc) {
             return Some(value);
         }
         if let Some(value) = crate::menu_types::get_static_field(rt, owner, name, desc) {
@@ -1713,7 +1724,13 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::push_reaction::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
-        if let Some(value) = crate::note_instruments::get_static_field(rt, &mut self.state.registries, owner, name, desc) {
+        if let Some(value) = crate::vanilla_block_tags::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
+        if let Some(value) = crate::tags::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
+        if let Some(value) = crate::sided_threads::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
         if let Some(value) = crate::capabilities::get_static_field(rt, owner, name, desc) {
@@ -1855,13 +1872,31 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::string_representable::call(rt, linked, self, member, is_static, args) {
             return Some(value);
         }
-        if let Some(value) = crate::attribute_modifier::call(rt, linked, self, member, is_static, args) {
-            return Some(value);
-        }
         if let Some(value) = crate::dye_color::call(rt, member, is_static, args) {
             return Some(value);
         }
+        if let Some(value) = crate::attribute_modifier::call(rt, linked, self, member, is_static, args) {
+            return Some(value);
+        }
         if let Some(value) = crate::guava_builders::call(rt, linked, self, member, is_static, args) {
+            return Some(value);
+        }
+        {
+            let mut ctx = ExecCtx { rt, linked, host: self, depth: 0 };
+            if let Some(value) = crate::loot_functions::call(&mut ctx, member, is_static, args) {
+                return Some(value);
+            }
+        }
+        {
+            let mut ctx = ExecCtx { rt, linked, host: self, depth: 0 };
+            if let Some(value) = crate::advancements::call(&mut ctx, member, is_static, args) {
+                return Some(value);
+            }
+        }
+        if let Some(value) = crate::fluid_content::call(rt, linked, self, member, is_static, args) {
+            return Some(value);
+        }
+        if let Some(value) = crate::container_items::call(rt, linked, self, member, is_static, args) {
             return Some(value);
         }
         if let Some(value) = crate::item_stack::call(rt, linked, self, member, is_static, args) {
@@ -1870,8 +1905,23 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::custom_data::call(rt, linked, self, member, is_static, args) {
             return Some(value);
         }
+        if let Some(value) = crate::number_providers::call(rt, member, is_static, args) {
+            return Some(value);
+        }
         if let Some(value) = crate::dfu::call(rt, linked, self, member, is_static, args) {
             return Some(value);
+        }
+        {
+            let mut ctx = ExecCtx { rt, linked, host: self, depth: 0 };
+            if let Some(value) = crate::guava_multimaps::call(&mut ctx, member, is_static, args) {
+                return Some(value);
+            }
+            if let Some(value) = crate::object_double_maps::call(&mut ctx, member, is_static, args) {
+                return Some(value);
+            }
+            if let Some(value) = crate::registry_codecs::call(&mut ctx, member, is_static, args) {
+                return Some(value);
+            }
         }
         if let Some(value) = crate::minecraft::call_keys_authlib_and_libs(
             rt,
@@ -1906,16 +1956,16 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::deferred_items::call_factory(rt, linked, self, member, is_static, args) {
             return Some(value);
         }
-        if let Some(value) = crate::sided_threads::call(rt, member, is_static, args) {
-            return Some(value);
-        }
-        if let Some(value) = crate::menu_types::call(rt, linked, self, member, is_static, args) {
+        if let Some(value) = crate::note_instruments::call(rt, &mut self.state.registries, member, is_static, args) {
             return Some(value);
         }
         if let Some(value) = crate::push_reaction::call(rt, member, is_static, args) {
             return Some(value);
         }
-        if let Some(value) = crate::note_instruments::call(rt, &mut self.state.registries, member, is_static, args) {
+        if let Some(value) = crate::menu_types::call(rt, linked, self, member, is_static, args) {
+            return Some(value);
+        }
+        if let Some(value) = crate::sided_threads::call(rt, member, is_static, args) {
             return Some(value);
         }
         if let Some(value) = crate::capabilities::call(rt, member, is_static, args) {
@@ -1971,6 +2021,9 @@ impl HostApi for FmlLoader {
                 unsafe { &mut (*ptr).state.config }
             },
         ) {
+            return Some(value);
+        }
+        if let Some(value) = crate::deferred_registers::call(rt, linked, self, member, is_static, args) {
             return Some(value);
         }
         let owner = member.owner.as_str();
@@ -2112,31 +2165,28 @@ impl HostApi for FmlLoader {
         {
             return true;
         }
-        if crate::blocks::is_subtype(sub_class, super_class) {
-            return true;
-        }
         if crate::string_representable::is_subtype(sub_class, super_class) {
-            return true;
-        }
-        if crate::dfu::is_subtype(sub_class, super_class) {
-            return true;
-        }
-        if crate::logging_markers::is_subtype(sub_class, super_class) {
-            return true;
-        }
-        if crate::attribute_modifier::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::dye_color::is_subtype(sub_class, super_class) {
             return true;
         }
+        if crate::attribute_modifier::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::logging_markers::is_subtype(sub_class, super_class) {
+            return true;
+        }
         if crate::resource_reload::is_subtype(sub_class, super_class) {
             return true;
         }
-        if crate::sided_threads::is_subtype(sub_class, super_class) {
+        if crate::advancements::is_subtype(sub_class, super_class) || crate::fluid_content::is_subtype(sub_class, super_class) {
             return true;
         }
-        if crate::menu_types::is_subtype(sub_class, super_class) {
+        if crate::number_providers::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::loot_functions::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::item_stack::is_subtype(sub_class, super_class) {
@@ -2145,10 +2195,22 @@ impl HostApi for FmlLoader {
         if crate::custom_data::is_subtype(sub_class, super_class) {
             return true;
         }
-        if crate::push_reaction::is_subtype(sub_class, super_class) {
+        if crate::blocks::is_subtype(sub_class, super_class) || crate::dfu::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::note_instruments::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::push_reaction::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::menu_types::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::sided_threads::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::object_double_maps::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::capabilities::is_subtype(sub_class, super_class) {

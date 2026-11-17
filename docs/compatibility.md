@@ -7,6 +7,12 @@
 - 恢复真实 classfile 的字段/方法反射、字段访问检查及 `Set.addAll`；新增 ImmutableMap 的 keySet/values/entrySet，视图保存源 Map 引用，迭代保留实际条目和重复 value，Collection/Map.Entry/Iterator 的修改路径明确抛异常。两项回归先失败后通过，runtime 共 **14 项通过**。
 - 使用新编译的 `fast` 优化探针重跑 GuideME 21.1.22 + AE2 19.2.19：GuideME 构造完成；AE2 已越过 `ImmutableMap.entrySet` 的物品定义阻塞，下一处为 `Method.getParameters()`（`PartModelsHelper.createModels`）。整体仍在构造，注册/setup/tick 未到达，玩法与渲染未验证。本地证据 `.local/probes/ae2-immutable-views.log`，第三方 jar 未修改。
 - 继续补齐 `Method.getParameters/getReturnType/invoke`：参数类型来自原 descriptor；invoke 检查数量、receiver、访问权限与拆箱/拓宽转换，真正执行原目标并装箱结果，目标异常保留为 `InvocationTargetException.target/cause`。参数名称与未保留的 MethodParameters 标志仍明确未实现。回归先失败后通过，原 AE2 jar 越过模型方法调用，进入 `AEBlocks`，下一处为 `SoundType.AMETHYST_CLUSTER`；仍在构造，注册/setup/tick 未到达。证据 `.local/probes/ae2-reflection-invoke.log`。
+- 恢复并验证中断前的 lazy/either/nonempty codec、注册 alias/subclass、loot function、常量 number provider、registry name codec、Fastutil double map 和 Multimap.putAll。新增 `Codec.orElseGet` 保留真实 supplier，仅在 decode 的 DataResult error 时回退；host 未实现异常和 encode 错误不会被吞掉。
+- Create 越过 inherited alias、registry codec、DISPENSER/DROPPER 和 PistonType。两种方块各有 facing × triggered 的 12 个 canonical 状态和官方默认 NORTH/false；世界发射、库存和全局状态 ID 未实现仍失败。当前首个阻塞 `Ingredient.EMPTY`（`TrackMaterialFactory.<init>`），Ponder 已构造、Create 构造未完成，12 已登记项/1 配置/89 监听器，组合注册/setup 未到达。
+- `SimpleCriterionTrigger` 初始化和 identity-keyed 玩家 listener map 按真实语义执行，listener 集合调用真实 hash/equals；没有模拟世界 trigger 或发放进度。Curios 已实际注册 **6 项**，完成注册阶段，进入 common setup，停在其自定义 `RegisterCuriosExtensionsEvent` 的 `Event.<init>`；tick/玩法/渲染未验证。
+- 流体模块原来的空桩已替换：optional 空栈 JSON `{}` 与 stream VarInt 0、mandatory 空栈异常、amount/真实 registry JSON 值和副本语义经过回归。非空流体网络、非空 component patch、NBT 继续明确失败。ItemContainerContents 保留真实 slot codec 和 256 项边界，空容器 JSON/stream 往返、值相等/不可支持的非空行为均经过验证。Core + Backpacks 均构造完成，实际注册 **47 项**，下一处 `TagKey.codec(ResourceKey)`（`filter_attributes`）；setup/tick 未到达，玩法/渲染未验证。
+- Mekanism 越过事件分类和继承 `addAlias` 后仍在构造，9 配置/23 监听器，下一处 `DefaultedRegistry.holderByNameCodec()`（`Chemical.<clinit>`）。未把 holder 元数据或部分注册当作兼容完成。
+- 当前恢复检查点 `cargo test --workspace --offline`：**195 项通过**（classfile 7 / runtime 15 / NeoForge 173），doc-tests 全通过。已有 `attribute_modifier::MAP_CODEC` dead-code warning 尚在；声明的 MSRV 1.83 仍未单独验证。测试证据 `.local/probes/resume-workspace-test.log`，优化探测用于加载验证而非性能对比。
 
 ## 2026-11-17 持续修复增量（进行中）
 

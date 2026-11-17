@@ -92,6 +92,8 @@ pub struct DeferredRegisterRecord {
     pub namespace: String,
     pub bound_mod_bus: Option<String>,
     pub entries: Vec<PendingDeferredItem>,
+    /// DeferredRegister applies these aliases when its registry event begins.
+    pub aliases: BTreeMap<String, String>,
     /// Matches DeferredRegister.seenRegisterEvent: set before its suppliers run.
     pub seen_register_event: bool,
 }
@@ -117,6 +119,7 @@ pub struct RegistryStore {
     pub holders: BTreeMap<u64, (String, String, Option<V>)>,
     /// `registry_key -> (entry_id -> RegisteredEntry)`
     pub entries: BTreeMap<String, BTreeMap<String, RegisteredEntry>>,
+    pub aliases: BTreeMap<String, BTreeMap<String, String>>,
     pub custom_registries: Vec<String>,
     /// Registry event passes already completed, even before the global freeze.
     pub completed_registries: BTreeSet<String>,
@@ -137,6 +140,7 @@ impl RegistryStore {
             deferred_registers: BTreeMap::new(),
             holders: BTreeMap::new(),
             entries: BTreeMap::new(),
+            aliases: BTreeMap::new(),
             custom_registries: Vec::new(),
             completed_registries: BTreeSet::new(),
             frozen: false,
@@ -206,6 +210,7 @@ impl RegistryStore {
                 namespace: namespace.to_owned(),
                 bound_mod_bus: None,
                 entries: Vec::new(),
+                aliases: BTreeMap::new(),
                 seen_register_event,
             },
         );
@@ -240,14 +245,104 @@ impl RegistryStore {
         }
     }
 
+    pub fn add_deferred_alias(
+        &mut self,
+        register_id: u64,
+        from: &str,
+        to: &str,
+    ) -> Result<(), String> {
+        if self.deferred_registration_closed(register_id) {
+            return Err(
+                "Cannot add aliases to DeferredRegister after RegisterEvent has been fired.".into(),
+            );
+        }
+        let register = self
+            .deferred_registers
+            .get_mut(&register_id)
+            .ok_or_else(|| "Unknown DeferredRegister".to_owned())?;
+        register.aliases.insert(from.to_owned(), to.to_owned());
+        Ok(())
+    }
+
+    pub fn apply_deferred_aliases(&mut self, registry_key: &str) -> Result<(), String> {
+        let registry = canonical_registry_key(registry_key);
+        let aliases: Vec<_> = self
+            .deferred_registers
+            .values()
+            .filter(|register| register.registry_key == registry)
+            .flat_map(|register| {
+                register
+                    .aliases
+                    .iter()
+                    .map(|(from, to)| (from.clone(), to.clone()))
+            })
+            .collect();
+        for (from, to) in aliases {
+            self.add_alias(&registry, &from, &to)?;
+        }
+        Ok(())
+    }
+
+    /// Matches BaseMappedRegistry.addAlias; a directly registered name shadows
+    /// an alias, identical aliases are idempotent, and active remaps are errors.
+    pub fn add_alias(&mut self, registry_key: &str, from: &str, to: &str) -> Result<(), String> {
+        if from == to {
+            return Ok(());
+        }
+        let registry = canonical_registry_key(registry_key);
+        if let Some(old) = self
+            .aliases
+            .get(&registry)
+            .and_then(|aliases| aliases.get(from))
+        {
+            if old != to {
+                return Err(format!("Duplicate alias with key \"{from}\" attempting to map to \"{to}\", found existing mapping \"{old}\""));
+            }
+        }
+        if self.resolve_alias(&registry, to) == from {
+            return Err(format!("Infinite alias loop detected: from {from} to {to}"));
+        }
+        self.aliases
+            .entry(registry)
+            .or_default()
+            .insert(from.to_owned(), to.to_owned());
+        Ok(())
+    }
+
+    pub fn contains_entry(&self, registry_key: &str, full_id: &str) -> bool {
+        let registry = canonical_registry_key(registry_key);
+        self.entries
+            .get(&registry)
+            .is_some_and(|entries| entries.contains_key(full_id))
+    }
+
+    pub fn resolve_alias(&self, registry_key: &str, full_id: &str) -> String {
+        let registry = canonical_registry_key(registry_key);
+        let mut current = full_id;
+        while !self.contains_entry(&registry, current) {
+            let Some(next) = self
+                .aliases
+                .get(&registry)
+                .and_then(|aliases| aliases.get(current))
+            else {
+                break;
+            };
+            current = next;
+        }
+        current.to_owned()
+    }
+
     pub fn finish_registry_event(&mut self, registry_key: &str) {
-        self.completed_registries.insert(canonical_registry_key(registry_key));
+        self.completed_registries
+            .insert(canonical_registry_key(registry_key));
     }
 
     pub fn deferred_registration_closed(&self, dr_id: u64) -> bool {
-        self.frozen || self.deferred_registers.get(&dr_id).is_some_and(|register| {
-            register.seen_register_event || self.completed_registries.contains(&register.registry_key)
-        })
+        self.frozen
+            || self.deferred_registers.get(&dr_id).is_some_and(|register| {
+                register.seen_register_event
+                    || self.completed_registries.contains(&register.registry_key)
+            })
     }
 
     /// Suppliers in `RegisterEvent` order: `REGISTRATION_ORDER`, then any custom registry keys.
@@ -369,7 +464,9 @@ impl RegistryStore {
 
     pub fn lookup(&self, registry_key: &str, full_id: &str) -> Option<&RegisteredEntry> {
         let reg = canonical_registry_key(registry_key);
-        self.entries.get(&reg)?.get(full_id)
+        self.entries
+            .get(&reg)?
+            .get(&self.resolve_alias(&reg, full_id))
     }
 
     pub fn holder_value(&self, holder_id: u64) -> Option<V> {
@@ -377,9 +474,7 @@ impl RegistryStore {
         if let Some(v) = cached.filter(|value| !value.is_null()) {
             return Some(v);
         }
-        self.entries
-            .get(reg)
-            .and_then(|m| m.get(full_id))
+        self.lookup(reg, full_id)
             .map(|e| e.value)
             .filter(|value| !value.is_null())
     }
@@ -453,6 +548,81 @@ impl RegistryStore {
 mod tests {
     use super::*;
     use mmga_runtime::Rt;
+
+    #[test]
+    fn deferred_aliases_activate_at_registration_and_resolve_real_values() {
+        let mut rt = Rt::new();
+        let mut store = RegistryStore::new();
+        let id = store.create_deferred_register("data_component_type", "example");
+        let value = rt.new_instance("example/Component", 0);
+        store.register_direct(
+            &mut rt,
+            "data_component_type",
+            "example:chemicals",
+            "example",
+            value,
+            ContentProperties::default(),
+        );
+        store
+            .add_deferred_alias(id, "example:gases", "example:wrong")
+            .unwrap();
+        store
+            .add_deferred_alias(id, "example:gases", "example:chemicals")
+            .unwrap();
+        assert!(store
+            .lookup("data_component_type", "example:gases")
+            .is_none());
+        store.apply_deferred_aliases("data_component_type").unwrap();
+        assert_eq!(
+            store
+                .lookup("data_component_type", "example:gases")
+                .unwrap()
+                .value,
+            value
+        );
+        assert!(!store.contains_entry("data_component_type", "example:gases"));
+        store.begin_deferred_registration("data_component_type");
+        assert!(store
+            .add_deferred_alias(id, "example:new", "example:chemicals")
+            .is_err());
+        assert!(store
+            .add_alias("data_component_type", "example:gases", "example:elsewhere")
+            .is_err());
+        store
+            .add_alias("data_component_type", "example:legacy", "example:gases")
+            .unwrap();
+        assert_eq!(
+            store
+                .lookup("data_component_type", "example:legacy")
+                .unwrap()
+                .value,
+            value
+        );
+    }
+
+    #[test]
+    fn alias_cycles_are_rejected_and_direct_entries_shadow_aliases() {
+        let mut rt = Rt::new();
+        let mut store = RegistryStore::new();
+        store.add_alias("item", "example:a", "example:b").unwrap();
+        store.add_alias("item", "example:b", "example:c").unwrap();
+        assert!(store.add_alias("item", "example:c", "example:a").is_err());
+        assert!(store.lookup("item", "example:a").is_none());
+        store
+            .add_alias("item", "example:self", "example:self")
+            .unwrap();
+        assert!(store.lookup("item", "example:self").is_none());
+        let direct = rt.new_instance("example/Item", 0);
+        store.register_direct(
+            &mut rt,
+            "item",
+            "example:a",
+            "example",
+            direct,
+            ContentProperties::default(),
+        );
+        assert_eq!(store.lookup("item", "example:a").unwrap().value, direct);
+    }
 
     #[test]
     fn standalone_holder_throws_until_actual_value_is_registered() {
@@ -554,20 +724,40 @@ mod tests {
 
     #[test]
     fn deferred_register_closes_before_factory_and_after_registry_pass() {
-        let mut store=RegistryStore::new();let mut rt=Rt::new();
-        let items=store.create_deferred_register("item","test");
-        let other=store.create_deferred_register("block_entity_type","test");
+        let mut store = RegistryStore::new();
+        let mut rt = Rt::new();
+        let items = store.create_deferred_register("item", "test");
+        let other = store.create_deferred_register("block_entity_type", "test");
         store.begin_deferred_registration("item");
         assert!(store.deferred_registration_closed(items));
-        assert!(!store.deferred_registration_closed(other));assert!(!store.frozen);
-        store.enqueue_deferred_entry(&mut rt,items,"net/neoforged/neoforge/registries/DeferredItem","reentrant",V::NULL);
-        let error=rt.take_exception().unwrap();assert!(rt.exception_summary(error).contains("IllegalStateException"));
+        assert!(!store.deferred_registration_closed(other));
+        assert!(!store.frozen);
+        store.enqueue_deferred_entry(
+            &mut rt,
+            items,
+            "net/neoforged/neoforge/registries/DeferredItem",
+            "reentrant",
+            V::NULL,
+        );
+        let error = rt.take_exception().unwrap();
+        assert!(rt
+            .exception_summary(error)
+            .contains("IllegalStateException"));
         assert!(store.deferred_registers[&items].entries.is_empty());
         store.finish_registry_event("item");
-        let new_items=store.create_deferred_register("item","later");
+        let new_items = store.create_deferred_register("item", "later");
         assert!(store.deferred_registration_closed(new_items));
-        store.enqueue_deferred_entry(&mut rt,new_items,"net/neoforged/neoforge/registries/DeferredItem","late",V::NULL);
-        let error=rt.take_exception().unwrap();assert!(rt.exception_summary(error).contains("IllegalStateException"));
+        store.enqueue_deferred_entry(
+            &mut rt,
+            new_items,
+            "net/neoforged/neoforge/registries/DeferredItem",
+            "late",
+            V::NULL,
+        );
+        let error = rt.take_exception().unwrap();
+        assert!(rt
+            .exception_summary(error)
+            .contains("IllegalStateException"));
         assert!(store.deferred_registers[&new_items].entries.is_empty());
     }
 

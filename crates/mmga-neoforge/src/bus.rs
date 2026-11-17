@@ -127,6 +127,24 @@ pub const BUILTIN_EVENTS: &[BuiltinEventSpec] = &[
         is_cancellable: false,
         is_abstract: false,
     },
+    // Despite its registries package this is a game-bus Event. NeoForge fires
+    // it after a server data-map reload or client sync; it is not IModBusEvent.
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/registries/datamaps/DataMapsUpdatedEvent",
+        superclass: "net/neoforged/bus/api/Event",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    // Official source explicitly implements IModBusEvent despite living under
+    // common.world.chunk rather than the registries or lifecycle packages.
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/common/world/chunk/RegisterTicketControllersEvent",
+        superclass: "net/neoforged/bus/api/Event",
+        is_mod_bus: true,
+        is_cancellable: false,
+        is_abstract: false,
+    },
     BuiltinEventSpec {
         class: "net/neoforged/neoforge/capabilities/RegisterCapabilitiesEvent",
         superclass: "net/neoforged/bus/api/Event",
@@ -153,7 +171,9 @@ pub const BUILTIN_EVENTS: &[BuiltinEventSpec] = &[
         superclass: "net/neoforged/bus/api/Event",
         is_mod_bus: true,
         is_cancellable: false,
-        is_abstract: true,
+        // FancyModLoader 1.21.1 declares a concrete class with a package-private
+        // constructor. Base listeners are valid and receive its nested events.
+        is_abstract: false,
     },
     BuiltinEventSpec {
         class: "net/neoforged/fml/event/config/ModConfigEvent$Loading",
@@ -164,6 +184,13 @@ pub const BUILTIN_EVENTS: &[BuiltinEventSpec] = &[
     },
     BuiltinEventSpec {
         class: "net/neoforged/fml/event/config/ModConfigEvent$Reloading",
+        superclass: "net/neoforged/fml/event/config/ModConfigEvent",
+        is_mod_bus: true,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/fml/event/config/ModConfigEvent$Unloading",
         superclass: "net/neoforged/fml/event/config/ModConfigEvent",
         is_mod_bus: true,
         is_cancellable: false,
@@ -387,7 +414,9 @@ pub fn is_mod_bus_event_class(class_name: &str) -> bool {
         || class_name.starts_with("net/neoforged/neoforge/client/event/Register")
         || class_name.starts_with("net/neoforged/neoforge/client/event/EntityRenderersEvent$")
         || class_name.starts_with("net/neoforged/neoforge/client/event/ModelEvent$")
-        || class_name.starts_with("net/neoforged/neoforge/client/extensions/common/RegisterClientExtensionsEvent")
+        || class_name.starts_with(
+            "net/neoforged/neoforge/client/extensions/common/RegisterClientExtensionsEvent",
+        )
         || matches!(
             class_name,
             "net/neoforged/neoforge/capabilities/RegisterCapabilitiesEvent"
@@ -687,6 +716,116 @@ mod tests {
             .unwrap_err();
         assert!(game_on_mod.contains("IModBusEvent"));
         assert_eq!(engine.listener_count(), 0);
+    }
+
+    #[test]
+    fn mekanism_data_maps_listener_belongs_to_the_game_bus() {
+        let event_class = "net/neoforged/neoforge/registries/datamaps/DataMapsUpdatedEvent";
+        let mut engine = EventBusEngine::new();
+        let game = engine.register_listener(
+            BusId::Game,
+            event_class.into(),
+            EventPriority::Normal,
+            false,
+            V::NULL,
+            EventCallback::Native(hit),
+        );
+        assert!(
+            game.is_ok(),
+            "DataMapsUpdatedEvent extends Event, not IModBusEvent: {game:?}"
+        );
+        let wrong_bus = engine.register_listener(
+            BusId::Mod("mekanism".into()),
+            event_class.into(),
+            EventPriority::Normal,
+            false,
+            V::NULL,
+            EventCallback::Native(hit),
+        );
+        assert!(wrong_bus.unwrap_err().contains("IModBusEvent"));
+        assert!(!is_mod_bus_event_class(event_class));
+        assert_eq!(engine.listener_count(), 1);
+
+        let mut rt = Rt::new();
+        let linked = LinkedSpace::new();
+        let mut host = NullHost;
+        let event = rt.new_instance(event_class, 0);
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        assert!(!engine.post(&mut ctx, &BusId::Game, event_class, event));
+        assert_eq!(ctx.rt.get_field(event, "hits"), V::I(1));
+        assert_eq!(engine.callbacks_invoked, 1);
+    }
+
+    #[test]
+    fn ticket_controller_registration_is_a_mod_bus_event() {
+        let event_class =
+            "net/neoforged/neoforge/common/world/chunk/RegisterTicketControllersEvent";
+        let mut engine = EventBusEngine::new();
+        let accepted = engine.register_listener(
+            BusId::Mod("mekanism".into()),
+            event_class.into(),
+            EventPriority::Normal,
+            false,
+            V::NULL,
+            EventCallback::Native(hit),
+        );
+        assert!(
+            accepted.is_ok(),
+            "RegisterTicketControllersEvent implements IModBusEvent: {accepted:?}"
+        );
+        let rejected = engine.register_listener(
+            BusId::Game,
+            event_class.into(),
+            EventPriority::Normal,
+            false,
+            V::NULL,
+            EventCallback::Native(hit),
+        );
+        assert!(rejected.unwrap_err().contains("IModBusEvent"));
+        assert!(is_mod_bus_event_class(event_class));
+    }
+
+    #[test]
+    fn concrete_mod_config_base_listener_receives_config_subclasses() {
+        let base = "net/neoforged/fml/event/config/ModConfigEvent";
+        let mut engine = EventBusEngine::new();
+        let bus = BusId::Mod("mekanism".into());
+        let registered = engine.register_listener(
+            bus.clone(),
+            base.into(),
+            EventPriority::Normal,
+            false,
+            V::NULL,
+            EventCallback::Native(hit),
+        );
+        assert!(
+            registered.is_ok(),
+            "ModConfigEvent is concrete in FancyModLoader1.21.1: {registered:?}"
+        );
+        let mut rt = Rt::new();
+        let linked = LinkedSpace::new();
+        let mut host = NullHost;
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        for class in [
+            "net/neoforged/fml/event/config/ModConfigEvent$Loading",
+            "net/neoforged/fml/event/config/ModConfigEvent$Reloading",
+            "net/neoforged/fml/event/config/ModConfigEvent$Unloading",
+        ] {
+            let event = ctx.rt.new_instance(class, 0);
+            engine.post(&mut ctx, &bus, class, event);
+            assert_eq!(ctx.rt.get_field(event, "hits"), V::I(1));
+        }
+        assert_eq!(engine.callbacks_invoked, 3);
     }
 
     #[test]
