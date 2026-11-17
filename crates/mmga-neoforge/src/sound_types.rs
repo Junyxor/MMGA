@@ -21,18 +21,32 @@ pub fn get_static_field(
         "SMALL_AMETHYST_BUD" => ("SMALL_AMETHYST_BUD_BREAK", "SMALL_AMETHYST_BUD_PLACE"),
         "MEDIUM_AMETHYST_BUD" => ("MEDIUM_AMETHYST_BUD_BREAK", "MEDIUM_AMETHYST_BUD_PLACE"),
         "LARGE_AMETHYST_BUD" => ("LARGE_AMETHYST_BUD_BREAK", "LARGE_AMETHYST_BUD_PLACE"),
+        "STONE" => ("STONE_BREAK", "STONE_PLACE"),
+        "WOOD" => ("WOOD_BREAK", "WOOD_PLACE"),
+        "GRAVEL" => ("GRAVEL_BREAK", "GRAVEL_PLACE"),
+        "METAL" => ("METAL_BREAK", "METAL_PLACE"),
+        "GLASS" => ("GLASS_BREAK", "GLASS_PLACE"),
         _ => return None,
     };
     if let Some(value) = rt.get_static(owner, name) {
         return Some(value);
     }
     let mut sounds = Vec::with_capacity(5);
+    let family = match name {
+        "STONE" | "WOOD" | "GRAVEL" | "METAL" | "GLASS" => name,
+        _ => "AMETHYST_CLUSTER",
+    };
+    let (step, hit, fall) = (
+        format!("{family}_STEP"),
+        format!("{family}_HIT"),
+        format!("{family}_FALL"),
+    );
     for field in [
         break_sound,
-        "AMETHYST_CLUSTER_STEP",
+        step.as_str(),
         place_sound,
-        "AMETHYST_CLUSTER_HIT",
-        "AMETHYST_CLUSTER_FALL",
+        hit.as_str(),
+        fall.as_str(),
     ] {
         sounds.push(crate::sounds::get_static_field(
             rt,

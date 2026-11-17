@@ -3471,6 +3471,9 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> i32 {
 }
 
 fn map_color_constant(rt: &mut Rt, name: &str) -> Option<V> {
+    if let Some(value) = rt.get_static("net/minecraft/world/level/material/MapColor", name) {
+        return Some(value);
+    }
     let table: &[(&str, i32, i32)] = &[
         ("NONE", 0, 0x000000),
         ("GRASS", 1, 0x7FB238),
@@ -3540,6 +3543,7 @@ fn map_color_constant(rt: &mut Rt, name: &str) -> Option<V> {
     rt.put_field(obj, "id", V::I(id));
     rt.put_field(obj, "col", V::I(col));
     rt.pin(obj);
+    rt.put_static("net/minecraft/world/level/material/MapColor", name, obj);
     Some(obj)
 }
 

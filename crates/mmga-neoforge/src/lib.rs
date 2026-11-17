@@ -10,6 +10,7 @@ pub mod attachments;
 pub mod attribute_modifier;
 pub mod blocks;
 pub mod block_entities;
+pub mod block_properties;
 pub mod bus;
 pub mod advancements;
 pub mod capabilities;

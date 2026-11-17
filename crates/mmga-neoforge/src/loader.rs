@@ -1941,6 +1941,9 @@ impl HostApi for FmlLoader {
         }
         {
             let mut ctx = ExecCtx { rt, linked, host: self, depth: 0 };
+            if let Some(value) = crate::block_properties::call(&mut ctx, member, is_static, args) {
+                return Some(value);
+            }
             if let Some(value) = crate::ingredients::call(&mut ctx, member, is_static, args) {
                 return Some(value);
             }
