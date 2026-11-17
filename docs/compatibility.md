@@ -5,6 +5,7 @@
 从 `e192d87` 继续，重新抓取远端且基线 63 项测试通过。已复现并修复 Balm 的 `BlockCapability.createSided`：Block/Entity/Item capability 的工厂保持名称、返回类型及 context class，按种类缓存身份，类型/context 冲突抛异常，`getAll()` 返回不可变快照；NeoForge 自带 energy/fluid/item capability 使用同一身份路径。两项 VM 回归先失败后通过。真实 Balm+Waystones 组现推进到 `MapCodec.unit(Object)`（`NeoForgeBalmWorldGen.<clinit>`），Waystones 仍未构造，注册/setup/tick 未到达。provider 和世界查询尚未实现，继续明确失败。下方表格为上一个完整验证检查点，增量完成后更新。
 
 - GuideME 的 `DeferredRegister.Items.registerItem(name, factory, properties)` 已实现真实延迟 supplier，注册阶段才调用工厂，原 properties 引用及其后续修改保留。两个先失败后通过的 VM 测试覆盖时机、注册对象、null 工厂异常。GuideME 构造完成，AE2 自身服务端构造首次进入，当前停在 `ThreadLocal.<init>()`（`AppEngBase.<init>`）；组合注册/setup 尚未到达。
+- Create 使用的 RESPAWN_ANCHOR / TARGET 按官方定义保存真实 registry 值、单方块全部状态（5 / 16 种）、默认状态、charges/power 属性、硬度/抗爆/工具要求/光照。4 项回归验证不可变状态转换和 registry 查找；全局状态 ID、完整方块枚举、未实现形状/世界操作明确失败。原 jar 越过 `Blocks.RESPAWN_ANCHOR`，推进到 Registrate 的 `DeferredHolder.getKey()`；仍在 Create 构造，注册/setup 未到达。
 
 最新验证：**2026-11-17，Windows x86_64，Minecraft 1.21.1 / NeoForge 21.1.266**。实现检查点 `a417383`，Rust `1.98.0`，Java 21。后续文档提交不改变这次探测的代码。三个 crate 仍为 `mmga-classfile`、`mmga-runtime`、`mmga-neoforge`；输入均为官方发布的原始 jar，未修改、未针对桩 API 重编译。
 

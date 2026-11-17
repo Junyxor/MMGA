@@ -6,6 +6,7 @@
 
 pub mod armor;
 pub mod attributes;
+pub mod blocks;
 pub mod bus;
 pub mod capabilities;
 pub mod codecs;
