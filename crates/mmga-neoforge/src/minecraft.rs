@@ -48,81 +48,8 @@ pub fn extract_lang_entries(
     }
 }
 
-/// 1.21.1 `Attributes` defaults. Ids still use the `generic.` prefix from that version.
-fn vanilla_attribute(name: &str) -> Option<(&'static str, f64)> {
-    Some(match name {
-        "ARMOR" => ("generic.armor", 0.0),
-        "ARMOR_TOUGHNESS" => ("generic.armor_toughness", 0.0),
-        "ATTACK_DAMAGE" => ("generic.attack_damage", 2.0),
-        "ATTACK_KNOCKBACK" => ("generic.attack_knockback", 0.0),
-        "ATTACK_SPEED" => ("generic.attack_speed", 4.0),
-        "BLOCK_INTERACTION_RANGE" => ("player.block_interaction_range", 4.5),
-        "BURNING_TIME" => ("generic.burning_time", 1.0),
-        "ENTITY_INTERACTION_RANGE" => ("player.entity_interaction_range", 3.0),
-        "EXPLOSION_KNOCKBACK_RESISTANCE" => ("generic.explosion_knockback_resistance", 0.0),
-        "FALL_DAMAGE_MULTIPLIER" => ("generic.fall_damage_multiplier", 1.0),
-        "FLYING_SPEED" => ("generic.flying_speed", 0.4),
-        "FOLLOW_RANGE" => ("generic.follow_range", 32.0),
-        "GRAVITY" => ("generic.gravity", 0.08),
-        "JUMP_STRENGTH" => ("generic.jump_strength", f64::from(0.42_f32)),
-        "KNOCKBACK_RESISTANCE" => ("generic.knockback_resistance", 0.0),
-        "LUCK" => ("generic.luck", 0.0),
-        "MAX_HEALTH" => ("generic.max_health", 20.0),
-        "MOVEMENT_EFFICIENCY" => ("generic.movement_efficiency", 0.0),
-        "MOVEMENT_SPEED" => ("generic.movement_speed", 0.7),
-        "OXYGEN_BONUS" => ("generic.oxygen_bonus", 0.0),
-        "SAFE_FALL_DISTANCE" => ("generic.safe_fall_distance", 3.0),
-        "SCALE" => ("generic.scale", 1.0),
-        "SNEAKING_SPEED" => ("player.sneaking_speed", 0.3),
-        "STEP_HEIGHT" => ("generic.step_height", 0.6),
-        "SUBMERGED_MINING_SPEED" => ("player.submerged_mining_speed", 0.2),
-        "SWEEPING_DAMAGE_RATIO" => ("player.sweeping_damage_ratio", 0.0),
-        "WATER_MOVEMENT_EFFICIENCY" => ("generic.water_movement_efficiency", 0.0),
-        _ => return None,
-    })
-}
-
-fn attribute_static(rt: &mut Rt, name: &str) -> Option<V> {
-    let owner = "net/minecraft/world/entity/ai/attributes/Attributes";
-    if let Some(value) = rt.get_static(owner, name) {
-        return Some(value);
-    }
-    let (path, default) = vanilla_attribute(name)?;
-    let id = format!("minecraft:{path}");
-    let attr = rt.new_instance("net/minecraft/world/entity/ai/attributes/RangedAttribute", 0);
-    let desc = rt.intern_str(&format!("attribute.name.{path}"));
-    let location = new_rl_handle(rt, &id);
-    rt.put_field(attr, "descriptionId", desc);
-    rt.put_field(attr, "defaultValue", V::D(default));
-    rt.put_field(attr, "id", location);
-    rt.pin(attr);
-    let holder = rt.new_instance("net/minecraft/core/Holder", 0);
-    let key = new_resource_key(rt, "minecraft:attribute", &id);
-    rt.put_field(holder, "$value", attr);
-    rt.put_field(holder, "$key", key);
-    rt.pin(holder);
-    rt.put_static(owner, name, holder);
-    Some(holder)
-}
-
-/// The implemented Attribute accessor reads the preserved vanilla default.
-pub fn call_attribute(rt: &mut Rt, member: &MemberRef, is_static: bool, args: &[V]) -> Option<V> {
-    if (member.owner == "net/minecraft/world/entity/ai/attributes/Attribute"
-        || member.owner == "net/minecraft/world/entity/ai/attributes/RangedAttribute")
-        && !is_static
-        && member.name == "getDefaultValue"
-        && member.desc == "()D"
-    {
-        return Some(rt.get_field(*args.first()?, "defaultValue"));
-    }
-    None
-}
-
 /// Static field lookups for `Component`, `Style`, `ChatFormatting`, and `com/sun/jna/Platform`.
 pub fn get_static_field(rt: &mut Rt, owner: &str, name: &str) -> Option<V> {
-    if owner == "net/minecraft/world/entity/ai/attributes/Attributes" {
-        return attribute_static(rt, name);
-    }
     if owner == STYLE_CLASS && name == "EMPTY" {
         return Some(new_style(rt));
     }

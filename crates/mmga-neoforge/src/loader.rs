@@ -1663,6 +1663,9 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::armor::get_static_field(rt, &mut self.state.registries, owner, name, desc) {
             return Some(value);
         }
+        if let Some(value) = crate::attributes::get_static_field(rt, &mut self.state.registries, owner, name, desc) {
+            return Some(value);
+        }
         if let Some(value) = crate::codecs::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
@@ -1790,7 +1793,7 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::minecraft::call_fast_color(member, is_static, args) {
             return Some(value);
         }
-        if let Some(value) = crate::minecraft::call_attribute(rt, member, is_static, args) {
+        if let Some(value) = crate::attributes::call(rt, member, is_static, args) {
             return Some(value);
         }
         {
