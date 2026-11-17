@@ -7,7 +7,7 @@
 //! `ServerLevel.setBlock(int, int, int, String)` is the stand-in for `Level#setBlock`.
 
 use crate::{
-    dispatch_event_on_bus, is_mod_bus_event_class, BusId, ContentProperties, DeferredSupplier,
+    dispatch_event_on_bus, BusId, ContentProperties, DeferredSupplier,
     EventCallback, EventPriority, NeoForgeState, REGISTRATION_ORDER,
 };
 use mmga_classfile::{
@@ -262,7 +262,7 @@ impl FmlLoader {
         let count = self.mods.len();
         for index in 0..count {
             self.construct_one(rt, linked, index)?;
-            self.register_subscribers(index)?;
+            self.register_subscribers(index, linked)?;
         }
         self.enter(LoadPhase::Constructed);
 
@@ -478,7 +478,7 @@ impl FmlLoader {
         Ok(())
     }
 
-    fn register_subscribers(&mut self, index: usize) -> Result<(), String> {
+    fn register_subscribers(&mut self, index: usize, linked: &LinkedSpace) -> Result<(), String> {
         let mod_id = self.mods[index].mod_id.clone();
         let subscribers = self.mods[index].subscribers.clone();
         for sub in subscribers {
@@ -489,11 +489,12 @@ impl FmlLoader {
                 if !method.is_static {
                     continue;
                 }
+                let metadata = crate::bus::event_class_metadata(linked,self,&method.event_class)?;
                 let bus = match sub.bus {
                     SubscriberBusTarget::Game => BusId::Game,
                     SubscriberBusTarget::Mod => BusId::Mod(mod_id.clone()),
                     SubscriberBusTarget::Auto => {
-                        if is_mod_bus_event_class(&method.event_class) {
+                        if metadata.is_mod_bus {
                             BusId::Mod(mod_id.clone())
                         } else {
                             BusId::Game
@@ -502,7 +503,7 @@ impl FmlLoader {
                 };
                 self.state
                     .bus
-                    .register_listener(
+                    .register_listener_with_metadata(
                         bus,
                         method.event_class.clone(),
                         EventPriority::parse(&method.priority),
@@ -513,6 +514,7 @@ impl FmlLoader {
                             method_name: method.method_name.clone(),
                             method_desc: method.method_desc.clone(),
                         },
+                        metadata,
                     )
                     .map_err(|err| format!("mod `{mod_id}` subscriber: {err}"))?;
             }
@@ -709,8 +711,9 @@ impl FmlLoader {
     ) -> Result<(), String> {
         let event = rt.new_instance(event_class, 0);
         rt.put_field(event, "$canceled", V::I(0));
+        rt.put_field(event, "isCanceled", V::FALSE);
         decorate(rt, event);
-        let listeners = self.state.bus.matching_listeners(bus, event_class);
+        let listeners = self.state.bus.matching_listeners_with_linked(bus,event_class,linked,self);
         let (ran, _) = {
             let mut ctx = ExecCtx {
                 rt,
@@ -722,6 +725,27 @@ impl FmlLoader {
         };
         self.state.bus.record_dispatch(ran);
         raise_if_pending(rt, &format!("dispatching `{event_class}`"))
+    }
+
+    fn post_supplied_event(&mut self, rt: &mut Rt, linked: &LinkedSpace, args: &[V]) -> Option<V> {
+        let bus = self.bus_id_of(rt,*args.first()?)?;
+        let event = *args.get(1)?;
+        if event.is_null() { return Some(rt.throw_exception("java/lang/NullPointerException","IEventBus.post(null)")); }
+        let class = rt.class_of(event)?.to_owned();
+        let metadata = match crate::bus::event_class_metadata(linked,self,&class) {
+            Ok(metadata) => metadata,
+            Err(message) => return Some(rt.throw_exception("java/lang/IllegalArgumentException",&message)),
+        };
+        if let Err(message) = crate::bus::validate_event_bus(&bus,&class,metadata.is_mod_bus) {
+            return Some(rt.throw_exception("java/lang/IllegalArgumentException",&message));
+        }
+        let listeners = self.state.bus.matching_listeners_with_linked(&bus,&class,linked,self);
+        let (ran,_) = {
+            let mut ctx = ExecCtx { rt, linked, host: self, depth: 0 };
+            dispatch_event_on_bus(&mut ctx,&listeners,event)
+        };
+        self.state.bus.record_dispatch(ran);
+        Some(if rt.pending_exception.is_some() { V::NULL } else { event })
     }
 
     fn mod_bus_handle(&mut self, rt: &mut Rt, mod_id: &str) -> V {
@@ -1193,8 +1217,15 @@ impl FmlLoader {
         }
     }
 
-    fn add_listener(&mut self, rt: &mut Rt, args: &[V], desc: &str) -> Option<V> {
+    fn add_listener(&mut self, rt: &mut Rt, linked: &LinkedSpace, args: &[V], desc: &str) -> Option<V> {
         let bus = self.bus_id_of(rt, *args.first()?)?;
+        let (parameters,_) = parse_method_descriptor(desc).ok()?;
+        for (index,parameter) in parameters.iter().enumerate() {
+            if matches!(parameter,DescriptorType::Object(name) if matches!(name.as_str(),"java/lang/Class" | "java/util/function/Consumer" | "net/neoforged/bus/api/EventPriority"))
+                && args.get(index+1).is_some_and(|value| value.is_null()) {
+                return Some(rt.throw_exception("java/lang/NullPointerException","addListener argument is null"));
+            }
+        }
         let mut priority = EventPriority::Normal;
         let mut receive_canceled = false;
         let mut explicit_cls: Option<String> = None;
@@ -1225,6 +1256,10 @@ impl FmlLoader {
         }
 
         let consumer = consumer?;
+        if consumer.is_null() { return Some(rt.throw_exception("java/lang/NullPointerException","addListener(null)")); }
+        if !linked.is_subtype(rt.class_of(consumer)?,"java/util/function/Consumer",self) {
+            return Some(rt.throw_exception("java/lang/ClassCastException","addListener requires Consumer"));
+        }
         let event_class = explicit_cls
             .or_else(|| event_class_of_listener(rt, consumer))
             .or_else(|| {
@@ -1234,14 +1269,19 @@ impl FmlLoader {
                 );
                 None
             })?;
+        let metadata = match crate::bus::event_class_metadata(linked,self,&event_class) {
+            Ok(metadata) => metadata,
+            Err(message) => return Some(rt.throw_exception("java/lang/IllegalArgumentException",&message)),
+        };
         rt.pin(consumer);
-        if let Err(err) = self.state.bus.register_listener(
+        if let Err(err) = self.state.bus.register_listener_with_metadata(
             bus,
             event_class,
             priority,
             receive_canceled,
             consumer,
             EventCallback::Consumer(consumer),
+            metadata,
         ) {
             rt.throw_exception("java/lang/IllegalArgumentException", &err);
         }
@@ -1276,6 +1316,10 @@ impl FmlLoader {
                     if only_static != m.is_static {
                         continue;
                     }
+                    let metadata = match crate::bus::event_class_metadata(linked,self,&m.event_class) {
+                        Ok(metadata) => metadata,
+                        Err(message) => return Some(rt.throw_exception("java/lang/IllegalArgumentException",&message)),
+                    };
                     let cb = if m.is_static {
                         EventCallback::StaticMethod {
                             class_name: cls.to_owned(),
@@ -1290,13 +1334,14 @@ impl FmlLoader {
                             method_desc: m.method_desc,
                         }
                     };
-                    if let Err(err) = self.state.bus.register_listener(
+                    if let Err(err) = self.state.bus.register_listener_with_metadata(
                         bus.clone(),
                         m.event_class,
                         EventPriority::parse(&m.priority),
                         m.receive_canceled,
                         target,
                         cb,
+                        metadata,
                     ) {
                         rt.throw_exception("java/lang/IllegalArgumentException", &err);
                         return Some(V::Void);
@@ -1762,6 +1807,10 @@ impl HostApi for FmlLoader {
         is_static: bool,
         args: &[V],
     ) -> Option<V> {
+        {
+            let mut ctx = ExecCtx { rt, linked, host: self, depth: 0 };
+            if let Some(value) = crate::bus::event_api_call(&mut ctx,member,is_static,args) { return Some(value); }
+        }
         if let Some(value) = self.fml_identity(rt, member, is_static, args) {
             return Some(value);
         }
@@ -2108,7 +2157,8 @@ impl HostApi for FmlLoader {
             && !is_static
         {
             return match member.name.as_str() {
-                "addListener" => self.add_listener(rt, args, &member.desc),
+                "addListener" => self.add_listener(rt, linked, args, &member.desc),
+                "post" if member.desc == "(Lnet/neoforged/bus/api/Event;)Lnet/neoforged/bus/api/Event;" => self.post_supplied_event(rt,linked,args),
                 "register" => self.register_bus_target(rt, linked, args),
                 "unregister" => {
                     let bus = self.bus_id_of(rt, *args.first()?)?;
@@ -2148,6 +2198,10 @@ impl HostApi for FmlLoader {
     fn is_api_subtype(&self, sub_class: &str, super_class: &str) -> bool {
         if sub_class == super_class {
             return true;
+        }
+        if let Some(spec) = crate::find_builtin_event(sub_class) {
+            if (spec.is_mod_bus && super_class == "net/neoforged/fml/event/IModBusEvent")
+                || (spec.is_cancellable && super_class == "net/neoforged/bus/api/ICancellableEvent") { return true; }
         }
         // These host-owned values have no bytecode superclass/interface table.
         // Keep the exact 1.21.1 hierarchy visible to CHECKCAST, INSTANCEOF, and Class.
@@ -2561,6 +2615,140 @@ mod tests {
     use crate::BlockCoord;
     use std::io::{Cursor, Write};
     use std::process::Command;
+
+    fn fixture_event_class(name: &str, parent: &str, interfaces: &[&str], is_abstract: bool) -> ClassFile {
+        ClassFile {
+            major_version: 65, minor_version: 0, pool: vec![mmga_classfile::Const::Unused],
+            access: mmga_classfile::access::PUBLIC | if is_abstract { mmga_classfile::access::ABSTRACT } else { 0 },
+            name: name.into(), superclass: Some(parent.into()), interfaces: interfaces.iter().map(|s| (*s).into()).collect(),
+            fields: vec![], methods: vec![], annotations: vec![], bootstrap_methods: vec![], signature: None, record_components: vec![],
+        }
+    }
+    #[test]
+    fn custom_event_constructor_and_cancellation_preserve_original_subclass_fields() {
+        let mut prepared = PreparedLoad::from_jars(vec![],true).unwrap();
+        let cls = fixture_event_class("test/CancelableEvent","net/neoforged/bus/api/Event",&["net/neoforged/bus/api/ICancellableEvent"],false);
+        prepared.linked.add_bytecode_classes(BTreeMap::from([(cls.name.clone(),cls)]));
+        let mut rt = Rt::new();
+        let event = rt.new_instance("test/CancelableEvent",0);
+        let payload = rt.new_instance("test/Payload",0);
+        rt.put_field(event,"payload",payload);
+        let mut ctx = ExecCtx { rt: &mut rt, linked: &prepared.linked, host: &mut prepared.loader, depth: 0 };
+        invoke_member(&mut ctx,op::INVOKESPECIAL,&MemberRef::new("net/neoforged/bus/api/Event","<init>","()V"),&[event]);
+        assert!(ctx.rt.pending_exception.is_none(),"Event super constructor must be executable");
+        assert_eq!(ctx.rt.get_field(event,"payload"),payload);
+        assert_eq!(ctx.rt.get_field(event,"isCanceled"),V::FALSE);
+        let read = MemberRef::new("net/neoforged/bus/api/ICancellableEvent","isCanceled","()Z");
+        let set = MemberRef::new("net/neoforged/bus/api/ICancellableEvent","setCanceled","(Z)V");
+        assert_eq!(invoke_member(&mut ctx,op::INVOKEINTERFACE,&read,&[event]),V::FALSE);
+        invoke_member(&mut ctx,op::INVOKEINTERFACE,&set,&[event,V::TRUE]);
+        assert!(ctx.rt.pending_exception.is_none());
+        assert_eq!(ctx.rt.get_field(event,"isCanceled"),V::TRUE);
+        assert_eq!(invoke_member(&mut ctx,op::INVOKEINTERFACE,&read,&[event]),V::TRUE);
+        invoke_member(&mut ctx,op::INVOKEINTERFACE,&set,&[event,V::FALSE]);
+        assert_eq!(ctx.rt.get_field(event,"isCanceled"),V::FALSE);
+        assert_eq!(ctx.rt.get_field(event,"payload"),payload);
+        let specialized = ctx.rt.new_instance("net/neoforged/neoforge/event/entity/player/PlayerInteractEvent$RightClickBlock",0);
+        invoke_member(&mut ctx,op::INVOKEINTERFACE,&set,&[specialized,V::TRUE]);
+        let error = ctx.rt.take_exception().unwrap();
+        assert_eq!(ctx.rt.class_of(error),Some("java/lang/UnsupportedOperationException"));
+        assert!(ctx.rt.exception_summary(error).contains("useBlock/useItem"));
+    }
+    fn event_hit(ctx: &mut ExecCtx<'_>, args: &[V]) -> V {
+        let observer = args[0]; let event = args[1];
+        let count = ctx.rt.get_field(observer,"calls").i();
+        ctx.rt.put_field(observer,"calls",V::I(count+1));
+        ctx.rt.put_field(observer,"event",event);
+        V::Void
+    }
+    fn event_cancel(ctx: &mut ExecCtx<'_>, args: &[V]) -> V {
+        event_hit(ctx,args);
+        invoke_member(ctx,op::INVOKEINTERFACE,&MemberRef::new("net/neoforged/bus/api/ICancellableEvent","setCanceled","(Z)V"),&[args[1],V::TRUE])
+    }
+    fn event_fail(ctx: &mut ExecCtx<'_>, args: &[V]) -> V {
+        event_hit(ctx,args);
+        ctx.rt.throw_exception("test/ListenerFailure","callback failure")
+    }
+    fn event_consumer(rt: &mut Rt, observer: V, cancel: bool) -> V {
+        rt.alloc("java/util/function/Consumer",0,Data::Closure(Box::new(mmga_runtime::ClosureData {
+            interface_class: "java/util/function/Consumer".into(), sam_name: "accept".into(),
+            sam_desc: "(Ljava/lang/Object;)V".into(), instantiated_desc: "(Ltest/ChildEvent;)V".into(),
+            captures: vec![observer], target: mmga_runtime::ClosureTarget::NativeLambda(if cancel { 102 } else { 101 }),
+        })))
+    }
+    #[test]
+    fn custom_mod_event_post_keeps_receiver_and_dispatches_concrete_ancestor_listeners() {
+        let mut prepared = PreparedLoad::from_jars(vec![],true).unwrap();
+        let base = fixture_event_class("test/BaseEvent","net/neoforged/bus/api/Event",&["net/neoforged/fml/event/IModBusEvent","net/neoforged/bus/api/ICancellableEvent"],false);
+        let child = fixture_event_class("test/ChildEvent","test/BaseEvent",&[],false);
+        prepared.linked.add_bytecode_classes(BTreeMap::from([(base.name.clone(),base),(child.name.clone(),child)]));
+        prepared.linked.register_native_module(mmga_runtime::NativeModuleRegistry { classes: &[], lambdas: &[(101,event_hit),(102,event_cancel)] });
+        let mut rt = Rt::new();
+        let bus = prepared.loader.mod_bus_handle(&mut rt,"test");
+        let base_class = rt.new_pinned_handle("java/lang/Class","class",0,"test/BaseEvent");
+        let child_class = rt.new_pinned_handle("java/lang/Class","class",0,"test/ChildEvent");
+        let first_observer = rt.new_instance("test/Observer",0); let skipped_observer = rt.new_instance("test/Observer",0); let last_observer = rt.new_instance("test/Observer",0);
+        let first = event_consumer(&mut rt,first_observer,true); let skipped = event_consumer(&mut rt,skipped_observer,false); let last = event_consumer(&mut rt,last_observer,false);
+        let highest = rt.new_pinned_handle("net/neoforged/bus/api/EventPriority","event_priority",0,"HIGHEST");
+        let lowest = rt.new_pinned_handle("net/neoforged/bus/api/EventPriority","event_priority",4,"LOWEST");
+        let event = rt.new_instance("test/ChildEvent",0);
+        let mut ctx = ExecCtx { rt: &mut rt, linked: &prepared.linked, host: &mut prepared.loader, depth: 0 };
+        let add = MemberRef::new("net/neoforged/bus/api/IEventBus","addListener","(Lnet/neoforged/bus/api/EventPriority;ZLjava/lang/Class;Ljava/util/function/Consumer;)V");
+        invoke_member(&mut ctx,op::INVOKEINTERFACE,&add,&[bus,highest,V::FALSE,child_class,first]);
+        assert!(ctx.rt.pending_exception.is_none(),"Custom IModBusEvent must pass linked metadata validation");
+        invoke_member(&mut ctx,op::INVOKEINTERFACE,&MemberRef::new("net/neoforged/bus/api/IEventBus","addListener","(Ljava/lang/Class;Ljava/util/function/Consumer;)V"),&[bus,base_class,skipped]);
+        invoke_member(&mut ctx,op::INVOKEINTERFACE,&add,&[bus,lowest,V::TRUE,base_class,last]);
+        assert!(ctx.rt.pending_exception.is_none());
+        invoke_member(&mut ctx,op::INVOKESPECIAL,&MemberRef::new("net/neoforged/bus/api/Event","<init>","()V"),&[event]);
+        let posted = invoke_member(&mut ctx,op::INVOKEINTERFACE,&MemberRef::new("net/neoforged/bus/api/IEventBus","post","(Lnet/neoforged/bus/api/Event;)Lnet/neoforged/bus/api/Event;"),&[bus,event]);
+        assert!(ctx.rt.pending_exception.is_none());
+        assert_eq!(posted,event);
+        assert_eq!(ctx.rt.get_field(first_observer,"calls"),V::I(1));
+        assert_eq!(ctx.rt.get_field(skipped_observer,"calls").i(),0);
+        assert_eq!(ctx.rt.get_field(last_observer,"calls"),V::I(1));
+        assert_eq!(ctx.rt.get_field(first_observer,"event"),event);
+        assert_eq!(ctx.rt.get_field(last_observer,"event"),event);
+    }
+    #[test]
+    fn custom_events_reject_wrong_bus_abstract_and_null_arguments_and_preserve_callback_failure() {
+        let mut prepared = PreparedLoad::from_jars(vec![],true).unwrap();
+        let custom = fixture_event_class("test/ModEvent","net/neoforged/bus/api/Event",&["net/neoforged/fml/event/IModBusEvent"],false);
+        let abstract_event = fixture_event_class("test/AbstractEvent","net/neoforged/bus/api/Event",&["net/neoforged/fml/event/IModBusEvent"],true);
+        let game_event = fixture_event_class("test/GameEvent","net/neoforged/bus/api/Event",&[],false);
+        prepared.linked.add_bytecode_classes(BTreeMap::from([(custom.name.clone(),custom),(abstract_event.name.clone(),abstract_event),(game_event.name.clone(),game_event)]));
+        prepared.linked.register_native_module(mmga_runtime::NativeModuleRegistry { classes: &[], lambdas: &[(101,event_hit),(103,event_fail)] });
+        let mut rt = Rt::new();
+        let bus = prepared.loader.mod_bus_handle(&mut rt,"test"); let game = prepared.loader.game_bus_handle(&mut rt);
+        let class = rt.new_pinned_handle("java/lang/Class","class",0,"test/ModEvent");
+        let abstract_class = rt.new_pinned_handle("java/lang/Class","class",0,"test/AbstractEvent");
+        let observer = rt.new_instance("test/Observer",0); let skipped_observer = rt.new_instance("test/Observer",0);
+        let fail = event_consumer(&mut rt,observer,false);
+        if let Some(Data::Closure(closure)) = rt.get_obj_mut(fail).map(|o|&mut o.data) { closure.target = mmga_runtime::ClosureTarget::NativeLambda(103); }
+        let skipped = event_consumer(&mut rt,skipped_observer,false);
+        let event = rt.new_instance("test/ModEvent",0); let wrong = rt.new_instance("test/GameEvent",0);
+        let mut ctx = ExecCtx { rt: &mut rt, linked: &prepared.linked, host: &mut prepared.loader, depth: 0 };
+        let add = MemberRef::new("net/neoforged/bus/api/IEventBus","addListener","(Ljava/lang/Class;Ljava/util/function/Consumer;)V");
+        for (target,typ,consumer,exception) in [(game,class,fail,"java/lang/IllegalArgumentException"),(bus,abstract_class,fail,"java/lang/IllegalArgumentException"),(bus,V::NULL,fail,"java/lang/NullPointerException"),(bus,class,V::NULL,"java/lang/NullPointerException")] {
+            invoke_member(&mut ctx,op::INVOKEINTERFACE,&add,&[target,typ,consumer]);
+            let caught = ctx.rt.take_exception().expect(exception);
+            assert_eq!(ctx.rt.class_of(caught),Some(exception));
+        }
+        let post = MemberRef::new("net/neoforged/bus/api/IEventBus","post","(Lnet/neoforged/bus/api/Event;)Lnet/neoforged/bus/api/Event;");
+        for (target,value,exception) in [(game,event,"java/lang/IllegalArgumentException"),(bus,wrong,"java/lang/IllegalArgumentException"),(bus,V::NULL,"java/lang/NullPointerException")] {
+            invoke_member(&mut ctx,op::INVOKEINTERFACE,&post,&[target,value]);
+            let caught = ctx.rt.take_exception().expect(exception);
+            assert_eq!(ctx.rt.class_of(caught),Some(exception));
+        }
+        invoke_member(&mut ctx,op::INVOKEINTERFACE,&add,&[bus,class,fail]);
+        invoke_member(&mut ctx,op::INVOKEINTERFACE,&add,&[bus,class,skipped]);
+        assert!(ctx.rt.pending_exception.is_none());
+        invoke_member(&mut ctx,op::INVOKEINTERFACE,&post,&[bus,event]);
+        let caught = ctx.rt.take_exception().unwrap();
+        assert_eq!(ctx.rt.class_of(caught),Some("test/ListenerFailure"));
+        assert_eq!(ctx.rt.get_field(observer,"calls"),V::I(1));
+        assert_eq!(ctx.rt.get_field(observer,"event"),event);
+        assert_eq!(ctx.rt.get_field(skipped_observer,"calls").i(),0);
+    }
 
     fn empty_jar(name: &str, toml: &str) -> ModJar {
         ModJar {

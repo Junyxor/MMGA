@@ -1,7 +1,7 @@
 //! NeoForge Event Class Table, Priority Ordering, Mod Bus vs Game Bus Isolation,
 //! `ICancellableEvent`, and High-Speed Rust `EventBusEngine` (`net.neoforged.bus`).
 
-use mmga_runtime::{ExecCtx, Rt, V};
+use mmga_runtime::{Data, ExecCtx, HostApi, LinkedSpace, Rt, V};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -197,6 +197,582 @@ pub const BUILTIN_EVENTS: &[BuiltinEventSpec] = &[
         is_abstract: false,
     },
     // Game-bus server, tick, command, world, block, entity, and player events
+    BuiltinEventSpec {
+        // NeoForge 1.21.1 AddReloadListenerEvent: concrete Event, game bus, no
+        // IModBusEvent or ICancellableEvent (official source declaration).
+        class: "net/neoforged/neoforge/event/AddReloadListenerEvent",
+        superclass: "net/neoforged/bus/api/Event",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        // Official source blob b7bdadb24adef50ccf3d697045ad2489288d9c7f.
+        class: "net/neoforged/neoforge/event/OnDatapackSyncEvent",
+        superclass: "net/neoforged/bus/api/Event",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        // Official source blob 713986d06dc0cdca5f67e371717a3da6e1b48b04.
+        class: "net/neoforged/neoforge/event/ItemAttributeModifierEvent",
+        superclass: "net/neoforged/bus/api/Event",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        // Official source blob 038e24785bf07e65c1e82ce49c33f4f0b7447c23.
+        class: "net/neoforged/neoforge/event/entity/EntityMountEvent",
+        superclass: "net/neoforged/neoforge/event/entity/EntityEvent",
+        is_mod_bus: false,
+        is_cancellable: true,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        // Official source blob 2244c9b6409cc1dc601513fc717ee7e2ff23e4fd.
+        class: "net/neoforged/neoforge/event/TagsUpdatedEvent",
+        superclass: "net/neoforged/bus/api/Event",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        // Official source blob 7d606cb229ff7c48c009f756dd6532f3bc7fd722.
+        class: "net/neoforged/neoforge/server/permission/events/PermissionGatherEvent",
+        superclass: "net/neoforged/bus/api/Event",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: true,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/server/permission/events/PermissionGatherEvent$Nodes",
+        superclass: "net/neoforged/neoforge/server/permission/events/PermissionGatherEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    // Verified nested class declarations in official source blobs
+    // 20b956e4971e7d272736cdc765bac72c1ba77c42 (EntityEvent),
+    // 3b26d85a2b54275cb798fd16d489b8e3b3782f3a (LevelEvent), and
+    // 388b231c89794e7b2c5e6b6bff56dcb34bab948a (PlayerInteractEvent).
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/level/LevelEvent",
+        superclass: "net/neoforged/bus/api/Event",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: true,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/EntityEvent$EntityConstructing",
+        superclass: "net/neoforged/neoforge/event/entity/EntityEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/EntityEvent$EnteringSection",
+        superclass: "net/neoforged/neoforge/event/entity/EntityEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/EntityEvent$Size",
+        superclass: "net/neoforged/neoforge/event/entity/EntityEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/level/LevelEvent$Load",
+        superclass: "net/neoforged/neoforge/event/level/LevelEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/level/LevelEvent$Unload",
+        superclass: "net/neoforged/neoforge/event/level/LevelEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/level/LevelEvent$Save",
+        superclass: "net/neoforged/neoforge/event/level/LevelEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/level/LevelEvent$CreateSpawnPosition",
+        superclass: "net/neoforged/neoforge/event/level/LevelEvent",
+        is_mod_bus: false,
+        is_cancellable: true,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/level/LevelEvent$PotentialSpawns",
+        superclass: "net/neoforged/neoforge/event/level/LevelEvent",
+        is_mod_bus: false,
+        is_cancellable: true,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class:
+            "net/neoforged/neoforge/event/entity/player/PlayerInteractEvent$EntityInteractSpecific",
+        superclass: "net/neoforged/neoforge/event/entity/player/PlayerInteractEvent",
+        is_mod_bus: false,
+        is_cancellable: true,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/player/PlayerInteractEvent$EntityInteract",
+        superclass: "net/neoforged/neoforge/event/entity/player/PlayerInteractEvent",
+        is_mod_bus: false,
+        is_cancellable: true,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/player/PlayerInteractEvent$RightClickEmpty",
+        superclass: "net/neoforged/neoforge/event/entity/player/PlayerInteractEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/player/PlayerInteractEvent$LeftClickEmpty",
+        superclass: "net/neoforged/neoforge/event/entity/player/PlayerInteractEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    // PlayerEvent nested classes: official source blob 020c86cb0eee7b427bc9b047ce0c37a577b32d62.
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/player/PlayerEvent$StartTracking",
+        superclass: "net/neoforged/neoforge/event/entity/player/PlayerEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/player/PlayerEvent$StopTracking",
+        superclass: "net/neoforged/neoforge/event/entity/player/PlayerEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/player/PlayerEvent$Clone",
+        superclass: "net/neoforged/neoforge/event/entity/player/PlayerEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/player/PlayerEvent$HarvestCheck",
+        superclass: "net/neoforged/neoforge/event/entity/player/PlayerEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/player/PlayerEvent$BreakSpeed",
+        superclass: "net/neoforged/neoforge/event/entity/player/PlayerEvent",
+        is_mod_bus: false,
+        is_cancellable: true,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/player/PlayerEvent$NameFormat",
+        superclass: "net/neoforged/neoforge/event/entity/player/PlayerEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/player/PlayerEvent$TabListNameFormat",
+        superclass: "net/neoforged/neoforge/event/entity/player/PlayerEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/player/PlayerEvent$LoadFromFile",
+        superclass: "net/neoforged/neoforge/event/entity/player/PlayerEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/player/PlayerEvent$SaveToFile",
+        superclass: "net/neoforged/neoforge/event/entity/player/PlayerEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/player/PlayerEvent$ItemCraftedEvent",
+        superclass: "net/neoforged/neoforge/event/entity/player/PlayerEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/player/PlayerEvent$ItemSmeltedEvent",
+        superclass: "net/neoforged/neoforge/event/entity/player/PlayerEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/player/PlayerEvent$PlayerRespawnEvent",
+        superclass: "net/neoforged/neoforge/event/entity/player/PlayerEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/player/PlayerEvent$PlayerChangedDimensionEvent",
+        superclass: "net/neoforged/neoforge/event/entity/player/PlayerEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/player/PlayerEvent$PlayerChangeGameModeEvent",
+        superclass: "net/neoforged/neoforge/event/entity/player/PlayerEvent",
+        is_mod_bus: false,
+        is_cancellable: true,
+        is_abstract: false,
+    },
+    // Official source blobs b0430e4bb64b02d59ee63f8adccde53522edf16c (equipment),
+    // a1df6a1200760f7d4d766fccff12def0a3de9b48 (drops),
+    // 1027c464b3cf4d349c23a945072d8d0d4d4c53e4 (XP),
+    // 609f65f471b9ab7f107bc371fcf5af31c035f7e0 (block drops),
+    // ac64fdcdfb37aae4ae64ce7fea43c8eebc71d6c3 (Enderman),
+    // b70e452c1aed612ad0d02731eae01426631006ac (entity ticks),
+    // 6e764cd6c1bf08110d092c28d2dae26a9a1f22ca (attack),
+    // 68421037a0e46c24fa69bf3a0c83480cdf4986a0 (leave),
+    // 84ff860e92c68fad3538ff7441ef2f295c67ea1a (chunks).
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/living/LivingEquipmentChangeEvent",
+        superclass: "net/neoforged/neoforge/event/entity/living/LivingEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/living/LivingDropsEvent",
+        superclass: "net/neoforged/neoforge/event/entity/living/LivingEvent",
+        is_mod_bus: false,
+        is_cancellable: true,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/player/PlayerXpEvent",
+        superclass: "net/neoforged/neoforge/event/entity/player/PlayerEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: true,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/player/PlayerXpEvent$PickupXp",
+        superclass: "net/neoforged/neoforge/event/entity/player/PlayerXpEvent",
+        is_mod_bus: false,
+        is_cancellable: true,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/player/PlayerXpEvent$XpChange",
+        superclass: "net/neoforged/neoforge/event/entity/player/PlayerXpEvent",
+        is_mod_bus: false,
+        is_cancellable: true,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/player/PlayerXpEvent$LevelChange",
+        superclass: "net/neoforged/neoforge/event/entity/player/PlayerXpEvent",
+        is_mod_bus: false,
+        is_cancellable: true,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/level/BlockDropsEvent",
+        superclass: "net/neoforged/neoforge/event/level/BlockEvent",
+        is_mod_bus: false,
+        is_cancellable: true,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/living/EnderManAngerEvent",
+        superclass: "net/neoforged/neoforge/event/entity/living/LivingEvent",
+        is_mod_bus: false,
+        is_cancellable: true,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/tick/EntityTickEvent",
+        superclass: "net/neoforged/neoforge/event/entity/EntityEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: true,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/tick/EntityTickEvent$Pre",
+        superclass: "net/neoforged/neoforge/event/tick/EntityTickEvent",
+        is_mod_bus: false,
+        is_cancellable: true,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/tick/EntityTickEvent$Post",
+        superclass: "net/neoforged/neoforge/event/tick/EntityTickEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/player/AttackEntityEvent",
+        superclass: "net/neoforged/neoforge/event/entity/player/PlayerEvent",
+        is_mod_bus: false,
+        is_cancellable: true,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/EntityLeaveLevelEvent",
+        superclass: "net/neoforged/neoforge/event/entity/EntityEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/level/ChunkEvent",
+        superclass: "net/neoforged/neoforge/event/level/LevelEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: true,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/level/ChunkEvent$Load",
+        superclass: "net/neoforged/neoforge/event/level/ChunkEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/level/ChunkEvent$Unload",
+        superclass: "net/neoforged/neoforge/event/level/ChunkEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    // Further Create subscriber signatures, individually checked against official sources.
+    // LivingEvent febd2cd3161764319c706c57ca4591d6a96d3e19.
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/living/LivingEvent$LivingJumpEvent",
+        superclass: "net/neoforged/neoforge/event/entity/living/LivingEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/living/LivingEvent$LivingVisibilityEvent",
+        superclass: "net/neoforged/neoforge/event/entity/living/LivingEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    // AddPackFindersEvent 94dcc0390771cbcd60c17398da6b7a2372a97fc8;
+    // RegisterGameTestsEvent 31331997ceaba13ee5d3d52dcd11d149e271443f;
+    // ProjectileImpactEvent 07fd59a89e075b3b89136336c2ae5fc426ef2597;
+    // LivingBreatheEvent 06b11769a6d34d3b486082b6d1bbbe827968f4e9;
+    // LivingChangeTargetEvent e8cde2014c8c2a670b086d367298a8c07aedcc7b;
+    // LivingExperienceDropEvent 28e9212cab3e89044f4d0ad86a9702d8680095c2;
+    // LivingKnockBackEvent 16665fe64091f66e8cb85238ef8ca7735511f86a;
+    // ItemTooltipEvent f78a72b181b9e163b0898dc8a4bc10ee9c0a50a6;
+    // PlayerTickEvent 148de6e6e1945476674df4cf48f605fc004af9ac;
+    // DataPackRegistryEvent 8fee27ff8e2648133128373a7fcc8a465401bf55;
+    // RegisterDataMapTypesEvent 3bde6da598112becb2b6d57a08632d32b2f51997.
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/AddPackFindersEvent",
+        superclass: "net/neoforged/bus/api/Event",
+        is_mod_bus: true,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/RegisterGameTestsEvent",
+        superclass: "net/neoforged/bus/api/Event",
+        is_mod_bus: true,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/ProjectileImpactEvent",
+        superclass: "net/neoforged/neoforge/event/entity/EntityEvent",
+        is_mod_bus: false,
+        is_cancellable: true,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/living/LivingBreatheEvent",
+        superclass: "net/neoforged/neoforge/event/entity/living/LivingEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/living/LivingChangeTargetEvent",
+        superclass: "net/neoforged/neoforge/event/entity/living/LivingEvent",
+        is_mod_bus: false,
+        is_cancellable: true,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/living/LivingExperienceDropEvent",
+        superclass: "net/neoforged/neoforge/event/entity/living/LivingEvent",
+        is_mod_bus: false,
+        is_cancellable: true,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/living/LivingKnockBackEvent",
+        superclass: "net/neoforged/neoforge/event/entity/living/LivingEvent",
+        is_mod_bus: false,
+        is_cancellable: true,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/player/ItemTooltipEvent",
+        superclass: "net/neoforged/neoforge/event/entity/player/PlayerEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/tick/PlayerTickEvent",
+        superclass: "net/neoforged/neoforge/event/entity/player/PlayerEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: true,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/tick/PlayerTickEvent$Pre",
+        superclass: "net/neoforged/neoforge/event/tick/PlayerTickEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/tick/PlayerTickEvent$Post",
+        superclass: "net/neoforged/neoforge/event/tick/PlayerTickEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/registries/DataPackRegistryEvent",
+        superclass: "net/neoforged/bus/api/Event",
+        is_mod_bus: true,
+        is_cancellable: false,
+        is_abstract: true,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/registries/DataPackRegistryEvent$NewRegistry",
+        superclass: "net/neoforged/neoforge/registries/DataPackRegistryEvent",
+        is_mod_bus: true,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/registries/datamaps/RegisterDataMapTypesEvent",
+        superclass: "net/neoforged/bus/api/Event",
+        is_mod_bus: true,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    // Shared Create subscriber classes refer to these client event types even on a
+    // dedicated server. This table supplies class facts, not client execution.
+    // ClientTickEvent 78c33948c096d0faed4348aaf8b4dd6db2d429ad;
+    // InputEvent 7c368f3b19f9f208d7c8fac32e0572e4b3a2facf;
+    // RenderHighlightEvent 089081b67a7e661c9b1d987c8c8b5ebc6258d5b4;
+    // RenderLevelStageEvent 5a018d69444179b98e566461b6e93d985c5fff14;
+    // RegisterMapDecorationRenderersEvent d21fe3c1d2f5e1bf263243935f600d04e4781d5f.
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/client/event/ClientTickEvent",
+        superclass: "net/neoforged/bus/api/Event",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: true,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/client/event/ClientTickEvent$Post",
+        superclass: "net/neoforged/neoforge/client/event/ClientTickEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/client/event/InputEvent",
+        superclass: "net/neoforged/bus/api/Event",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: true,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/client/event/InputEvent$InteractionKeyMappingTriggered",
+        superclass: "net/neoforged/neoforge/client/event/InputEvent",
+        is_mod_bus: false,
+        is_cancellable: true,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/client/event/RenderHighlightEvent",
+        superclass: "net/neoforged/bus/api/Event",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: true,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/client/event/RenderHighlightEvent$Block",
+        superclass: "net/neoforged/neoforge/client/event/RenderHighlightEvent",
+        is_mod_bus: false,
+        is_cancellable: true,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/client/event/RenderLevelStageEvent",
+        superclass: "net/neoforged/bus/api/Event",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/client/gui/map/RegisterMapDecorationRenderersEvent",
+        superclass: "net/neoforged/bus/api/Event",
+        is_mod_bus: true,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    // Official source blob ceb9d7fbb48cdc0bc8886e8499d9dc95b9358218.
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/level/ChunkTicketLevelUpdatedEvent",
+        superclass: "net/neoforged/bus/api/Event",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    // Official 1.21.1 source blob 1e4343698bddb5ae934142eb6173facb3661bc36.
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/client/event/RecipesUpdatedEvent",
+        superclass: "net/neoforged/bus/api/Event",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
     BuiltinEventSpec {
         class: "net/neoforged/neoforge/event/server/ServerLifecycleEvent",
         superclass: "net/neoforged/bus/api/Event",
@@ -430,6 +1006,127 @@ pub fn is_mod_bus_event_class(class_name: &str) -> bool {
         )
 }
 
+/// Actual class facts used when a Java mod supplies its own event subclass.
+/// Host-owned built-ins use the verified table; user classes use the linked classfile.
+#[derive(Debug, Clone, Copy)]
+pub struct EventClassMetadata {
+    pub is_mod_bus: bool,
+    pub is_abstract: bool,
+}
+
+pub fn event_class_metadata(
+    linked: &LinkedSpace,
+    host: &dyn HostApi,
+    class: &str,
+) -> Result<EventClassMetadata, String> {
+    if let Some(cf) = linked.bytecode_classes.get(class) {
+        if !linked.is_subtype(class, "net/neoforged/bus/api/Event", host) {
+            return Err(format!(
+                "{} is not an Event subtype",
+                class.replace('/', ".")
+            ));
+        }
+        return Ok(EventClassMetadata {
+            is_mod_bus: linked.is_subtype(class, "net/neoforged/fml/event/IModBusEvent", host),
+            is_abstract: cf.access & mmga_classfile::access::ABSTRACT != 0,
+        });
+    }
+    if let Some(spec) = find_builtin_event(class) {
+        return Ok(EventClassMetadata {
+            is_mod_bus: spec.is_mod_bus,
+            is_abstract: spec.is_abstract,
+        });
+    }
+    Err(format!(
+        "Event class metadata is unavailable for {}",
+        class.replace('/', ".")
+    ))
+}
+
+pub fn validate_event_bus(bus: &BusId, class: &str, is_mod_bus: bool) -> Result<(), String> {
+    match bus {
+        BusId::Game if is_mod_bus => Err(format!("IModBusEvent {} is not allowed on the common NeoForge.EVENT_BUS! Use the mod event bus instead.", class.replace('/', "."))),
+        BusId::Mod(_) if !is_mod_bus => Err(format!("Mod event bus only accepts subclasses of IModBusEvent, which class {} is not.", class.replace('/', "."))),
+        _ => Ok(()),
+    }
+}
+
+/// NeoForge Event's real field is authoritative for constructed Java events.
+/// `$canceled` remains the legacy storage for native host events that predate that field.
+pub fn event_is_canceled(rt: &Rt, event: V) -> bool {
+    if let Some(Data::Fields(fields)) = rt.get_obj(event).map(|o| &o.data) {
+        if let Some(value) = fields.get("isCanceled") {
+            return value.i() != 0;
+        }
+    }
+    rt.get_field(event, "$canceled").i() != 0
+}
+
+pub fn event_api_call(
+    ctx: &mut ExecCtx<'_>,
+    member: &mmga_classfile::MemberRef,
+    is_static: bool,
+    args: &[V],
+) -> Option<V> {
+    if is_static {
+        return None;
+    }
+    let receiver = *args.first()?;
+    if member.owner == "net/neoforged/bus/api/Event"
+        && member.name == "<init>"
+        && member.desc == "()V"
+    {
+        ctx.rt.put_field(receiver, "isCanceled", V::FALSE);
+        ctx.rt.put_field(receiver, "$canceled", V::FALSE);
+        return Some(V::Void);
+    }
+    if !matches!(
+        (member.name.as_str(), member.desc.as_str()),
+        ("isCanceled", "()Z") | ("setCanceled", "(Z)V")
+    ) {
+        return None;
+    }
+    let class = ctx.rt.class_of(receiver)?;
+    if !ctx
+        .linked
+        .is_subtype(class, "net/neoforged/bus/api/ICancellableEvent", ctx.host)
+    {
+        return None;
+    }
+    if !ctx
+        .linked
+        .is_subtype(class, "net/neoforged/bus/api/Event", ctx.host)
+    {
+        return Some(ctx.rt.throw_exception(
+            "java/lang/ClassCastException",
+            "ICancellableEvent default method requires an Event receiver",
+        ));
+    }
+    if member.name == "isCanceled" {
+        Some(V::bool(event_is_canceled(ctx.rt, receiver)))
+    } else {
+        // These official subclasses override cancellation to also modify useBlock/useItem.
+        // Their runtime methods are not loaded, so executing only the interface's field
+        // update would falsely report that the full override ran.
+        if [
+            "net/neoforged/neoforge/event/entity/player/PlayerInteractEvent$RightClickBlock",
+            "net/neoforged/neoforge/event/entity/player/PlayerInteractEvent$LeftClickBlock",
+        ]
+        .iter()
+        .any(|parent| ctx.linked.is_subtype(class, parent, ctx.host))
+        {
+            return Some(ctx.rt.throw_exception(
+                "java/lang/UnsupportedOperationException",
+                "PlayerInteractEvent block cancellation requires its useBlock/useItem override",
+            ));
+        }
+        let value = *args.get(1)?;
+        ctx.rt.put_field(receiver, "isCanceled", value);
+        ctx.rt.put_field(receiver, "$canceled", value);
+        Some(V::Void)
+    }
+}
+
 /// Target callback of a registered event listener.
 #[derive(Debug, Clone)]
 pub enum EventCallback {
@@ -505,30 +1202,38 @@ impl EventBusEngine {
         owner_token: V,
         callback: EventCallback,
     ) -> Result<u64, String> {
-        if let Some(spec) = find_builtin_event(&event_class) {
-            if spec.is_abstract {
-                return Err(format!(
+        let metadata = EventClassMetadata {
+            is_mod_bus: is_mod_bus_event_class(&event_class),
+            is_abstract: find_builtin_event(&event_class).is_some_and(|spec| spec.is_abstract),
+        };
+        self.register_listener_with_metadata(
+            bus,
+            event_class,
+            priority,
+            receive_canceled,
+            owner_token,
+            callback,
+            metadata,
+        )
+    }
+
+    pub fn register_listener_with_metadata(
+        &mut self,
+        bus: BusId,
+        event_class: String,
+        priority: EventPriority,
+        receive_canceled: bool,
+        owner_token: V,
+        callback: EventCallback,
+        metadata: EventClassMetadata,
+    ) -> Result<u64, String> {
+        if metadata.is_abstract {
+            return Err(format!(
                     "Cannot register listeners for abstract class {}. Register a listener to one of its subclasses instead!",
                     event_class.replace('/', ".")
                 ));
-            }
         }
-        let mod_event = is_mod_bus_event_class(&event_class);
-        match &bus {
-            BusId::Game if mod_event => {
-                return Err(format!(
-                    "IModBusEvent {} is not allowed on the common NeoForge.EVENT_BUS! Use the mod event bus instead.",
-                    event_class.replace('/', ".")
-                ));
-            }
-            BusId::Mod(_) if !mod_event => {
-                return Err(format!(
-                    "Mod event bus only accepts subclasses of IModBusEvent, which class {} is not.",
-                    event_class.replace('/', ".")
-                ));
-            }
-            _ => {}
-        }
+        validate_event_bus(&bus, &event_class, metadata.is_mod_bus)?;
 
         let id = self.next_id;
         self.next_id += 1;
@@ -555,6 +1260,25 @@ impl EventBusEngine {
             .listeners
             .iter()
             .filter(|l| &l.bus == bus && event_matches(&l.event_class, event_class))
+            .cloned()
+            .collect();
+        matched.sort_by(|a, b| a.priority.cmp(&b.priority).then_with(|| a.id.cmp(&b.id)));
+        matched
+    }
+
+    pub fn matching_listeners_with_linked(
+        &self,
+        bus: &BusId,
+        event_class: &str,
+        linked: &LinkedSpace,
+        host: &dyn HostApi,
+    ) -> Vec<EventListener> {
+        let mut matched: Vec<_> = self
+            .listeners
+            .iter()
+            .filter(|listener| {
+                &listener.bus == bus && linked.is_subtype(event_class, &listener.event_class, host)
+            })
             .cloned()
             .collect();
         matched.sort_by(|a, b| a.priority.cmp(&b.priority).then_with(|| a.id.cmp(&b.id)));
@@ -609,14 +1333,23 @@ pub fn dispatch_event_on_bus(
 ) -> (usize, bool) {
     let mut ran = 0usize;
     for listener in listeners {
-        let is_canceled = ctx.rt.get_field(event_obj, "$canceled").i() != 0;
+        let is_canceled = event_is_canceled(ctx.rt, event_obj);
         if is_canceled && !listener.receive_canceled {
             continue;
         }
         ran += 1;
         match &listener.callback {
             EventCallback::Consumer(consumer_v) => {
-                let _ = mmga_runtime::invoke_closure(ctx, *consumer_v, &[event_obj]);
+                let _ = mmga_runtime::invoke_member(
+                    ctx,
+                    mmga_classfile::op::INVOKEINTERFACE,
+                    &mmga_classfile::MemberRef::new(
+                        "java/util/function/Consumer",
+                        "accept",
+                        "(Ljava/lang/Object;)V",
+                    ),
+                    &[*consumer_v, event_obj],
+                );
             }
             EventCallback::StaticMethod {
                 class_name,
@@ -651,7 +1384,7 @@ pub fn dispatch_event_on_bus(
             break;
         }
     }
-    let final_canceled = ctx.rt.get_field(event_obj, "$canceled").i() != 0;
+    let final_canceled = event_is_canceled(ctx.rt, event_obj);
     (ran, final_canceled)
 }
 
@@ -659,6 +1392,30 @@ pub fn dispatch_event_on_bus(
 mod tests {
     use super::*;
     use mmga_runtime::{ExecCtx, LinkedSpace, NullHost, Rt};
+
+    #[test]
+    fn builtin_event_catalog_has_unique_classes_and_complete_acyclic_parent_chains() {
+        let mut names = std::collections::BTreeSet::new();
+        for event in BUILTIN_EVENTS {
+            assert!(
+                names.insert(event.class),
+                "Duplicate event metadata for {}",
+                event.class
+            );
+            let mut seen = std::collections::BTreeSet::new();
+            let mut class = event.class;
+            while class != "java/lang/Object" {
+                assert!(
+                    seen.insert(class),
+                    "Cycle in event parent chain for {}",
+                    event.class
+                );
+                let metadata = find_builtin_event(class)
+                    .unwrap_or_else(|| panic!("Missing parent {class} of {}", event.class));
+                class = metadata.superclass;
+            }
+        }
+    }
 
     fn hit(rt: &mut Rt, event: V) {
         let n = rt.get_field(event, "hits").i();

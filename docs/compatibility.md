@@ -17,6 +17,7 @@
 - Ingredient 的 EMPTY/TagValue/ItemValue/fromValues 保存真实输入和可观察的 Value 数组引用，空 factory 规范化为 EMPTY，枚举 tag 内容和未实现的非空 stack/component 去重明确失败。三项 VM 回归通过（两项在独立临时 harness 先失败），原 Create 越过 TrackMaterialFactory，下一处为 `EnumSet.copyOf(Collection)`（`CommonMetal.<init>`）；仍未完成构造和组合注册，材料匹配/配方玩法未验证。
 - `TagKey.codec/hashedCodec` 执行真实 ResourceLocation/xmap/comapFlatMap，普通名字与必须带 `#` 的 hashed 名字分别验证。static/direct/codec 使用同一 (registry,location) interner，四项回归含静态身份先失败后通过。原 Core+Backpacks 从 47 推进到 **60 项**实际注册，下一处 `ExtraCodecs.NON_NEGATIVE_INT`（`CookingLogic.<clinit>`，注册 `recipes_used`）；setup/tick 未到达，tag 内容没有伪造。
 - JDK EnumSet 从真实 `values()` universe 构建，保留常量 identity/ordinal 顺序，空 Collection 与空 EnumSet 的 copy 规则分别验证；不可变 wrapper 保留实时 delegate，addAll 的中途异常保留之前修改。四项回归通过，原始 Create jar 的独立 `CommonMetal.<clinit>` 最小复现已通过（17 种金属，真实 EnumSet copy 路径）；完整 Create 在事件目录补齐后推进到 `Tags.Blocks.RELOCATION_NOT_SUPPORTED`，仍未完成构造。
+- 事件 host 读取实际 linked 类的 Event/IModBusEvent/ICancellableEvent/abstract 关系，保留 supplied event 原对象，正确匹配具体类与祖先 Consumer；Event 构造和默认取消字段按官方执行。三项 VM 回归、七项 bus 回归及 source catalog 唯一性/完整父链/无环约束通过；实际引用的官方外部事件逐项核对。Curios setup 推进至 FML `ModLoader.postEventWrapContainerInModOrder(Event)`。Mekanism/Create/AE2 先前构造路径均复测恢复；额外取消副作用未实现的交互事件明确拒绝。客户端事件能登记监听器不等于客户端运行或渲染支持。
 
 ## 2026-11-17 持续修复增量（进行中）
 
