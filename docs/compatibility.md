@@ -65,7 +65,7 @@ Create 内嵌的 Registrate `MC1.21-1.3.0+67` 没有独立 mods.toml，是已纳
 5. StreamCodec 保存映射、字段 codec、构造器、长度限制等，并实际编码/解码原始类型、VarInt/VarLong、UTF-8、数组、optional、集合和组合。验证了黄金字节、损坏输入、异常传播、递归缓存和静态身份。NBT/registry/DFU 图保留参数，尚未实现的执行明确抛错，不返回假数据。
 6. DataComponentType builder 保存 persistent/network codec、cacheEncoding，并创建独立快照；缺失 codec 和 transient 类型使用官方异常。真实 DFU 持久化编码/cache 服务仍未实现。
 7. 原版护甲材料完整保存防御映射、数值、音效、repair supplier 和层纹理；层列表不可变，自定义传入列表保持调用方语义。repair supplier 真正执行到 Ingredient 时明确报未实现。
-8. CommonComponents.space 返回独立可变组件；Direction 和护甲/装备枚举保留规范顺序、对象身份及非法名称异常。
+8. CommonComponents.space 返回独立可变组件；Direction 与 ArmorItem.Type 保留规范顺序、对象身份及非法名称异常；EquipmentSlot 常量保持身份，其 values/valueOf 尚未实现。
 9. 修复 Object fallback 抢先吞掉 host equals/hashCode/toString 的顺序问题；补齐建模 API 的实际继承关系。回归通过真正 VM 调用与反射检查。
 10. probe 在输入失败、依赖失败、构造/注册/setup/tick 失败时返回非零，任何输入 jar 失败都不会偷偷测试剩余子集；输出每个模组构造状态、整体最后完成阶段及降级 warning。
 
