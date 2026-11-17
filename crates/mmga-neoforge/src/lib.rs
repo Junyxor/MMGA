@@ -18,6 +18,7 @@ pub mod components;
 pub mod custom_data;
 pub mod item_stack;
 pub mod direction;
+pub mod dimension_type;
 pub mod dfu;
 pub mod dye_color;
 pub mod deferred_holders;

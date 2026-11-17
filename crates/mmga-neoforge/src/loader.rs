@@ -1668,6 +1668,9 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::attributes::get_static_field(rt, &mut self.state.registries, owner, name, desc) {
             return Some(value);
         }
+        if let Some(value) = crate::dimension_type::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
         if let Some(value) = crate::direction::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
