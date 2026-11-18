@@ -26,6 +26,8 @@ pub fn get_static_field(rt: &mut Rt, owner: &str, name: &str, desc: &str) -> Opt
         // in the official mapping and their literal names in awe.<clinit>.
         "COMBINATION_STEP_SOUND_BLOCKS" => "combination_step_sound_blocks",
         "INSIDE_STEP_SOUND_BLOCKS" => "inside_step_sound_blocks",
+        // Used as a connected-glass blockstate predicate by Create palettes.
+        "IMPERMEABLE" => "impermeable",
         "DOORS" => "doors",
         "TRAPDOORS" => "trapdoors",
         "WOODEN_DOORS" => "wooden_doors",
@@ -116,6 +118,7 @@ mod tests {
                 "combination_step_sound_blocks",
             ),
             ("INSIDE_STEP_SOUND_BLOCKS", "inside_step_sound_blocks"),
+            ("IMPERMEABLE", "impermeable"),
             ("DOORS", "doors"),
             ("TRAPDOORS", "trapdoors"),
             ("WOODEN_DOORS", "wooden_doors"),

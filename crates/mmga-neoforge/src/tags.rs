@@ -9,6 +9,7 @@ use mmga_runtime::{Rt, V};
 
 const ITEMS: &str = "net/neoforged/neoforge/common/Tags$Items";
 const BLOCKS: &str = "net/neoforged/neoforge/common/Tags$Blocks";
+const FLUIDS: &str = "net/neoforged/neoforge/common/Tags$Fluids";
 #[cfg(test)]
 const TAG: &str = "net/minecraft/tags/TagKey";
 
@@ -16,11 +17,22 @@ pub fn get_static_field(rt: &mut Rt, owner: &str, name: &str, desc: &str) -> Opt
     if desc != "Lnet/minecraft/tags/TagKey;" {
         return None;
     }
-    let (registry, location) = if owner == BLOCKS {
-        // These five fields are referenced by Create AllBlocks. The official
-        // source uses Blocks.tag (c:) for relocation, not neoforgeTag.
+    let (registry, location) = if owner == FLUIDS {
+        // Official Fluids.tag uses c:, and the TagKey belongs to the fluid registry.
+        let location = match name {
+            "HONEY" => "c:honey",
+            "MILK" => "c:milk",
+            _ => return None,
+        };
+        ("minecraft:fluid", location)
+    } else if owner == BLOCKS {
+        // Verified Create AllBlocks/WindowGen keys. The official source uses
+        // Blocks.tag (c:) for relocation, not neoforgeTag.
         let location = match name {
             "RELOCATION_NOT_SUPPORTED" => "c:relocation_not_supported",
+            "GLASS_BLOCKS_COLORLESS" => "c:glass_blocks/colorless",
+            "GLASS_PANES" => "c:glass_panes",
+            "GLASS_PANES_COLORLESS" => "c:glass_panes/colorless",
             "ORES" => "c:ores",
             "ORES_IN_GROUND_STONE" => "c:ores_in_ground/stone",
             "ORES_IN_GROUND_DEEPSLATE" => "c:ores_in_ground/deepslate",
@@ -31,6 +43,9 @@ pub fn get_static_field(rt: &mut Rt, owner: &str, name: &str, desc: &str) -> Opt
     } else if owner == ITEMS {
         let location = match name {
             "ENCHANTING_FUELS" => "neoforge:enchanting_fuels",
+            "GLASS_BLOCKS_COLORLESS" => "c:glass_blocks/colorless",
+            "GLASS_PANES" => "c:glass_panes",
+            "GLASS_PANES_COLORLESS" => "c:glass_panes/colorless",
             // AllItems food, drink, enchanting and tool keys from the same source blob.
             "FOODS_DOUGH" => "c:foods/dough",
             "FOODS" => "c:foods",
@@ -39,6 +54,7 @@ pub fn get_static_field(rt: &mut Rt, owner: &str, name: &str, desc: &str) -> Opt
             "DRINKS" => "c:drinks",
             "ENCHANTABLES" => "c:enchantables",
             "TOOLS_WRENCH" => "c:tools/wrench",
+            "BUCKETS" => "c:buckets",
             "DUSTS" => "c:dusts",
             "DUSTS_REDSTONE" => "c:dusts/redstone",
             "DUSTS_GLOWSTONE" => "c:dusts/glowstone",
@@ -166,6 +182,9 @@ mod tests {
         let blocks = "net/neoforged/neoforge/common/Tags$Blocks";
         for (name, location) in [
             ("RELOCATION_NOT_SUPPORTED", "c:relocation_not_supported"),
+            ("GLASS_BLOCKS_COLORLESS", "c:glass_blocks/colorless"),
+            ("GLASS_PANES", "c:glass_panes"),
+            ("GLASS_PANES_COLORLESS", "c:glass_panes/colorless"),
             ("ORES", "c:ores"),
             ("ORES_IN_GROUND_STONE", "c:ores_in_ground/stone"),
             ("ORES_IN_GROUND_DEEPSLATE", "c:ores_in_ground/deepslate"),
@@ -213,6 +232,44 @@ mod tests {
         assert!(ctx.rt.pending_exception.is_none());
     }
     #[test]
+    fn honey_and_milk_keys_keep_official_common_namespace_and_fluid_registry() {
+        let mut rt = Rt::new();
+        let linked = LinkedSpace::new();
+        let mut host = Host(crate::RegistryStore::new());
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        for (name, location) in [("HONEY", "c:honey"), ("MILK", "c:milk")] {
+            let key = read_static_field(
+                &mut ctx,
+                "net/neoforged/neoforge/common/Tags$Fluids",
+                name,
+                "Lnet/minecraft/tags/TagKey;",
+            );
+            assert!(
+                ctx.rt.pending_exception.is_none(),
+                "missing {name} fluid tag"
+            );
+            assert_eq!(
+                ctx.rt.handle_of(key).unwrap().2,
+                format!("minecraft:fluid|{location}")
+            );
+            let registry =
+                crate::minecraft::new_resource_key(ctx.rt, "minecraft:root", "minecraft:fluid");
+            let id = ctx.rt.new_pinned_handle(
+                "net/minecraft/resources/ResourceLocation",
+                "resource_location",
+                0,
+                location,
+            );
+            let factory=invoke_member(&mut ctx,op::INVOKESTATIC,&MemberRef::new(TAG,"create","(Lnet/minecraft/resources/ResourceKey;Lnet/minecraft/resources/ResourceLocation;)Lnet/minecraft/tags/TagKey;"),&[registry,id]);
+            assert_eq!(factory, key);
+        }
+    }
+    #[test]
     fn primary_resource_keys_keep_item_registry_and_common_namespace() {
         let mut rt = Rt::new();
         let linked = LinkedSpace::new();
@@ -236,6 +293,7 @@ mod tests {
             ("DRINKS", "c:drinks"),
             ("ENCHANTABLES", "c:enchantables"),
             ("TOOLS_WRENCH", "c:tools/wrench"),
+            ("BUCKETS", "c:buckets"),
         ] {
             let tag = read_static_field(&mut ctx, ITEMS, field, "Lnet/minecraft/tags/TagKey;");
             assert!(ctx.rt.pending_exception.is_none(), "missing {field}");
