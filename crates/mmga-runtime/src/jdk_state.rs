@@ -51,14 +51,32 @@ pub fn call(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: &[
         ctx.rt.put_static(owner, "$identity", value);
         return Some(value);
     }
+    if owner == "java/util/function/UnaryOperator"
+        && is_static
+        && name == "identity"
+        && desc == "()Ljava/util/function/UnaryOperator;"
+    {
+        if let Some(value) = ctx.rt.get_static(owner, "$identity") {
+            return Some(value);
+        }
+        let value = ctx.rt.new_instance("mmga/internal/IdentityUnaryOperator", 0);
+        ctx.rt.put_static(owner, "$identity", value);
+        return Some(value);
+    }
     if !is_static
         && matches!(
             owner,
-            "java/util/function/Function" | "mmga/internal/IdentityFunction"
+            "java/util/function/Function"
+                | "java/util/function/UnaryOperator"
+                | "mmga/internal/IdentityFunction"
+                | "mmga/internal/IdentityUnaryOperator"
         )
         && name == "apply"
         && desc == "(Ljava/lang/Object;)Ljava/lang/Object;"
-        && ctx.rt.class_of(args[0]) == Some("mmga/internal/IdentityFunction")
+        && matches!(
+            ctx.rt.class_of(args[0]),
+            Some("mmga/internal/IdentityFunction" | "mmga/internal/IdentityUnaryOperator")
+        )
     {
         return Some(args[1]);
     }
@@ -210,6 +228,59 @@ mod tests {
                 ),
                 item
             );
+        }
+    }
+
+    #[test]
+    fn unary_operator_identity_is_a_cached_unary_operator_function_and_preserves_inputs() {
+        let mut rt = Rt::new();
+        let linked = LinkedSpace::new();
+        let mut host = NullHost;
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        let identity = crate::invoke_member(
+            &mut ctx,
+            op::INVOKESTATIC,
+            &MemberRef::new(
+                "java/util/function/UnaryOperator",
+                "identity",
+                "()Ljava/util/function/UnaryOperator;",
+            ),
+            &[],
+        );
+        let next = crate::invoke_member(
+            &mut ctx,
+            op::INVOKESTATIC,
+            &MemberRef::new(
+                "java/util/function/UnaryOperator",
+                "identity",
+                "()Ljava/util/function/UnaryOperator;",
+            ),
+            &[],
+        );
+        assert_eq!(identity, next, "the JDK returns a cached identity lambda");
+        assert_eq!(ctx.rt.class_of(identity), Some("mmga/internal/IdentityUnaryOperator"));
+        assert!(linked.is_subtype(ctx.rt.class_of(identity).unwrap(), "java/util/function/UnaryOperator", ctx.host));
+        assert!(linked.is_subtype(ctx.rt.class_of(identity).unwrap(), "java/util/function/Function", ctx.host));
+
+        let reference = ctx.rt.new_instance("example/Value", 0);
+        for value in [reference, V::NULL] {
+            let returned = crate::invoke_member(
+                &mut ctx,
+                op::INVOKEINTERFACE,
+                &MemberRef::new(
+                    "java/util/function/UnaryOperator",
+                    "apply",
+                    "(Ljava/lang/Object;)Ljava/lang/Object;",
+                ),
+                &[identity, value],
+            );
+            assert_eq!(returned, value);
+            assert!(ctx.rt.pending_exception.is_none());
         }
     }
 
