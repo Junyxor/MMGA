@@ -31,6 +31,9 @@ const PISTON_TYPE: &str = "net/minecraft/world/level/block/state/properties/Pist
 const BEHAVIOUR: &str = "net/minecraft/world/level/block/state/BlockBehaviour";
 const STATE_BASE: &str = "net/minecraft/world/level/block/state/BlockBehaviour$BlockStateBase";
 const STATE_HOLDER: &str = "net/minecraft/world/level/block/state/StateHolder";
+const BUILDER: &str = "net/minecraft/world/level/block/state/StateDefinition$Builder";
+const CREATE_BLOCK_STATES_DESC: &str =
+    "(Lnet/minecraft/world/level/block/state/StateDefinition$Builder;)V";
 const BLOCK_DESC: &str = "Lnet/minecraft/world/level/block/Block;";
 const PROPERTY_DESC: &str = "Lnet/minecraft/world/level/block/state/properties/IntegerProperty;";
 const LOCAL_LIST: &str = "com/google/common/collect/RegularImmutableList";
@@ -137,11 +140,23 @@ pub fn get_static_field(
     {
         return Some(dispenser_property(rt, "facing"));
     }
-    if desc == "Lnet/minecraft/world/level/block/state/properties/BooleanProperty;"
-        && name == "TRIGGERED"
-        && matches!(owner, DISPENSER | DROPPER | STATE_PROPERTIES)
+    if owner == STATE_PROPERTIES
+        && name == "HORIZONTAL_FACING"
+        && desc == "Lnet/minecraft/world/level/block/state/properties/DirectionProperty;"
     {
-        return Some(dispenser_property(rt, "triggered"));
+        return Some(horizontal_facing_property(rt));
+    }
+    if desc == "Lnet/minecraft/world/level/block/state/properties/BooleanProperty;" {
+        return match (owner, name) {
+            (DISPENSER | DROPPER | STATE_PROPERTIES, "TRIGGERED") => {
+                Some(dispenser_property(rt, "triggered"))
+            }
+            (STATE_PROPERTIES, "OPEN") => Some(state_boolean_property(rt, "OPEN", "open")),
+            (STATE_PROPERTIES, "WATERLOGGED") => {
+                Some(state_boolean_property(rt, "WATERLOGGED", "waterlogged"))
+            }
+            _ => None,
+        };
     }
     if owner == ANCHOR && desc == "I" {
         return match name {
@@ -205,6 +220,11 @@ pub fn call(
     }
     if is_static {
         return match (owner, name, desc) {
+            (
+                BOOLEAN_PROPERTY,
+                "create",
+                "(Ljava/lang/String;)Lnet/minecraft/world/level/block/state/properties/BooleanProperty;",
+            ) => Some(create_boolean_property(rt, *args.first()?)),
             (BLOCK, "getId", "(Lnet/minecraft/world/level/block/state/BlockState;)I")
             | (BLOCK, "stateById", "(I)Lnet/minecraft/world/level/block/state/BlockState;") => {
                 Some(unsupported(rt, "global vanilla block-state protocol IDs"))
@@ -270,10 +290,13 @@ pub fn call(
             _ => None,
         };
     }
-    if rt.class_of(recv) == Some(STATE) && !rt.get_field(recv, "$property").is_null() {
+    if rt.class_of(recv) == Some(STATE)
+        && (!rt.get_field(recv, "$property").is_null()
+            || !rt.get_field(recv, "$stateValues").is_null())
+    {
         return state_call(rt, recv, name, desc, &args[1..]);
     }
-    if rt.class_of(recv) == Some(DEFINITION) && !rt.get_field(recv, "$property").is_null() {
+    if rt.class_of(recv) == Some(DEFINITION) && !rt.get_field(recv, "$properties").is_null() {
         return match (name, desc) {
             ("getPossibleStates", "()Lcom/google/common/collect/ImmutableList;") => {
                 Some(rt.get_field(recv, "states"))
@@ -315,11 +338,361 @@ pub fn call(
     None
 }
 
+/// Handles the verified Block constructor path with access to the linked mod bytecode.
+/// The official Block constructor invokes the overridable state-definition hook before
+/// storing the resulting definition and its first state as the default.
+pub fn call_context(
+    ctx: &mut mmga_runtime::ExecCtx<'_>,
+    member: &MemberRef,
+    is_static: bool,
+    args: &[V],
+) -> Option<V> {
+    if is_static {
+        return None;
+    }
+    let recv = *args.first()?;
+    if ctx.rt.class_of(recv) == Some(STATE)
+        && ctx.rt.get_field(recv, "$genericBlockState") == V::TRUE
+        && ctx.linked.is_subtype(&member.owner, STATE_BASE, ctx.host)
+        && member.name == "getSoundType"
+        && member.desc == "()Lnet/minecraft/world/level/block/SoundType;"
+    {
+        let block = ctx.rt.get_field(recv, "owner");
+        return Some(mmga_runtime::invoke_member(
+            ctx,
+            mmga_classfile::op::INVOKEVIRTUAL,
+            &MemberRef::new(
+                BLOCK,
+                "getSoundType",
+                "(Lnet/minecraft/world/level/block/state/BlockState;)Lnet/minecraft/world/level/block/SoundType;",
+            ),
+            &[block, recv],
+        ));
+    }
+    match (member.owner.as_str(), member.name.as_str(), member.desc.as_str()) {
+        (
+            BLOCK,
+            "<init>",
+            "(Lnet/minecraft/world/level/block/state/BlockBehaviour$Properties;)V",
+        ) => Some(initialize_block(ctx, recv, *args.get(1)?)),
+        (BUILDER, "<init>", "(Ljava/lang/Object;)V") => {
+            ctx.rt.put_field(recv, "owner", *args.get(1)?);
+            put_builder_properties(ctx.rt, recv, Vec::new());
+            Some(V::Void)
+        }
+        (BUILDER, "add", "([Lnet/minecraft/world/level/block/state/properties/Property;)Lnet/minecraft/world/level/block/state/StateDefinition$Builder;") => {
+            let builder = recv;
+            let property_array = *args.get(1)?;
+            let Some(array) = ctx.rt.get_obj(property_array) else {
+                return Some(ctx.rt.throw_exception(
+                    "java/lang/NullPointerException",
+                    "StateDefinition.Builder.add properties",
+                ));
+            };
+            let Data::Array(new_properties) = &array.data else {
+                return Some(ctx.rt.throw_exception(
+                    "java/lang/ClassCastException",
+                    "StateDefinition.Builder.add requires Property[]",
+                ));
+            };
+            let new_properties = new_properties.clone();
+            for property in new_properties {
+                if let Some(error) = add_builder_property(ctx, builder, property) {
+                    return Some(error);
+                }
+            }
+            Some(builder)
+        }
+        (BLOCK, "createBlockStateDefinition", CREATE_BLOCK_STATES_DESC) => Some(V::Void),
+        _ => inherited_block_call(ctx, member, recv, &args[1..]),
+    }
+}
+
+fn initialize_block(ctx: &mut mmga_runtime::ExecCtx<'_>, block: V, properties: V) -> V {
+    if properties.is_null() {
+        return ctx.rt.throw_exception("java/lang/NullPointerException", "Block properties");
+    }
+    for field in [
+        "hasCollision", "drops", "explosionResistance", "isRandomlyTicking", "soundType",
+        "friction", "speedFactor", "jumpFactor", "dynamicShape", "requiredFeatures",
+    ] {
+        let value = ctx.rt.get_field(properties, field);
+        ctx.rt.put_field(block, field, value);
+    }
+    ctx.rt.put_field(block, "properties", properties);
+    let registry = mmga_runtime::read_static_field(
+        ctx,
+        "net/minecraft/core/registries/BuiltInRegistries",
+        "BLOCK",
+        "Lnet/minecraft/core/DefaultedRegistry;",
+    );
+    if ctx.rt.pending_exception.is_some() { return V::NULL; }
+    let holder = mmga_runtime::invoke_member(
+        ctx,
+        mmga_classfile::op::INVOKEINTERFACE,
+        &MemberRef::new("net/minecraft/core/Registry", "createIntrusiveHolder", "(Ljava/lang/Object;)Lnet/minecraft/core/Holder$Reference;"),
+        &[registry, block],
+    );
+    if ctx.rt.pending_exception.is_some() { return V::NULL; }
+    ctx.rt.put_field(block, "builtInRegistryHolder", holder);
+    let builder = ctx.rt.new_instance(BUILDER, 0);
+    ctx.rt.put_field(builder, "owner", block);
+    put_builder_properties(ctx.rt, builder, Vec::new());
+    let hook = MemberRef::new(BLOCK, "createBlockStateDefinition", CREATE_BLOCK_STATES_DESC);
+    let _ = mmga_runtime::invoke_member(ctx, mmga_classfile::op::INVOKEVIRTUAL, &hook, &[block, builder]);
+    if ctx.rt.pending_exception.is_some() {
+        return V::NULL;
+    }
+    let definition = build_state_definition(ctx, block, builder);
+    if ctx.rt.pending_exception.is_some() {
+        return V::NULL;
+    }
+    let default_state = ctx.rt.get_field(definition, "$first");
+    ctx.rt.put_field(block, "stateDefinition", definition);
+    ctx.rt.put_field(block, "defaultBlockState", default_state);
+    ctx.rt.put_field(block, "$constructedBlock", V::TRUE);
+    V::Void
+}
+
+fn inherited_block_call(
+    ctx: &mut mmga_runtime::ExecCtx<'_>,
+    member: &MemberRef,
+    recv: V,
+    args: &[V],
+) -> Option<V> {
+    if !ctx.linked.is_subtype(&member.owner, BLOCK, ctx.host) {
+        return None;
+    }
+    match (member.name.as_str(), member.desc.as_str()) {
+        ("registerDefaultState", "(Lnet/minecraft/world/level/block/state/BlockState;)V") => {
+            ctx.rt.put_field(recv, "defaultBlockState", *args.first()?);
+            Some(V::Void)
+        }
+        ("defaultBlockState", "()Lnet/minecraft/world/level/block/state/BlockState;") => Some(ctx.rt.get_field(recv, "defaultBlockState")),
+        ("getStateDefinition", "()Lnet/minecraft/world/level/block/state/StateDefinition;") => Some(ctx.rt.get_field(recv, "stateDefinition")),
+        ("builtInRegistryHolder", "()Lnet/minecraft/core/Holder$Reference;") => Some(ctx.rt.get_field(recv, "builtInRegistryHolder")),
+        ("properties", "()Lnet/minecraft/world/level/block/state/BlockBehaviour$Properties;") => Some(ctx.rt.get_field(recv, "properties")),
+        ("defaultDestroyTime", "()F") => Some(ctx.rt.get_field(ctx.rt.get_field(recv, "properties"), "destroyTime")),
+        ("useShapeForLightOcclusion", "(Lnet/minecraft/world/level/block/state/BlockState;)Z") => Some(V::FALSE),
+        ("getSoundType", "(Lnet/minecraft/world/level/block/state/BlockState;)Lnet/minecraft/world/level/block/SoundType;") => Some(ctx.rt.get_field(recv, "soundType")),
+        _ => None,
+    }
+}
+
+fn builder_properties(rt: &Rt, builder: V) -> Vec<V> {
+    match rt.get_obj(rt.get_field(builder, "$properties")).map(|object| &object.data) {
+        Some(Data::Array(properties)) => properties.clone(),
+        _ => Vec::new(),
+    }
+}
+
+fn put_builder_properties(rt: &mut Rt, builder: V, properties: Vec<V>) {
+    let properties = rt.alloc("[Ljava/lang/Object;", 0, Data::Array(properties));
+    rt.put_field(builder, "$properties", properties);
+}
+
+fn add_builder_property(
+    ctx: &mut mmga_runtime::ExecCtx<'_>,
+    builder: V,
+    property: V,
+) -> Option<V> {
+    let name = mmga_runtime::invoke_member(
+        ctx,
+        mmga_classfile::op::INVOKEVIRTUAL,
+        &MemberRef::new(PROPERTY, "getName", "()Ljava/lang/String;"),
+        &[property],
+    );
+    if ctx.rt.pending_exception.is_some() { return Some(V::NULL); }
+    let Some(name) = ctx.rt.str_of(name).map(str::to_owned) else {
+        return Some(ctx.rt.throw_exception("java/lang/NullPointerException", "Property name"));
+    };
+    if !valid_property_name(&name) {
+        return Some(ctx.rt.throw_exception(
+            "java/lang/IllegalArgumentException",
+            &format!("Block {0} has invalidly named property: {name}", ctx.rt.value_to_string(ctx.rt.get_field(builder, "owner"))),
+        ));
+    }
+    let values = mmga_runtime::invoke_member(
+        ctx,
+        mmga_classfile::op::INVOKEVIRTUAL,
+        &MemberRef::new(PROPERTY, "getPossibleValues", "()Ljava/util/Collection;"),
+        &[property],
+    );
+    if ctx.rt.pending_exception.is_some() { return Some(V::NULL); }
+    if ctx.rt.get_field(values, "$blockCollection").is_null() {
+        return Some(unsupported(ctx.rt, "state properties with unmodeled possible-value collections"));
+    }
+    let values = collection_items(ctx.rt, values);
+    if values.len() <= 1 {
+        return Some(ctx.rt.throw_exception(
+            "java/lang/IllegalArgumentException",
+            &format!("Block {0} attempted use property {name} with <= 1 possible values", ctx.rt.value_to_string(ctx.rt.get_field(builder, "owner"))),
+        ));
+    }
+    for value in values {
+        let value_name = mmga_runtime::invoke_member(
+            ctx,
+            mmga_classfile::op::INVOKEVIRTUAL,
+            &MemberRef::new(PROPERTY, "getName", "(Ljava/lang/Comparable;)Ljava/lang/String;"),
+            &[property, value],
+        );
+        if ctx.rt.pending_exception.is_some() { return Some(V::NULL); }
+        let Some(value_name) = ctx.rt.str_of(value_name) else {
+            return Some(ctx.rt.throw_exception("java/lang/NullPointerException", "Property value name"));
+        };
+        if !valid_property_name(value_name) {
+            return Some(ctx.rt.throw_exception(
+                "java/lang/IllegalArgumentException",
+                &format!("Block {0} has property {name} with invalidly named value: {value_name}", ctx.rt.value_to_string(ctx.rt.get_field(builder, "owner"))),
+            ));
+        }
+    }
+    let mut properties = builder_properties(ctx.rt, builder);
+    if properties
+        .iter()
+        .any(|existing| ctx.rt.str_of(ctx.rt.get_field(*existing, "name")) == Some(name.as_str()))
+    {
+        return Some(ctx.rt.throw_exception(
+            "java/lang/IllegalArgumentException",
+            &format!("Block {0} has duplicate property: {name}", ctx.rt.value_to_string(ctx.rt.get_field(builder, "owner"))),
+        ));
+    }
+    properties.push(property);
+    put_builder_properties(ctx.rt, builder, properties);
+    None
+}
+
+fn valid_property_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+fn build_state_definition(ctx: &mut mmga_runtime::ExecCtx<'_>, owner: V, builder: V) -> V {
+    let mut properties = builder_properties(ctx.rt, builder);
+    properties.sort_by(|left, right| {
+        ctx.rt.str_of(ctx.rt.get_field(*left, "name"))
+            .cmp(&ctx.rt.str_of(ctx.rt.get_field(*right, "name")))
+    });
+    let definition = ctx.rt.new_instance(DEFINITION, 0);
+    let property_collection = immutable_collection(ctx.rt, LOCAL_COLLECTION, properties.clone());
+    ctx.rt.put_field(definition, "owner", owner);
+    ctx.rt.put_field(definition, "$properties", property_collection);
+    ctx.rt.put_field(definition, "$property", properties.first().copied().unwrap_or(V::NULL));
+    let mut states = Vec::new();
+    build_state_combinations(ctx, owner, definition, &properties, 0, &mut Vec::new(), &mut states);
+    if ctx.rt.pending_exception.is_some() { return V::NULL; }
+    let first = states[0];
+    let states = immutable_collection(ctx.rt, LOCAL_LIST, states);
+    ctx.rt.put_field(definition, "$first", first);
+    ctx.rt.put_field(definition, "states", states);
+    definition
+}
+
+fn build_state_combinations(
+    ctx: &mut mmga_runtime::ExecCtx<'_>,
+    owner: V,
+    definition: V,
+    properties: &[V],
+    index: usize,
+    selected: &mut Vec<(V, V)>,
+    out: &mut Vec<V>,
+) {
+    if index == properties.len() {
+        out.push(new_block_state(ctx, owner, definition, selected));
+        return;
+    }
+    let property = properties[index];
+    let values = collection_items(ctx.rt, ctx.rt.get_field(property, "$possibleValues"));
+    for value in values {
+        selected.push((property, value));
+        build_state_combinations(ctx, owner, definition, properties, index + 1, selected, out);
+        if ctx.rt.pending_exception.is_some() { return; }
+        selected.pop();
+    }
+}
+
+fn new_block_state(ctx: &mut mmga_runtime::ExecCtx<'_>, owner: V, definition: V, values: &[(V, V)]) -> V {
+    let state = ctx.rt.new_instance(STATE, 0);
+    // Seed JVM primitive defaults before invoking callbacks. Assignments below
+    // retain the observable dtb$a.<init> callback/field-write order.
+    for field in [
+        "useShapeForLightOcclusion", "isAir", "ignitedByLava", "liquid", "legacySolid",
+        "requiresCorrectToolForDrops", "canOcclude", "spawnTerrainParticles", "replaceable",
+        "isRandomlyTicking",
+    ] {
+        ctx.rt.put_field(state, field, V::FALSE);
+    }
+    ctx.rt.put_field(state, "lightEmission", V::I(0));
+    ctx.rt.put_field(state, "destroySpeed", V::F(0.0));
+    let property_values = ctx.rt.alloc("java/util/Map", 0, Data::Map(values.to_vec()));
+    ctx.rt.put_field(state, "owner", owner);
+    ctx.rt.put_field(state, "$definition", definition);
+    ctx.rt.put_field(
+        state,
+        "$property",
+        values.first().map_or(V::NULL, |(property, _)| *property),
+    );
+    ctx.rt.put_field(state, "$stateValues", property_values);
+    ctx.rt.put_field(state, "$genericBlockState", V::TRUE);
+    if let Some((_, value)) = values.first() {
+        ctx.rt.put_field(state, "$boxedValue", *value);
+        ctx.rt.put_field(state, "$propertyValue", ctx.rt.get_field(*value, "$value"));
+    }
+    let properties = ctx.rt.get_field(owner, "properties");
+    let light = ctx.rt.get_field(properties, "lightEmission");
+    let light_value = mmga_runtime::invoke_member(
+        ctx,
+        mmga_classfile::op::INVOKEINTERFACE,
+        &MemberRef::new("java/util/function/ToIntFunction", "applyAsInt", "(Ljava/lang/Object;)I"),
+        &[light, state],
+    );
+    if ctx.rt.pending_exception.is_some() { return V::NULL; }
+    ctx.rt.put_field(state, "lightEmission", light_value);
+    let occlusion = mmga_runtime::invoke_member(
+        ctx,
+        mmga_classfile::op::INVOKEVIRTUAL,
+        &MemberRef::new(BLOCK, "useShapeForLightOcclusion", "(Lnet/minecraft/world/level/block/state/BlockState;)Z"),
+        &[owner, state],
+    );
+    if ctx.rt.pending_exception.is_some() { return V::NULL; }
+    ctx.rt.put_field(state, "useShapeForLightOcclusion", occlusion);
+    for field in ["isAir", "ignitedByLava", "liquid", "pushReaction"] {
+        let value = ctx.rt.get_field(properties, field);
+        ctx.rt.put_field(state, field, value);
+    }
+    let color = ctx.rt.get_field(properties, "mapColor");
+    let color_value = mmga_runtime::invoke_member(
+        ctx,
+        mmga_classfile::op::INVOKEINTERFACE,
+        &MemberRef::new("java/util/function/Function", "apply", "(Ljava/lang/Object;)Ljava/lang/Object;"),
+        &[color, state],
+    );
+    if ctx.rt.pending_exception.is_some() { return V::NULL; }
+    ctx.rt.put_field(state, "mapColor", color_value);
+    ctx.rt.put_field(state, "destroySpeed", ctx.rt.get_field(properties, "destroyTime"));
+    for field in [
+        "requiresCorrectToolForDrops", "canOcclude", "isRedstoneConductor", "isSuffocating",
+        "isViewBlocking", "hasPostProcess", "emissiveRendering", "offsetFunction",
+        "spawnTerrainParticles", "instrument", "replaceable",
+    ] {
+        let value = ctx.rt.get_field(properties, field);
+        ctx.rt.put_field(state, field, value);
+    }
+    state
+}
+
+
 fn block_constant(rt: &mut Rt, registries: &mut RegistryStore, definition: &BlockDefinition) -> V {
     if let Some(value) = rt.get_static(BLOCKS, definition.name) {
         return value;
     }
     let block = rt.new_instance(definition.class, 0);
+    registries.ensure_builtin_block_registry(rt);
+    let holder = registries.create_intrusive_reference(rt, "minecraft:block", block);
+    if rt.pending_exception.is_some() { return V::NULL; }
+    rt.put_field(block, "builtInRegistryHolder", holder);
     let id = rt.intern_str(definition.id);
     let description = rt.intern_str(&format!("block.{}", definition.id.replace(':', ".")));
     let map_color = rt
@@ -419,8 +792,8 @@ fn block_constant(rt: &mut Rt, registries: &mut RegistryStore, definition: &Bloc
         },
     );
     if rt.pending_exception.is_some() { return V::NULL; }
-    let Some(holder) = registries.canonical_reference("minecraft:block", definition.id) else { return V::NULL; };
-    rt.put_field(block, "builtInRegistryHolder", holder);
+    let Some(bound_holder) = registries.canonical_reference("minecraft:block", definition.id) else { return V::NULL; };
+    debug_assert_eq!(holder, bound_holder);
     rt.put_static(BLOCKS, definition.name, block);
     block
 }
@@ -519,6 +892,64 @@ fn dispenser_property(rt: &mut Rt, name: &str) -> V {
     property
 }
 
+fn create_boolean_property(rt: &mut Rt, name: V) -> V {
+    let values = vec![
+        box_primitive(rt, "java/lang/Boolean", V::TRUE),
+        box_primitive(rt, "java/lang/Boolean", V::FALSE),
+    ];
+    let property = rt.new_instance(BOOLEAN_PROPERTY, 0);
+    let clazz = rt.new_pinned_handle("java/lang/Class", "class", 0, "java/lang/Boolean");
+    rt.put_field(property, "name", name);
+    rt.put_field(property, "clazz", clazz);
+    let values = immutable_collection(rt, LOCAL_SET, values);
+    rt.put_field(property, "$possibleValues", values);
+    property
+}
+
+fn state_boolean_property(rt: &mut Rt, field: &str, name: &str) -> V {
+    if let Some(property) = rt.get_static(STATE_PROPERTIES, field) {
+        return property;
+    }
+    let name = rt.intern_str(name);
+    let property = create_boolean_property(rt, name);
+    rt.put_static(STATE_PROPERTIES, field, property);
+    property
+}
+
+fn horizontal_facing_property(rt: &mut Rt) -> V {
+    if let Some(property) = rt.get_static(STATE_PROPERTIES, "HORIZONTAL_FACING") {
+        return property;
+    }
+    // dts passes Plane.HORIZONTAL as a Predicate; dtw filters Direction.values(),
+    // retaining enum order rather than the Plane iterator or 2D-data order.
+    let values = ["NORTH", "SOUTH", "WEST", "EAST"]
+        .into_iter()
+        .map(|name| {
+            crate::direction::get_static_field(
+                rt,
+                "net/minecraft/core/Direction",
+                name,
+                "Lnet/minecraft/core/Direction;",
+            )
+            .expect("verified Direction constant")
+        })
+        .collect();
+    let values = immutable_collection(rt, LOCAL_SET, values);
+    let property = rt.new_instance(DIRECTION_PROPERTY, 0);
+    let name = rt.intern_str("facing");
+    let clazz = rt.new_pinned_handle(
+        "java/lang/Class",
+        "class",
+        0,
+        "net/minecraft/core/Direction",
+    );
+    rt.put_field(property, "name", name);
+    rt.put_field(property, "clazz", clazz);
+    rt.put_field(property, "$possibleValues", values);
+    rt.put_static(STATE_PROPERTIES, "HORIZONTAL_FACING", property);
+    property
+}
+
 fn dispenser_states(rt: &mut Rt, block: V, definition: &BlockDefinition, color: V) -> (V, V) {
     let facing = dispenser_property(rt, "facing");
     let triggered = dispenser_property(rt, "triggered");
@@ -571,6 +1002,35 @@ fn dispenser_property_call(rt: &mut Rt, recv: V, name: &str, desc: &str, args: &
         ("getValueClass", "()Ljava/lang/Class;") => Some(rt.get_field(recv, "clazz")),
         ("getPossibleValues", "()Ljava/util/Collection;") => {
             Some(rt.get_field(recv, "$possibleValues"))
+        }
+        ("equals", "(Ljava/lang/Object;)Z") if rt.class_of(recv) == Some(BOOLEAN_PROPERTY) => {
+            let other = *args.first()?;
+            if recv == other {
+                return Some(V::TRUE);
+            }
+            if rt.class_of(other) != Some(BOOLEAN_PROPERTY) {
+                return Some(V::FALSE);
+            }
+            let name = rt.get_field(recv, "name");
+            let other_name = rt.get_field(other, "name");
+            let same_name = rt.val_eq(name, other_name);
+            let values = collection_items(rt, rt.get_field(recv, "$possibleValues"));
+            let other_values = collection_items(rt, rt.get_field(other, "$possibleValues"));
+            Some(V::bool(
+                same_name
+                    && values.len() == other_values.len()
+                    && values
+                        .iter()
+                        .all(|value| other_values.iter().any(|other| rt.val_eq(*value, *other))),
+            ))
+        }
+        ("hashCode", "()I") if rt.class_of(recv) == Some(BOOLEAN_PROPERTY) => {
+            let clazz = rt.get_field(recv, "clazz");
+            let name_hash = java_string_hash(rt.str_of(rt.get_field(recv, "name"))?);
+            let property_hash = 31i32
+                .wrapping_mul(31i32.wrapping_mul(clazz.r() as i32).wrapping_add(name_hash))
+                .wrapping_add(1231 + 1237);
+            Some(V::I(property_hash))
         }
         ("getValue", "(Ljava/lang/String;)Ljava/util/Optional;") => {
             let text = rt.str_of(*args.first()?);
@@ -625,6 +1085,11 @@ fn dispenser_property_call(rt: &mut Rt, recv: V, name: &str, desc: &str, args: &
     }
 }
 
+fn java_string_hash(text: &str) -> i32 {
+    text.encode_utf16()
+        .fold(0i32, |hash, unit| hash.wrapping_mul(31).wrapping_add(i32::from(unit)))
+}
+
 fn multistate_values(rt: &Rt, state: V) -> Vec<(V, V)> {
     match rt
         .get_obj(rt.get_field(state, "$stateValues"))
@@ -674,6 +1139,9 @@ fn multi_property_call(rt: &mut Rt, recv: V, name: &str, desc: &str, args: &[V])
 }
 
 fn state_call(rt: &mut Rt, recv: V, name: &str, desc: &str, args: &[V]) -> Option<V> {
+    if rt.get_field(recv, "$genericBlockState") == V::TRUE {
+        return generic_state_call(rt, recv, name, desc, args);
+    }
     if !rt.get_field(recv, "$stateValues").is_null() {
         if let Some(value) = multi_property_call(rt, recv, name, desc, args) {
             return Some(value);
@@ -718,6 +1186,26 @@ fn state_call(rt: &mut Rt, recv: V, name: &str, desc: &str, args: &[V]) -> Optio
         ("getAnalogOutputSignal","(Lnet/minecraft/world/level/Level;Lnet/minecraft/core/BlockPos;)I") => Some(if matches!(rt.class_of(block),Some(DISPENSER|DROPPER)) { unsupported(rt,"dispenser/dropper inventory and world comparator signal") } else {V::I(if rt.class_of(block)==Some(ANCHOR) { current*15/4 } else { 0 })}),
         ("getSignal","(Lnet/minecraft/world/level/BlockGetter;Lnet/minecraft/core/BlockPos;Lnet/minecraft/core/Direction;)I") => Some(V::I(if rt.class_of(block)==Some(TARGET) { current } else { 0 })),
         _=>None,
+    }
+}
+
+fn generic_state_call(rt: &mut Rt, recv: V, name: &str, desc: &str, args: &[V]) -> Option<V> {
+    if let Some(value) = multi_property_call(rt, recv, name, desc, args) {
+        return Some(value);
+    }
+    let block = rt.get_field(recv, "owner");
+    match (name, desc) {
+        ("getBlock", "()Lnet/minecraft/world/level/block/Block;") => Some(block),
+        ("getBlockHolder", "()Lnet/minecraft/core/Holder;") => Some(rt.get_field(block, "builtInRegistryHolder")),
+        ("getProperties", "()Ljava/util/Collection;") => Some(rt.get_field(rt.get_field(recv, "$definition"), "$properties")),
+        ("getValues", "()Ljava/util/Map;") => Some(rt.get_field(recv, "$stateValues")),
+        ("getLightEmission", "()I") => Some(rt.get_field(recv, "lightEmission")),
+        ("isAir" | "ignitedByLava" | "liquid" | "canOcclude" | "requiresCorrectToolForDrops" | "useShapeForLightOcclusion", "()Z") => Some(rt.get_field(recv, name)),
+        ("getDestroySpeed", "(Lnet/minecraft/world/level/BlockGetter;Lnet/minecraft/core/BlockPos;)F") => Some(rt.get_field(recv, "destroySpeed")),
+        ("getMapColor", "(Lnet/minecraft/world/level/BlockGetter;Lnet/minecraft/core/BlockPos;)Lnet/minecraft/world/level/material/MapColor;") => Some(rt.get_field(recv, "mapColor")),
+        ("getPistonPushReaction", "()Lnet/minecraft/world/level/material/PushReaction;") => Some(rt.get_field(recv, "pushReaction")),
+        ("is", "(Lnet/minecraft/world/level/block/Block;)Z") => Some(V::bool(block == *args.first()?)),
+        _ => None,
     }
 }
 
@@ -977,8 +1465,12 @@ mod tests {
     use super::*;
     use mmga_classfile::op;
     use mmga_runtime::{
-        box_primitive, invoke_member, read_static_field, ExecCtx, HostApi, LinkedSpace,
+        alloc_new_object, box_primitive, invoke_member, read_static_field, ExecCtx, HostApi,
+        LinkedSpace,
     };
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::process::Command;
 
     #[derive(Default)]
     struct BlocksHost(RegistryStore);
@@ -995,20 +1487,32 @@ mod tests {
         fn call_method(
             &mut self,
             rt: &mut Rt,
-            _linked: &LinkedSpace,
+            linked: &LinkedSpace,
             member: &MemberRef,
             is_static: bool,
             args: &[V],
         ) -> Option<V> {
-            super::call(rt, &mut self.0, member, is_static, args).or_else(|| {
-                crate::minecraft::call_keys_authlib_and_libs(
+            if let Some(value) = super::call(rt, &mut self.0, member, is_static, args) {
+                return Some(value);
+            }
+            {
+                let mut ctx = ExecCtx {
                     rt,
-                    &mut self.0,
-                    member,
-                    is_static,
-                    args,
-                )
-            })
+                    linked,
+                    host: self,
+                    depth: 0,
+                };
+                if let Some(value) = super::call_context(&mut ctx, member, is_static, args) {
+                    return Some(value);
+                }
+            }
+            crate::minecraft::call_keys_authlib_and_libs(
+                rt,
+                &mut self.0,
+                member,
+                is_static,
+                args,
+            )
         }
         fn is_api_subtype(&self, sub: &str, sup: &str) -> bool {
             is_subtype(sub, sup)
@@ -1021,6 +1525,613 @@ mod tests {
             &MemberRef::new(owner, name, desc),
             args,
         )
+    }
+
+    fn invoke_static(ctx: &mut ExecCtx<'_>, owner: &str, name: &str, desc: &str, args: &[V]) -> V {
+        invoke_member(
+            ctx,
+            op::INVOKESTATIC,
+            &MemberRef::new(owner, name, desc),
+            args,
+        )
+    }
+
+    fn compile_block_hook_fixture() -> Option<(std::path::PathBuf, mmga_classfile::ClassFile)> {
+        if Command::new("javac").arg("-version").output().is_err() {
+            return None;
+        }
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("mmga-block-state-hook-{nonce}"));
+        let src = root.join("src");
+        let classes = root.join("classes");
+        fs::create_dir_all(&src).ok()?;
+        fs::create_dir_all(&classes).ok()?;
+        let files = [
+            (
+                "net/minecraft/world/level/block/state/properties/Property.java",
+                r#"package net.minecraft.world.level.block.state.properties;
+                public abstract class Property<T extends Comparable<T>> { }"#,
+            ),
+            (
+                "net/minecraft/world/level/block/state/properties/BooleanProperty.java",
+                r#"package net.minecraft.world.level.block.state.properties;
+                public final class BooleanProperty extends Property<Boolean> {
+                    public static BooleanProperty create(String name) { return null; }
+                }"#,
+            ),
+            (
+                "net/minecraft/world/level/block/state/BlockState.java",
+                r#"package net.minecraft.world.level.block.state;
+                import net.minecraft.world.level.block.Block;
+                public class BlockState extends StateHolder<Block, BlockState> { }"#,
+            ),
+            (
+                "net/minecraft/world/level/block/state/StateHolder.java",
+                r#"package net.minecraft.world.level.block.state;
+                import net.minecraft.world.level.block.state.properties.Property;
+                public class StateHolder<O, S> {
+                    public <T extends Comparable<T>, V extends T> S setValue(Property<T> property, V value) { return null; }
+                    public <T extends Comparable<T>> T getValue(Property<T> property) { return null; }
+                }"#,
+            ),
+            (
+                "net/minecraft/world/level/block/state/StateDefinition.java",
+                r#"package net.minecraft.world.level.block.state;
+                import net.minecraft.world.level.block.state.properties.Property;
+                public class StateDefinition<O, S extends StateHolder<O, S>> {
+                    public S any() { return null; }
+                    public static class Builder<O, S> {
+                        public Builder(O owner) { }
+                        public Builder<O, S> add(Property<?>... properties) { return this; }
+                    }
+                }"#,
+            ),
+            (
+                "net/minecraft/core/Holder.java",
+                r#"package net.minecraft.core;
+                public class Holder<T> { public static class Reference<T> extends Holder<T> { } }"#,
+            ),
+            (
+                "net/minecraft/world/level/block/state/BlockBehaviour.java",
+                r#"package net.minecraft.world.level.block.state;
+                public class BlockBehaviour {
+                    public static class Properties { }
+                }"#,
+            ),
+            (
+                "net/minecraft/world/level/block/SoundType.java",
+                r#"package net.minecraft.world.level.block;
+                public class SoundType { }"#,
+            ),
+            (
+                "net/minecraft/world/level/block/Block.java",
+                r#"package net.minecraft.world.level.block;
+                import net.minecraft.world.level.block.state.BlockBehaviour;
+                import net.minecraft.world.level.block.state.StateDefinition;
+                import net.minecraft.world.level.block.state.BlockState;
+                import net.minecraft.core.Holder;
+                public class Block {
+                    protected final StateDefinition<Block, BlockState> stateDefinition = null;
+                    public Block(BlockBehaviour.Properties properties) { }
+                    protected void createBlockStateDefinition(StateDefinition.Builder<Block, BlockState> builder) { }
+                    public StateDefinition<Block, BlockState> getStateDefinition() { return null; }
+                    public Holder.Reference<Block> builtInRegistryHolder() { return null; }
+                    protected final void registerDefaultState(BlockState state) { }
+                    public final BlockState defaultBlockState() { return null; }
+                    protected boolean useShapeForLightOcclusion(BlockState state) { return false; }
+                    protected SoundType getSoundType(BlockState state) { return null; }
+                }"#,
+            ),
+            (
+                "test/HookBlock.java",
+                r#"package test;
+                import net.minecraft.world.level.block.Block;
+                import net.minecraft.world.level.block.SoundType;
+                import net.minecraft.world.level.block.state.BlockBehaviour;
+                import net.minecraft.world.level.block.state.BlockState;
+                import net.minecraft.world.level.block.state.StateDefinition;
+                import net.minecraft.world.level.block.state.properties.BooleanProperty;
+                public final class HookBlock extends Block {
+                    public static final BooleanProperty ACTIVE = BooleanProperty.create("active");
+                    public static final BooleanProperty INVERTED = BooleanProperty.create("inverted");
+                    public static int hookCalls;
+                    public static boolean holderSeenInHook;
+                    public static boolean definitionSeenInHook;
+                    public static int fieldSeenInHook;
+                    public static SoundType activeSound;
+                    public static SoundType inactiveSound;
+                    public static BlockState lastSoundState;
+                    public static int soundCalls;
+                    public int initializedAfterSuper = 42;
+                    public HookBlock(BlockBehaviour.Properties properties) {
+                        super(properties);
+                        registerDefaultState(stateDefinition.any().setValue(ACTIVE, false).setValue(INVERTED, true));
+                    }
+                    @Override protected void createBlockStateDefinition(
+                        StateDefinition.Builder<Block, BlockState> builder) {
+                        super.createBlockStateDefinition(builder);
+                        holderSeenInHook = builtInRegistryHolder() != null;
+                        definitionSeenInHook = getStateDefinition() != null;
+                        fieldSeenInHook = initializedAfterSuper;
+                        builder.add(INVERTED, ACTIVE);
+                        hookCalls++;
+                    }
+                    @Override protected SoundType getSoundType(BlockState state) {
+                        soundCalls++;
+                        lastSoundState = state;
+                        return state.getValue(ACTIVE) ? activeSound : inactiveSound;
+                    }
+                    public SoundType baseSound(BlockState state) { return super.getSoundType(state); }
+                }"#,
+            ),
+        ];
+        let mut paths = Vec::new();
+        for (relative, source) in files {
+            let path = src.join(relative);
+            fs::create_dir_all(path.parent()?).ok()?;
+            fs::write(&path, source).ok()?;
+            paths.push(path);
+        }
+        let output = Command::new("javac")
+            .arg("-d")
+            .arg(&classes)
+            .args(paths)
+            .output()
+            .ok()?;
+        assert!(
+            output.status.success(),
+            "javac failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let hook_bytes = fs::read(classes.join("test/HookBlock.class")).ok()?;
+        let hook = mmga_classfile::ClassFile::parse(&hook_bytes).ok()?;
+        Some((root, hook))
+    }
+
+    fn fixture_light(ctx: &mut ExecCtx<'_>, args: &[V]) -> V {
+        let active = ctx.rt.get_static("test/HookBlock", "ACTIVE").unwrap();
+        let value = invoke(
+            ctx,
+            STATE_HOLDER,
+            "getValue",
+            "(Lnet/minecraft/world/level/block/state/properties/Property;)Ljava/lang/Comparable;",
+            &[args[0], active],
+        );
+        if ctx.rt.pending_exception.is_some() { return V::NULL; }
+        V::I(if ctx.rt.get_field(value, "$value").i() != 0 { 11 } else { 3 })
+    }
+
+    fn fixture_map_color(ctx: &mut ExecCtx<'_>, args: &[V]) -> V {
+        for method in ["canOcclude", "requiresCorrectToolForDrops"] {
+            let observed = invoke(ctx, STATE_BASE, method, "()Z", &[args[0]]);
+            assert_eq!(observed, V::FALSE, "{method} must retain its JVM default during mapColor");
+        }
+        let destroy_speed = invoke(
+            ctx,
+            STATE_BASE,
+            "getDestroySpeed",
+            "(Lnet/minecraft/world/level/BlockGetter;Lnet/minecraft/core/BlockPos;)F",
+            &[args[0], V::NULL, V::NULL],
+        );
+        assert_eq!(destroy_speed, V::F(0.0));
+        let is_air = invoke(ctx, STATE_BASE, "isAir", "()Z", &[args[0]]);
+        assert_eq!(is_air, V::TRUE, "isAir is copied before the mapColor callback");
+        assert!(ctx.rt.get_field(args[0], "isRedstoneConductor").is_null());
+        let inverted = ctx.rt.get_static("test/HookBlock", "INVERTED").unwrap();
+        let value = invoke(
+            ctx,
+            STATE_HOLDER,
+            "getValue",
+            "(Lnet/minecraft/world/level/block/state/properties/Property;)Ljava/lang/Comparable;",
+            &[args[0], inverted],
+        );
+        if ctx.rt.pending_exception.is_some() { return V::NULL; }
+        ctx.rt.get_static(
+            "test/HookBlock",
+            if ctx.rt.get_field(value, "$value").i() != 0 { "$colorTrue" } else { "$colorFalse" },
+        ).unwrap()
+    }
+
+    #[test]
+    fn block_constructor_executes_subclass_hook_before_initializers_and_builds_real_states() {
+        let Some((root, hook)) = compile_block_hook_fixture() else {
+            eprintln!("javac unavailable; skipping compiled Block subclass fixture");
+            return;
+        };
+        let mut prepared = crate::PreparedLoad::from_jars(Vec::new(), true).unwrap();
+        prepared.linked.add_bytecode_classes(BTreeMap::from([(hook.name.clone(), hook)]));
+        prepared.linked.register_native_module(mmga_runtime::NativeModuleRegistry {
+            classes: &[],
+            lambdas: &[(61501, fixture_light), (61502, fixture_map_color)],
+        });
+        let mut rt = Rt::new();
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &prepared.linked,
+            host: &mut prepared.loader,
+            depth: 0,
+        };
+        let properties_class = "net/minecraft/world/level/block/state/BlockBehaviour$Properties";
+        let properties = invoke_static(
+            &mut ctx,
+            properties_class,
+            "of",
+            "()Lnet/minecraft/world/level/block/state/BlockBehaviour$Properties;",
+            &[],
+        );
+        let light = ctx.rt.alloc(
+            "java/util/function/ToIntFunction",
+            0,
+            Data::Closure(Box::new(mmga_runtime::ClosureData {
+                interface_class: "java/util/function/ToIntFunction".into(),
+                sam_name: "applyAsInt".into(),
+                sam_desc: "(Ljava/lang/Object;)I".into(),
+                instantiated_desc: "(Lnet/minecraft/world/level/block/state/BlockState;)I".into(),
+                captures: Vec::new(),
+                target: mmga_runtime::ClosureTarget::NativeLambda(61501),
+            })),
+        );
+        let color_true = ctx.rt.new_instance("net/minecraft/world/level/material/MapColor", 0);
+        let color_false = ctx.rt.new_instance("net/minecraft/world/level/material/MapColor", 0);
+        ctx.rt.put_static("test/HookBlock", "$colorTrue", color_true);
+        ctx.rt.put_static("test/HookBlock", "$colorFalse", color_false);
+        let map_color = ctx.rt.alloc(
+            "java/util/function/Function",
+            0,
+            Data::Closure(Box::new(mmga_runtime::ClosureData {
+                interface_class: "java/util/function/Function".into(),
+                sam_name: "apply".into(),
+                sam_desc: "(Ljava/lang/Object;)Ljava/lang/Object;".into(),
+                instantiated_desc: "(Lnet/minecraft/world/level/block/state/BlockState;)Lnet/minecraft/world/level/material/MapColor;".into(),
+                captures: Vec::new(),
+                target: mmga_runtime::ClosureTarget::NativeLambda(61502),
+            })),
+        );
+        ctx.rt.put_field(properties, "lightEmission", light);
+        ctx.rt.put_field(properties, "mapColor", map_color);
+        ctx.rt.put_field(properties, "destroyTime", V::F(2.5));
+        ctx.rt.put_field(properties, "explosionResistance", V::F(7.0));
+        ctx.rt.put_field(properties, "requiresCorrectToolForDrops", V::TRUE);
+        ctx.rt.put_field(properties, "isAir", V::TRUE);
+        let block = alloc_new_object(&mut ctx, "test/HookBlock");
+        assert!(ctx.rt.pending_exception.is_none());
+        let active_sound = ctx.rt.new_instance("net/minecraft/world/level/block/SoundType", 0);
+        let inactive_sound = ctx.rt.new_instance("net/minecraft/world/level/block/SoundType", 0);
+        ctx.rt.put_static("test/HookBlock", "activeSound", active_sound);
+        ctx.rt.put_static("test/HookBlock", "inactiveSound", inactive_sound);
+        invoke_member(
+            &mut ctx,
+            op::INVOKESPECIAL,
+            &MemberRef::new("test/HookBlock", "<init>", "(Lnet/minecraft/world/level/block/state/BlockBehaviour$Properties;)V"),
+            &[block, properties],
+        );
+        let error = ctx.rt.take_exception();
+        assert!(error.is_none(), "Block constructor failed: {:?}", error.map(|error| ctx.rt.exception_summary(error)));
+        assert_eq!(ctx.rt.get_static("test/HookBlock", "hookCalls"), Some(V::I(1)));
+        assert_eq!(ctx.rt.get_static("test/HookBlock", "holderSeenInHook"), Some(V::TRUE));
+        assert_eq!(ctx.rt.get_static("test/HookBlock", "definitionSeenInHook"), Some(V::FALSE));
+        assert_eq!(ctx.rt.get_static("test/HookBlock", "fieldSeenInHook"), Some(V::I(0)));
+        assert_eq!(ctx.rt.get_field(block, "initializedAfterSuper"), V::I(42));
+        assert_eq!(ctx.rt.get_field(block, "properties"), properties);
+        assert_eq!(ctx.rt.get_field(block, "explosionResistance"), V::F(7.0));
+
+        let active = ctx.rt.get_static("test/HookBlock", "ACTIVE").unwrap();
+        let inverted = ctx.rt.get_static("test/HookBlock", "INVERTED").unwrap();
+        let definition = ctx.rt.get_field(block, "stateDefinition");
+        assert!(!definition.is_null());
+        let properties = collection_items(ctx.rt, ctx.rt.get_field(definition, "$properties"));
+        assert_eq!(properties, [active, inverted]);
+        let states = collection_items(ctx.rt, ctx.rt.get_field(definition, "states"));
+        assert_eq!(states.len(), 4);
+        let values: Vec<_> = states.iter().map(|state| {
+            multistate_values(ctx.rt, *state).into_iter().map(|(_, value)| ctx.rt.get_field(value, "$value")).collect::<Vec<_>>()
+        }).collect();
+        assert_eq!(values, [vec![V::TRUE, V::TRUE], vec![V::TRUE, V::FALSE], vec![V::FALSE, V::TRUE], vec![V::FALSE, V::FALSE]]);
+        assert_eq!(ctx.rt.get_field(block, "defaultBlockState"), states[2]);
+        for (index, state) in states.iter().copied().enumerate() {
+            assert_eq!(ctx.rt.get_field(state, "lightEmission"), V::I(if index < 2 { 11 } else { 3 }));
+            assert_eq!(ctx.rt.get_field(state, "destroySpeed"), V::F(2.5));
+            assert_eq!(ctx.rt.get_field(state, "owner"), block);
+            assert_eq!(ctx.rt.get_field(state, "mapColor"), if index % 2 == 0 { color_true } else { color_false });
+            assert_eq!(ctx.rt.get_field(state, "canOcclude"), V::TRUE);
+            assert_eq!(ctx.rt.get_field(state, "requiresCorrectToolForDrops"), V::TRUE);
+            assert!(!ctx.rt.get_field(state, "isRedstoneConductor").is_null());
+            let sound = invoke(
+                &mut ctx,
+                if index % 2 == 0 { STATE_BASE } else { STATE },
+                "getSoundType",
+                "()Lnet/minecraft/world/level/block/SoundType;",
+                &[state],
+            );
+            assert_eq!(sound, if index < 2 { active_sound } else { inactive_sound });
+            assert_eq!(ctx.rt.get_static("test/HookBlock", "lastSoundState"), Some(state));
+        }
+        assert_eq!(ctx.rt.get_static("test/HookBlock", "soundCalls"), Some(V::I(4)));
+        let expected_base_sound = ctx.rt.get_field(block, "soundType");
+        let base_sound = invoke(
+            &mut ctx,
+            "test/HookBlock",
+            "baseSound",
+            "(Lnet/minecraft/world/level/block/state/BlockState;)Lnet/minecraft/world/level/block/SoundType;",
+            &[block, states[0]],
+        );
+        assert_eq!(base_sound, expected_base_sound);
+        assert_eq!(ctx.rt.get_static("test/HookBlock", "soundCalls"), Some(V::I(4)));
+        let set_false = box_primitive(ctx.rt, "java/lang/Boolean", V::FALSE);
+        let next = invoke(
+            &mut ctx,
+            STATE_HOLDER,
+            "setValue",
+            "(Lnet/minecraft/world/level/block/state/properties/Property;Ljava/lang/Comparable;)Ljava/lang/Object;",
+            &[states[0], active, set_false],
+        );
+        assert_eq!(next, states[2]);
+        assert!(ctx.rt.pending_exception.is_none());
+        invoke(
+            &mut ctx,
+            "test/HookBlock",
+            "registerDefaultState",
+            "(Lnet/minecraft/world/level/block/state/BlockState;)V",
+            &[block, V::NULL],
+        );
+        assert_eq!(ctx.rt.get_field(block, "defaultBlockState"), V::NULL);
+        let foreign_state = ctx.rt.new_instance(STATE, 0);
+        invoke(
+            &mut ctx,
+            "test/HookBlock",
+            "registerDefaultState",
+            "(Lnet/minecraft/world/level/block/state/BlockState;)V",
+            &[block, foreign_state],
+        );
+        assert_eq!(ctx.rt.get_field(block, "defaultBlockState"), foreign_state);
+        assert!(ctx.rt.pending_exception.is_none());
+        drop(ctx);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn boolean_property_factory_and_value_semantics_match_vanilla() {
+        let mut rt = Rt::new();
+        let linked = LinkedSpace::new();
+        let mut host = BlocksHost::default();
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        let factory_desc = "(Ljava/lang/String;)Lnet/minecraft/world/level/block/state/properties/BooleanProperty;";
+        let first_name = ctx.rt.intern_str("active");
+        let same_name = ctx.rt.new_str("active");
+        let first = invoke_static(
+            &mut ctx,
+            BOOLEAN_PROPERTY,
+            "create",
+            factory_desc,
+            &[first_name],
+        );
+        let second = invoke_static(
+            &mut ctx,
+            BOOLEAN_PROPERTY,
+            "create",
+            factory_desc,
+            &[same_name],
+        );
+        assert!(ctx.rt.pending_exception.is_none());
+        assert_ne!(first, second, "factory allocates a fresh property each call");
+        assert_eq!(ctx.rt.class_of(first), Some(BOOLEAN_PROPERTY));
+        assert_eq!(ctx.rt.get_field(first, "name"), first_name);
+        assert_eq!(
+            invoke(
+                &mut ctx,
+                BOOLEAN_PROPERTY,
+                "getValueClass",
+                "()Ljava/lang/Class;",
+                &[first],
+            ),
+            ctx.rt.new_pinned_handle("java/lang/Class", "class", 0, "java/lang/Boolean")
+        );
+
+        let values = invoke(
+            &mut ctx,
+            BOOLEAN_PROPERTY,
+            "getPossibleValues",
+            "()Ljava/util/Collection;",
+            &[first],
+        );
+        let values = collection_items(ctx.rt, values);
+        assert_eq!(values.len(), 2);
+        assert_eq!(ctx.rt.get_field(values[0], "$value"), V::TRUE);
+        assert_eq!(ctx.rt.get_field(values[1], "$value"), V::FALSE);
+
+        for (text, expected) in [("true", Some(V::TRUE)), ("false", Some(V::FALSE)), ("TRUE", None), (" true", None), ("yes", None)] {
+            let text = ctx.rt.new_str(text);
+            let optional = invoke(
+                &mut ctx,
+                BOOLEAN_PROPERTY,
+                "getValue",
+                "(Ljava/lang/String;)Ljava/util/Optional;",
+                &[first, text],
+            );
+            let actual = match &ctx.rt.get_obj(optional).unwrap().data {
+                Data::Optional(value) => *value,
+                other => panic!("unexpected Optional representation: {other:?}"),
+            };
+            assert_eq!(actual.map(|boxed| ctx.rt.get_field(boxed, "$value")), expected);
+        }
+        let true_value = box_primitive(ctx.rt, "java/lang/Boolean", V::TRUE);
+        let false_value = box_primitive(ctx.rt, "java/lang/Boolean", V::FALSE);
+        let true_name = invoke(
+            &mut ctx,
+            BOOLEAN_PROPERTY,
+            "getName",
+            "(Ljava/lang/Boolean;)Ljava/lang/String;",
+            &[first, true_value],
+        );
+        assert_eq!(ctx.rt.str_of(true_name), Some("true"));
+        let false_name = invoke(
+            &mut ctx,
+            BOOLEAN_PROPERTY,
+            "getName",
+            "(Ljava/lang/Boolean;)Ljava/lang/String;",
+            &[first, false_value],
+        );
+        assert_eq!(ctx.rt.str_of(false_name), Some("false"));
+
+        assert_eq!(
+            invoke(&mut ctx, BOOLEAN_PROPERTY, "equals", "(Ljava/lang/Object;)Z", &[first, second]),
+            V::TRUE
+        );
+        assert_eq!(
+            invoke(&mut ctx, BOOLEAN_PROPERTY, "hashCode", "()I", &[first]),
+            invoke(&mut ctx, BOOLEAN_PROPERTY, "hashCode", "()I", &[second])
+        );
+        let different_name = ctx.rt.intern_str("powered");
+        let different = invoke_static(
+            &mut ctx,
+            BOOLEAN_PROPERTY,
+            "create",
+            factory_desc,
+            &[different_name],
+        );
+        assert_eq!(
+            invoke(&mut ctx, BOOLEAN_PROPERTY, "equals", "(Ljava/lang/Object;)Z", &[first, different]),
+            V::FALSE
+        );
+        assert!(ctx.rt.pending_exception.is_none());
+    }
+
+    #[test]
+    fn block_state_properties_open_is_a_stable_static_property() {
+        let mut rt = Rt::new();
+        let linked = LinkedSpace::new();
+        let mut host = BlocksHost::default();
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        let desc = "Lnet/minecraft/world/level/block/state/properties/BooleanProperty;";
+        let open = read_static_field(&mut ctx, STATE_PROPERTIES, "OPEN", desc);
+        let open_again = read_static_field(&mut ctx, STATE_PROPERTIES, "OPEN", desc);
+        assert!(ctx.rt.pending_exception.is_none());
+        assert_eq!(open, open_again);
+        assert_eq!(ctx.rt.str_of(ctx.rt.get_field(open, "name")), Some("open"));
+
+        let factory_desc = "(Ljava/lang/String;)Lnet/minecraft/world/level/block/state/properties/BooleanProperty;";
+        let name = ctx.rt.new_str("open");
+        let separately_created = invoke_static(
+            &mut ctx,
+            BOOLEAN_PROPERTY,
+            "create",
+            factory_desc,
+            &[name],
+        );
+        assert_ne!(open, separately_created);
+        assert_eq!(
+            invoke(
+                &mut ctx,
+                BOOLEAN_PROPERTY,
+                "equals",
+                "(Ljava/lang/Object;)Z",
+                &[open, separately_created],
+            ),
+            V::TRUE
+        );
+        assert_eq!(
+            invoke(&mut ctx, BOOLEAN_PROPERTY, "hashCode", "()I", &[open]),
+            invoke(&mut ctx, BOOLEAN_PROPERTY, "hashCode", "()I", &[separately_created])
+        );
+        let triggered = read_static_field(&mut ctx, STATE_PROPERTIES, "TRIGGERED", desc);
+        assert_ne!(open, triggered);
+        assert_eq!(
+            invoke(
+                &mut ctx,
+                BOOLEAN_PROPERTY,
+                "equals",
+                "(Ljava/lang/Object;)Z",
+                &[open, triggered],
+            ),
+            V::FALSE
+        );
+        assert!(ctx.rt.pending_exception.is_none());
+    }
+
+    #[test]
+    fn block_state_properties_waterlogged_is_a_stable_static_property() {
+        let mut rt = Rt::new();
+        let linked = LinkedSpace::new();
+        let mut host = BlocksHost::default();
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        let desc = "Lnet/minecraft/world/level/block/state/properties/BooleanProperty;";
+        let property = read_static_field(&mut ctx, STATE_PROPERTIES, "WATERLOGGED", desc);
+        assert!(ctx.rt.pending_exception.is_none());
+        assert_eq!(property, read_static_field(&mut ctx, STATE_PROPERTIES, "WATERLOGGED", desc));
+        assert_eq!(ctx.rt.str_of(ctx.rt.get_field(property, "name")), Some("waterlogged"));
+        let possible_values = invoke(&mut ctx, BOOLEAN_PROPERTY, "getPossibleValues", "()Ljava/util/Collection;", &[property]);
+        let values = collection_items(ctx.rt, possible_values);
+        assert_eq!(values.len(), 2);
+        assert_eq!(ctx.rt.get_field(values[0], "$value"), V::TRUE);
+        assert_eq!(ctx.rt.get_field(values[1], "$value"), V::FALSE);
+        assert!(ctx.rt.pending_exception.is_none());
+    }
+
+    #[test]
+    fn horizontal_facing_keeps_direction_values_order_when_filtered_by_plane_predicate() {
+        let mut rt = Rt::new();
+        let linked = LinkedSpace::new();
+        let mut host = BlocksHost::default();
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        let owner = STATE_PROPERTIES;
+        let desc = "Lnet/minecraft/world/level/block/state/properties/DirectionProperty;";
+        let facing = read_static_field(&mut ctx, owner, "HORIZONTAL_FACING", desc);
+        let facing_again = read_static_field(&mut ctx, owner, "HORIZONTAL_FACING", desc);
+        assert!(ctx.rt.pending_exception.is_none());
+        assert_eq!(facing, facing_again);
+        assert_eq!(ctx.rt.str_of(ctx.rt.get_field(facing, "name")), Some("facing"));
+
+        let values = invoke(
+            &mut ctx,
+            DIRECTION_PROPERTY,
+            "getPossibleValues",
+            "()Ljava/util/Collection;",
+            &[facing],
+        );
+        let values = collection_items(ctx.rt, values);
+        assert_eq!(values.len(), 4);
+        let names: Vec<_> = values
+            .iter()
+            .map(|value| ctx.rt.str_of(ctx.rt.get_field(*value, "name")).unwrap())
+            .collect();
+        assert_eq!(names, ["north", "south", "west", "east"]);
+        let directions = crate::direction::call(
+            ctx.rt,
+            &MemberRef::new("net/minecraft/core/Direction", "values", "()[Lnet/minecraft/core/Direction;"),
+            true,
+            &[],
+        ).unwrap();
+        let Data::Array(directions) = &ctx.rt.get_obj(directions).unwrap().data else {
+            panic!("Direction.values must return Direction[]");
+        };
+        let filtered: Vec<_> = directions.iter().copied().filter(|direction| {
+            matches!(ctx.rt.str_of(ctx.rt.get_field(*direction, "$name")), Some("NORTH" | "SOUTH" | "WEST" | "EAST"))
+        }).collect();
+        assert_eq!(values, filtered);
+        assert!(ctx.rt.pending_exception.is_none());
     }
 
     #[test]

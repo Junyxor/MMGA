@@ -4,9 +4,7 @@
 //! identity, id, serialized name, color, and enum reflection methods.
 
 use mmga_classfile::MemberRef;
-use mmga_runtime::{
-    Data, LinkedSpace, NativeClassDef, NativeModuleRegistry, Rt, V,
-};
+use mmga_runtime::{Data, LinkedSpace, NativeClassDef, NativeModuleRegistry, Rt, V};
 
 const CLASS: &str = "net/minecraft/world/item/Rarity";
 const DESC: &str = "Lnet/minecraft/world/item/Rarity;";

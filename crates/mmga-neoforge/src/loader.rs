@@ -1631,6 +1631,12 @@ impl HostApi for FmlLoader {
         Ok(self.jar_resources.get(path).cloned())
     }
     fn get_static_field(&mut self, rt: &mut Rt, owner: &str, name: &str, desc: &str) -> Option<V> {
+        if owner == "net/minecraft/core/registries/BuiltInRegistries"
+            && name == "BLOCK"
+            && desc == "Lnet/minecraft/core/DefaultedRegistry;"
+        {
+            return Some(self.state.registries.ensure_builtin_block_registry(rt));
+        }
         if owner == "net/neoforged/neoforge/common/NeoForge" && name == "EVENT_BUS" {
             return Some(self.game_bus_handle(rt));
         }
@@ -1721,13 +1727,13 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::rarity::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
-        if let Some(value) = crate::particle_types::get_static_field(rt, &mut self.state.registries, owner, name, desc) {
-            return Some(value);
-        }
-        if let Some(value) = crate::enchantment_keys::get_static_field(rt, owner, name, desc) {
-            return Some(value);
-        }
-        if let Some(value) = crate::mob_category::get_static_field(rt, owner, name, desc) {
+        if let Some(value) = crate::particle_types::get_static_field(
+            rt,
+            &mut self.state.registries,
+            owner,
+            name,
+            desc,
+        ) {
             return Some(value);
         }
         if let Some(value) = crate::blocks::get_static_field(rt, &mut self.state.registries, owner, name, desc) {
@@ -1754,7 +1760,13 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::entity_selector_options::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
+        if let Some(value) = crate::enchantment_keys::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
         if let Some(value) = crate::global_positions::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
+        if let Some(value) = crate::mob_category::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
         if let Some(value) = crate::command_items::get_static_field(rt, owner, name, desc) {
@@ -1983,6 +1995,9 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::wood_types::call(rt, member, is_static, args) {
             return Some(value);
         }
+        if let Some(value) = crate::mob_category::call(rt, member, is_static, args) {
+            return Some(value);
+        }
         if let Some(value) = crate::weathering_copper::call(rt, member, is_static, args) {
             return Some(value);
         }
@@ -1998,9 +2013,6 @@ impl HostApi for FmlLoader {
             if let Some(value) = crate::global_positions::call(&mut ctx, member, is_static, args) {
                 return Some(value);
             }
-            if let Some(value) = crate::command_items::call(&mut ctx, member, is_static, args) {
-                return Some(value);
-            }
             if let Some(value) = crate::recipe_types::call(&mut ctx, member, is_static, args) {
                 return Some(value);
             }
@@ -2008,6 +2020,9 @@ impl HostApi for FmlLoader {
                 return Some(value);
             }
             if let Some(value) = crate::ticket_controllers::call(&mut ctx, member, is_static, args) {
+                return Some(value);
+            }
+            if let Some(value) = crate::command_items::call(&mut ctx, member, is_static, args) {
                 return Some(value);
             }
             if let Some(value) = crate::entity_selector_options::call(&mut ctx, member, is_static, args) {
@@ -2092,7 +2107,7 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::particle_types::call(rt, member, is_static, args) {
             return Some(value);
         }
-        if let Some(value) = crate::mob_category::call(rt, member, is_static, args) {
+        if let Some(value) = crate::dispenser::call(rt, member, is_static, args) {
             return Some(value);
         }
         if let Some(value) = crate::attributes::call(rt, member, is_static, args) {
@@ -2276,6 +2291,19 @@ impl HostApi for FmlLoader {
         if owner.ends_with("DeferredHolder") && !is_static && member.name == "get" {
             return self.holder_get(rt, args);
         }
+        if let Some(value) = crate::blocks::call_context(
+            &mut ExecCtx {
+                rt,
+                linked,
+                host: self,
+                depth: 0,
+            },
+            member,
+            is_static,
+            args,
+        ) {
+            return Some(value);
+        }
         if owner.starts_with("net/minecraft/") {
             if let Some(value) = self.minecraft_value(rt, member, is_static, args) {
                 return Some(value);
@@ -2312,6 +2340,7 @@ impl HostApi for FmlLoader {
             "net/minecraft/core/Direction"
                 | "net/minecraft/world/item/ArmorItem$Type"
                 | "net/minecraft/world/entity/EquipmentSlot"
+                | "net/minecraft/world/InteractionHand"
                 | "net/minecraft/world/entity/EquipmentSlot$Type")
             && matches!(super_class, "java/lang/Enum" | "java/lang/Comparable" | "java/io/Serializable")
         {
@@ -2370,13 +2399,13 @@ impl HostApi for FmlLoader {
         if crate::particle_types::is_subtype(sub_class, super_class) {
             return true;
         }
-        if crate::mob_category::is_subtype(sub_class, super_class) {
+        if crate::dispenser::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::global_positions::is_subtype(sub_class, super_class) {
             return true;
         }
-        if crate::command_items::is_subtype(sub_class, super_class) {
+        if crate::mob_category::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::recipe_types::is_subtype(sub_class, super_class) {
@@ -2389,6 +2418,9 @@ impl HostApi for FmlLoader {
             return true;
         }
         if crate::guava_multimaps::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::command_items::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::registry_holders::is_subtype(sub_class, super_class) {

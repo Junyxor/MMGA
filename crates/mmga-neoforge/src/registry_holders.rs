@@ -135,6 +135,42 @@ fn stable_lifecycle(rt: &mut Rt) -> V {
 }
 
 impl RegistryStore {
+    /// The vanilla 1.21.1 BuiltInRegistries initializer creates BLOCK through
+    /// registerDefaultedWithIntrusiveHolders(key, "air", bootstrap), using a
+    /// stable lifecycle. Exposing this configuration does not materialize the
+    /// missing vanilla values or claim complete enumeration/protocol IDs.
+    pub fn ensure_builtin_block_registry(&mut self, rt: &mut Rt) -> V {
+        const BLOCK_REGISTRY: &str = "minecraft:block";
+        if let Some(config) = self
+            .reference_states
+            .get(BLOCK_REGISTRY)
+            .and_then(|state| state.config.as_ref())
+        {
+            return config.handle;
+        }
+        let lifecycle = stable_lifecycle(rt);
+        let handle = rt.new_pinned_handle(
+            "net/minecraft/core/DefaultedMappedRegistry",
+            "registry",
+            0,
+            BLOCK_REGISTRY,
+        );
+        let state = self.reference_states.entry(BLOCK_REGISTRY.into()).or_default();
+        state.config = Some(ReferenceConfig {
+            intrusive: true,
+            default_key: Some("minecraft:air".into()),
+            frozen: self.frozen || state.frozen,
+            max_id: i32::MAX - 1,
+            lifecycle,
+            handle,
+            sync: false,
+            add_callbacks: Vec::new(),
+            bake_callbacks: Vec::new(),
+            clear_callbacks: Vec::new(),
+        });
+        handle
+    }
+
     pub fn take_reference_callbacks(&mut self) -> Vec<RegistryCallbackInvocation> {
         std::mem::take(&mut self.reference_callbacks)
     }

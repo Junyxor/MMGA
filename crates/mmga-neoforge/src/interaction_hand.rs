@@ -4,9 +4,7 @@
 //! OFF_HAND at ordinal 1. This module models the enum values and reflection metadata only.
 
 use mmga_classfile::MemberRef;
-use mmga_runtime::{
-    Data, LinkedSpace, NativeClassDef, NativeModuleRegistry, Rt, V,
-};
+use mmga_runtime::{Data, LinkedSpace, NativeClassDef, NativeModuleRegistry, Rt, V};
 
 const CLASS: &str = "net/minecraft/world/InteractionHand";
 const DESC: &str = "Lnet/minecraft/world/InteractionHand;";
