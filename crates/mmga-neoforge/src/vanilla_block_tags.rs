@@ -34,6 +34,8 @@ pub fn get_static_field(rt: &mut Rt, owner: &str, name: &str, desc: &str) -> Opt
         // CopperBlockSet block builder fields, awe.L/K with these exact literals.
         "SLABS" => "slabs",
         "STAIRS" => "stairs",
+        // PaletteBlockPartial.Wall.getBlockTags; awe.M = create("walls").
+        "WALLS" => "walls",
         _ => return None,
     };
     if let Some(value) = rt.get_static(owner, name) {
@@ -91,6 +93,33 @@ mod tests {
             })
         }
     }
+    #[test]
+    fn palette_wall_block_tag_has_block_domain_and_canonical_identity() {
+        let mut rt = Rt::new();
+        let linked = LinkedSpace::new();
+        let mut host = TagHost(RegistryStore::new());
+        let mut ctx = ExecCtx { rt: &mut rt, linked: &linked, host: &mut host, depth: 0 };
+        let key = read_static_field(&mut ctx, OWNER, "WALLS", "Lnet/minecraft/tags/TagKey;");
+        assert!(ctx.rt.pending_exception.is_none(), "PaletteBlockPartial.Wall needs BlockTags.WALLS");
+        assert_eq!(ctx.rt.handle_of(key).unwrap().2, "minecraft:block|minecraft:walls");
+        assert_eq!(key, read_static_field(&mut ctx, OWNER, "WALLS", "Lnet/minecraft/tags/TagKey;"));
+        let registry = crate::minecraft::new_resource_key(ctx.rt, "minecraft:root", "minecraft:block");
+        let location = ctx.rt.new_pinned_handle("net/minecraft/resources/ResourceLocation", "resource_location", 0, "minecraft:walls");
+        let factory = invoke_member(
+            &mut ctx,
+            op::INVOKESTATIC,
+            &MemberRef::new(TAG, "create", "(Lnet/minecraft/resources/ResourceKey;Lnet/minecraft/resources/ResourceLocation;)Lnet/minecraft/tags/TagKey;"),
+            &[registry, location],
+        );
+        assert_eq!(factory, key);
+        let item_key = crate::vanilla_item_tags::get_static_field(ctx.rt, "net/minecraft/tags/ItemTags", "WALLS", "Lnet/minecraft/tags/TagKey;").unwrap();
+        assert_ne!(item_key, key);
+        assert!(get_static_field(ctx.rt, "net/minecraft/tags/ItemTags", "WALLS", "Lnet/minecraft/tags/TagKey;").is_none());
+        assert!(get_static_field(ctx.rt, OWNER, "WALLS", "I").is_none());
+        assert!(ctx.rt.pending_exception.is_none());
+        assert_eq!(host.0.total_mod_entries(), 0);
+    }
+
     #[test]
     fn create_mining_tag_constants_have_exact_vanilla_block_keys() {
         let mut rt = Rt::new();

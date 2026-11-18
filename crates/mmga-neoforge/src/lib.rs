@@ -33,6 +33,7 @@ pub mod enchantment_keys;
 pub mod dimension_type;
 pub mod dfu;
 pub mod dye_color;
+pub mod dust_particles;
 pub mod deferred_holders;
 pub mod deferred_items;
 pub mod deferred_registers;

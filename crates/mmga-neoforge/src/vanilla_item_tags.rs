@@ -1,4 +1,4 @@
-//! Minecraft 1.21.1 ItemTags used by the original Create AllItems initializer.
+//! Minecraft 1.21.1 ItemTags used by original Create item and palette initializers.
 //! Verified from official `awn` bytecode/mappings (client SHA-1
 //! 30c73b1c5da787909b2f73340419fdf13b9def88; mappings SHA-1
 //! 2244b6f072256667bcd9a73df124d6c58de77992). Keys do not supply tag membership.
@@ -21,6 +21,10 @@ pub fn get_static_field(rt: &mut Rt, owner: &str, name: &str, desc: &str) -> Opt
         // Original BuilderTransformers sliding/trapdoor item builders; awn.o/N.
         "DOORS" => "doors",
         "TRAPDOORS" => "trapdoors",
+        // PaletteBlockPartial Stairs/Slab/Wall.getItemTags; awn.H/I/J.
+        "STAIRS" => "stairs",
+        "SLABS" => "slabs",
+        "WALLS" => "walls",
         _ => return None,
     };
     if let Some(value) = rt.get_static(owner, name) {
@@ -137,6 +141,51 @@ mod tests {
         assert!(ctx.rt.pending_exception.is_none());
         assert_eq!(host.0.total_mod_entries(), 0);
     }
+    #[test]
+    fn palette_partial_item_tags_are_canonical_item_keys() {
+        let mut rt = Rt::new();
+        let linked = LinkedSpace::new();
+        let mut host = Host(RegistryStore::new());
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        for (field, path) in [("STAIRS", "stairs"), ("SLABS", "slabs"), ("WALLS", "walls")] {
+            let key = read_static_field(&mut ctx, OWNER, field, "Lnet/minecraft/tags/TagKey;");
+            assert!(ctx.rt.pending_exception.is_none(), "PaletteBlockPartial item tag {field}");
+            assert_eq!(
+                ctx.rt.handle_of(key).map(|(_, _, tag, _)| tag),
+                Some(format!("minecraft:item|minecraft:{path}").as_str()),
+            );
+            assert_eq!(key, read_static_field(&mut ctx, OWNER, field, "Lnet/minecraft/tags/TagKey;"));
+            let registry = crate::minecraft::new_resource_key(ctx.rt, "minecraft:root", "minecraft:item");
+            let location = ctx.rt.new_pinned_handle(
+                "net/minecraft/resources/ResourceLocation",
+                "resource_location",
+                0,
+                format!("minecraft:{path}"),
+            );
+            let factory = invoke_member(
+                &mut ctx,
+                op::INVOKESTATIC,
+                &MemberRef::new(
+                    "net/minecraft/tags/TagKey",
+                    "create",
+                    "(Lnet/minecraft/resources/ResourceKey;Lnet/minecraft/resources/ResourceLocation;)Lnet/minecraft/tags/TagKey;",
+                ),
+                &[registry, location],
+            );
+            assert_eq!(factory, key);
+            assert_ne!(key, crate::tag_codecs::intern_key(ctx.rt, "minecraft:block", &format!("minecraft:{path}")));
+            assert!(get_static_field(ctx.rt, "net/minecraft/tags/BlockTags", field, "Lnet/minecraft/tags/TagKey;").is_none());
+            assert!(get_static_field(ctx.rt, OWNER, field, "I").is_none());
+        }
+        assert!(ctx.rt.pending_exception.is_none());
+        assert_eq!(host.0.total_mod_entries(), 0, "creating keys does not define members");
+    }
+
     #[test]
     fn unverified_names_wrong_owners_and_descriptors_do_not_generate_guessed_tags() {
         let mut rt = Rt::new();

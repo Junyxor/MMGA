@@ -233,6 +233,7 @@ impl PreparedLoad {
         crate::interaction_hand::register_types(&mut linked);
         crate::rarity::register_types(&mut linked);
         crate::particle_types::register_types(&mut linked);
+        crate::dust_particles::register_types(&mut linked);
         linked.services = services;
         linked.add_bytecode_classes(classes);
         let mut loader = FmlLoader {
@@ -270,6 +271,11 @@ impl FmlLoader {
 
     /// Constructs mods and advances through server start.
     pub fn bootstrap(&mut self, rt: &mut Rt, linked: &LinkedSpace) -> Result<(), String> {
+        crate::blocks::bootstrap_planks(rt, &mut self.state.registries);
+        raise_if_pending(rt, "bootstrapping vanilla planks")?;
+        crate::dust_particles::bootstrap(rt, &mut self.state.registries);
+        raise_if_pending(rt, "bootstrapping vanilla dust particle type")?;
+
         let count = self.mods.len();
         for index in 0..count {
             self.construct_one(rt, linked, index)?;
@@ -1736,6 +1742,15 @@ impl HostApi for FmlLoader {
         ) {
             return Some(value);
         }
+        if let Some(value) = crate::dust_particles::get_static_field(
+            rt,
+            &mut self.state.registries,
+            owner,
+            name,
+            desc,
+        ) {
+            return Some(value);
+        }
         if let Some(value) = crate::blocks::get_static_field(rt, &mut self.state.registries, owner, name, desc) {
             return Some(value);
         }
@@ -1969,6 +1984,9 @@ impl HostApi for FmlLoader {
             }
         }
         if let Some(value) = crate::blocks::call(rt, &mut self.state.registries, member, is_static, args) {
+            return Some(value);
+        }
+        if let Some(value) = crate::dust_particles::call(rt, &mut self.state.registries, member, is_static, args) {
             return Some(value);
         }
         if let Some(value) = crate::block_entities::call(rt, linked, self, member, is_static, args) {
@@ -2396,7 +2414,9 @@ impl HostApi for FmlLoader {
         if crate::rarity::is_subtype(sub_class, super_class) {
             return true;
         }
-        if crate::particle_types::is_subtype(sub_class, super_class) {
+        if crate::particle_types::is_subtype(sub_class, super_class)
+            || crate::dust_particles::is_subtype(sub_class, super_class)
+        {
             return true;
         }
         if crate::dispenser::is_subtype(sub_class, super_class) {
@@ -2705,11 +2725,17 @@ fn content_properties(rt: &Rt, registry: &str, value: V) -> ContentProperties {
     } else {
         "object"
     };
+    let block_properties = instance_field(rt, value, "properties");
     ContentProperties {
         kind: kind.into(),
         template: rt.class_of(value).unwrap_or(kind).to_owned(),
-        hardness: instance_field(rt, value, "hardness").map(|v| v.f()),
-        resistance: instance_field(rt, value, "resistance").map(|v| v.f()),
+        hardness: block_properties
+            .and_then(|props| instance_field(rt, props, "destroyTime"))
+            .or_else(|| instance_field(rt, value, "hardness"))
+            .map(V::f),
+        resistance: instance_field(rt, value, "explosionResistance")
+            .or_else(|| instance_field(rt, value, "resistance"))
+            .map(V::f),
         max_stack_size: instance_field(rt, value, "maxStackSize").map(|v| v.i()),
         ..ContentProperties::default()
     }
@@ -3181,6 +3207,7 @@ side = "CLIENT"
             .unwrap();
         assert_eq!(block.mod_id, "pulse");
         assert_eq!(block.properties.hardness, Some(2.5));
+        assert_eq!(block.properties.resistance, Some(7.0));
         let item = prepared
             .loader
             .state
@@ -3306,11 +3333,18 @@ side = "CLIENT"
             (
                 "net/minecraft/world/level/block/Block.java",
                 r#"package net.minecraft.world.level.block;
+                import net.minecraft.world.level.block.state.BlockBehaviour;
                 public class Block {
-                    public Block(Properties properties) {}
+                    public Block(BlockBehaviour.Properties properties) {}
+                }"#,
+            ),
+            (
+                "net/minecraft/world/level/block/state/BlockBehaviour.java",
+                r#"package net.minecraft.world.level.block.state;
+                public class BlockBehaviour {
                     public static class Properties {
                         public static Properties of() { return new Properties(); }
-                        public Properties strength(float hardness) { return this; }
+                        public Properties strength(float hardness, float resistance) { return this; }
                     }
                 }"#,
             ),
@@ -3338,6 +3372,7 @@ side = "CLIENT"
                 import net.minecraft.server.level.ServerLevel;
                 import net.minecraft.world.item.Item;
                 import net.minecraft.world.level.block.Block;
+                import net.minecraft.world.level.block.state.BlockBehaviour;
                 import net.neoforged.bus.api.IEventBus;
                 import net.neoforged.bus.api.SubscribeEvent;
                 import net.neoforged.fml.common.EventBusSubscriber;
@@ -3352,7 +3387,7 @@ side = "CLIENT"
                     public static final DeferredRegister<Block> BLOCKS = DeferredRegister.createBlocks("pulse");
                     public static final DeferredRegister<Item> ITEMS = DeferredRegister.createItems("pulse");
                     public static final DeferredHolder<Block> PULSE_BLOCK =
-                        BLOCKS.register("pulse_block", () -> new Block(Block.Properties.of().strength(2.5f)));
+                        BLOCKS.register("pulse_block", () -> new Block(BlockBehaviour.Properties.of().strength(2.5f, 7.0f)));
                     public static final DeferredHolder<Item> PULSE_ITEM =
                         ITEMS.register("pulse_item", () -> new Item(new Item.Properties().stacksTo(16)));
 

@@ -1,4 +1,4 @@
-//! Verified local block definitions for Create's vanilla display associations.
+//! Verified local block definitions for Create's vanilla display associations and windows.
 //!
 //! Minecraft 1.21.1 official bytecode: Blocks=dga, RespawnAnchorBlock=dmh,
 //! TargetBlock=dog, DispenserBlock=did, DropperBlock=dij, StateDefinition=dtd,
@@ -8,8 +8,8 @@
 //! block/state registry: global IDs, enumeration, shapes and world actions fail.
 
 use crate::{ContentProperties, RegistryStore};
-use mmga_classfile::MemberRef;
-use mmga_runtime::{box_primitive, Data, Rt, V};
+use mmga_classfile::{op, MemberRef};
+use mmga_runtime::{box_primitive, invoke_member, Data, ExecCtx, HostApi, LinkedSpace, Rt, V};
 
 const BLOCK: &str = "net/minecraft/world/level/block/Block";
 const BLOCKS: &str = "net/minecraft/world/level/block/Blocks";
@@ -39,6 +39,13 @@ const PROPERTY_DESC: &str = "Lnet/minecraft/world/level/block/state/properties/I
 const LOCAL_LIST: &str = "com/google/common/collect/RegularImmutableList";
 const LOCAL_SET: &str = "com/google/common/collect/RegularImmutableSet";
 const LOCAL_COLLECTION: &str = "java/util/Collections$UnmodifiableCollection";
+const PROPERTIES: &str = "net/minecraft/world/level/block/state/BlockBehaviour$Properties";
+const MAP_COLOR: &str = "net/minecraft/world/level/material/MapColor";
+const SOUND_TYPE: &str = "net/minecraft/world/level/block/SoundType";
+const INSTRUMENT: &str = "net/minecraft/world/level/block/state/properties/NoteBlockInstrument";
+const BUILTIN_REGISTRIES: &str = "net/minecraft/core/registries/BuiltInRegistries";
+const BLOCK_REGISTRY: &str = "minecraft:block";
+const DEFAULTED_REGISTRY_DESC: &str = "Lnet/minecraft/core/DefaultedRegistry;";
 
 struct BlockDefinition {
     name: &'static str,
@@ -99,6 +106,97 @@ const DEFINITIONS: [BlockDefinition; 4] = [
     },
 ];
 
+struct PlankDefinition {
+    field: &'static str,
+    id: &'static str,
+    map_color: &'static str,
+    sound_type: &'static str,
+    ignited_by_lava: bool,
+}
+
+// Create 6.0.10 AllPaletteBlocks passes these eleven blocks into WindowGen.
+// In dga.<clinit> (n..v, oE and oF), each is a plain Block with BASS and
+// strength(2.0F, 3.0F). The Nether pair omits ignitedByLava().
+const PLANKS: [PlankDefinition; 11] = [
+    PlankDefinition {
+        field: "OAK_PLANKS",
+        id: "minecraft:oak_planks",
+        map_color: "WOOD",
+        sound_type: "WOOD",
+        ignited_by_lava: true,
+    },
+    PlankDefinition {
+        field: "SPRUCE_PLANKS",
+        id: "minecraft:spruce_planks",
+        map_color: "PODZOL",
+        sound_type: "WOOD",
+        ignited_by_lava: true,
+    },
+    PlankDefinition {
+        field: "BIRCH_PLANKS",
+        id: "minecraft:birch_planks",
+        map_color: "SAND",
+        sound_type: "WOOD",
+        ignited_by_lava: true,
+    },
+    PlankDefinition {
+        field: "JUNGLE_PLANKS",
+        id: "minecraft:jungle_planks",
+        map_color: "DIRT",
+        sound_type: "WOOD",
+        ignited_by_lava: true,
+    },
+    PlankDefinition {
+        field: "ACACIA_PLANKS",
+        id: "minecraft:acacia_planks",
+        map_color: "COLOR_ORANGE",
+        sound_type: "WOOD",
+        ignited_by_lava: true,
+    },
+    PlankDefinition {
+        field: "CHERRY_PLANKS",
+        id: "minecraft:cherry_planks",
+        map_color: "TERRACOTTA_WHITE",
+        sound_type: "CHERRY_WOOD",
+        ignited_by_lava: true,
+    },
+    PlankDefinition {
+        field: "DARK_OAK_PLANKS",
+        id: "minecraft:dark_oak_planks",
+        map_color: "COLOR_BROWN",
+        sound_type: "WOOD",
+        ignited_by_lava: true,
+    },
+    PlankDefinition {
+        field: "MANGROVE_PLANKS",
+        id: "minecraft:mangrove_planks",
+        map_color: "COLOR_RED",
+        sound_type: "WOOD",
+        ignited_by_lava: true,
+    },
+    PlankDefinition {
+        field: "BAMBOO_PLANKS",
+        id: "minecraft:bamboo_planks",
+        map_color: "COLOR_YELLOW",
+        sound_type: "BAMBOO_WOOD",
+        ignited_by_lava: true,
+    },
+    PlankDefinition {
+        field: "CRIMSON_PLANKS",
+        id: "minecraft:crimson_planks",
+        map_color: "CRIMSON_STEM",
+        sound_type: "NETHER_WOOD",
+        ignited_by_lava: false,
+    },
+    PlankDefinition {
+        field: "WARPED_PLANKS",
+        id: "minecraft:warped_planks",
+        map_color: "WARPED_STEM",
+        sound_type: "NETHER_WOOD",
+        ignited_by_lava: false,
+    },
+];
+
 pub fn get_static_field(
     rt: &mut Rt,
     registries: &mut RegistryStore,
@@ -118,6 +216,9 @@ pub fn get_static_field(
         ));
     }
     if owner == BLOCKS && desc == BLOCK_DESC {
+        if let Some(plank) = PLANKS.iter().find(|plank| plank.field == name) {
+            return Some(plank_constant(rt, registries, plank));
+        }
         return DEFINITIONS
             .iter()
             .find(|definition| definition.name == name)
@@ -255,10 +356,9 @@ pub fn call(
     if !rt.get_field(recv, "$blockCollection").is_null() {
         return collection_call(rt, recv, name, desc, &args[1..]);
     }
-    if matches!(
-        rt.class_of(recv),
-        Some(ANCHOR | TARGET | DISPENSER | DROPPER)
-    ) {
+    if matches!(rt.class_of(recv), Some(BLOCK | ANCHOR | TARGET | DISPENSER | DROPPER))
+        && !rt.get_field(recv, "$blockId").is_null()
+    {
         return match (name, desc) {
             ("defaultBlockState", "()Lnet/minecraft/world/level/block/state/BlockState;") => {
                 Some(rt.get_field(recv, "defaultBlockState"))
@@ -270,13 +370,17 @@ pub fn call(
                 Some(rt.get_field(recv, "builtInRegistryHolder"))
             }
             ("asBlock", "()Lnet/minecraft/world/level/block/Block;") => Some(recv),
-            ("defaultDestroyTime", "()F") => Some(rt.get_field(recv, "$destroyTime")),
+            ("defaultDestroyTime", "()F") if rt.class_of(recv) != Some(BLOCK) => {
+                Some(rt.get_field(recv, "$destroyTime"))
+            }
             ("getExplosionResistance", "()F") => Some(rt.get_field(recv, "explosionResistance")),
             ("getFriction", "()F") => Some(rt.get_field(recv, "friction")),
             ("getSpeedFactor", "()F") => Some(rt.get_field(recv, "speedFactor")),
             ("getJumpFactor", "()F") => Some(rt.get_field(recv, "jumpFactor")),
-            ("hasDynamicShape", "()Z") => Some(V::FALSE),
-            ("defaultMapColor", "()Lnet/minecraft/world/level/material/MapColor;") => {
+            ("hasDynamicShape", "()Z") => Some(rt.get_field(recv, "dynamicShape")),
+            ("defaultMapColor", "()Lnet/minecraft/world/level/material/MapColor;")
+                if rt.class_of(recv) != Some(BLOCK) =>
+            {
                 Some(rt.get_field(recv, "$mapColor"))
             }
             ("getDescriptionId", "()Ljava/lang/String;") => {
@@ -460,7 +564,10 @@ fn inherited_block_call(
     recv: V,
     args: &[V],
 ) -> Option<V> {
-    if !ctx.linked.is_subtype(&member.owner, BLOCK, ctx.host) {
+    let is_block = ctx.linked.is_subtype(&member.owner, BLOCK, ctx.host);
+    let is_block_behaviour = member.owner == BEHAVIOUR
+        && ctx.rt.get_field(recv, "$constructedBlock") == V::TRUE;
+    if !is_block && !is_block_behaviour {
         return None;
     }
     match (member.name.as_str(), member.desc.as_str()) {
@@ -473,6 +580,19 @@ fn inherited_block_call(
         ("builtInRegistryHolder", "()Lnet/minecraft/core/Holder$Reference;") => Some(ctx.rt.get_field(recv, "builtInRegistryHolder")),
         ("properties", "()Lnet/minecraft/world/level/block/state/BlockBehaviour$Properties;") => Some(ctx.rt.get_field(recv, "properties")),
         ("defaultDestroyTime", "()F") => Some(ctx.rt.get_field(ctx.rt.get_field(recv, "properties"), "destroyTime")),
+        ("defaultMapColor", "()Lnet/minecraft/world/level/material/MapColor;")
+            if ctx.rt.class_of(recv) == Some(BLOCK) && !ctx.rt.get_field(recv, "$blockId").is_null() =>
+        {
+            let properties = ctx.rt.get_field(recv, "properties");
+            let color = ctx.rt.get_field(properties, "mapColor");
+            let state = ctx.rt.get_field(recv, "defaultBlockState");
+            Some(invoke_member(
+                ctx,
+                op::INVOKEINTERFACE,
+                &MemberRef::new("java/util/function/Function", "apply", "(Ljava/lang/Object;)Ljava/lang/Object;"),
+                &[color, state],
+            ))
+        }
         ("useShapeForLightOcclusion", "(Lnet/minecraft/world/level/block/state/BlockState;)Z") => Some(V::FALSE),
         ("getSoundType", "(Lnet/minecraft/world/level/block/state/BlockState;)Lnet/minecraft/world/level/block/SoundType;") => Some(ctx.rt.get_field(recv, "soundType")),
         _ => None,
@@ -683,6 +803,137 @@ fn new_block_state(ctx: &mut mmga_runtime::ExecCtx<'_>, owner: V, definition: V,
     state
 }
 
+/// Materialize the verified vanilla window source blocks before mod construction and registry freeze.
+pub fn bootstrap_planks(rt: &mut Rt, registries: &mut RegistryStore) {
+    if rt.pending_exception.is_some() {
+        return;
+    }
+    for plank in &PLANKS {
+        plank_constant(rt, registries, plank);
+        if rt.pending_exception.is_some() {
+            return;
+        }
+    }
+}
+
+fn plank_constant(rt: &mut Rt, registries: &mut RegistryStore, plank: &PlankDefinition) -> V {
+    if rt.pending_exception.is_some() {
+        return V::NULL;
+    }
+    if let Some(block) = rt.get_static(BLOCKS, plank.field) {
+        return block;
+    }
+    // Static field and registry reads can also reach this factory before loader bootstrap.
+    // Reject a late first creation before obtaining any material or sound dependencies.
+    if registries.frozen || registries.reference_states.get(BLOCK_REGISTRY).is_some_and(|state| {
+        state.frozen || state.config.as_ref().is_some_and(|config| config.frozen)
+    }) {
+        return rt.throw_exception("java/lang/IllegalStateException", "Block registry is already frozen");
+    }
+    if registries.lookup(BLOCK_REGISTRY, plank.id).is_some_and(|entry| !entry.value.is_null()) {
+        return rt.throw_exception("java/lang/IllegalStateException", "Vanilla plank id already has a value");
+    }
+
+    let linked = LinkedSpace::new();
+    let mut host = PlankBootstrapHost(registries);
+    let mut ctx = ExecCtx { rt, linked: &linked, host: &mut host, depth: 0 };
+    let properties = plank_properties(&mut ctx, plank);
+    if ctx.rt.pending_exception.is_some() {
+        return V::NULL;
+    }
+    let block = ctx.rt.new_instance(BLOCK, 0);
+    initialize_block(&mut ctx, block, properties);
+    if ctx.rt.pending_exception.is_some() {
+        return V::NULL;
+    }
+
+    // Registration binds the same intrusive holder that Block.<init> installed.
+    let holder = ctx.rt.get_field(block, "builtInRegistryHolder");
+    let info = crate::registry_holders::built_in_registration_info(ctx.rt);
+    let bound = host.0.register_reference_value(
+        rt,
+        BLOCK_REGISTRY,
+        plank.id,
+        "minecraft",
+        block,
+        ContentProperties {
+            kind: "block".into(),
+            template: plank.id.into(),
+            hardness: Some(2.0),
+            resistance: Some(3.0),
+            light_level: Some(0),
+            friction: Some(0.6),
+            ..ContentProperties::default()
+        },
+        info,
+    );
+    if rt.pending_exception.is_some() {
+        return V::NULL;
+    }
+    debug_assert_eq!(bound, holder);
+    let id = rt.intern_str(plank.id);
+    let description = rt.intern_str(&format!("block.{}", plank.id.replace(':', ".")));
+    rt.put_field(block, "$blockId", id);
+    rt.put_field(block, "descriptionId", description);
+    rt.put_static(BLOCKS, plank.field, block);
+    block
+}
+
+fn plank_properties(ctx: &mut ExecCtx<'_>, plank: &PlankDefinition) -> V {
+    let properties = invoke_member(ctx, op::INVOKESTATIC, &MemberRef::new(PROPERTIES, "of", &format!("()L{PROPERTIES};")), &[]);
+    if ctx.rt.pending_exception.is_some() {
+        return V::NULL;
+    }
+    for (method, owner, field) in [
+        ("mapColor", MAP_COLOR, plank.map_color),
+        ("instrument", INSTRUMENT, "BASS"),
+        ("sound", SOUND_TYPE, plank.sound_type),
+    ] {
+        let value = mmga_runtime::read_static_field(ctx, owner, field, &format!("L{owner};"));
+        if ctx.rt.pending_exception.is_some() {
+            return V::NULL;
+        }
+        invoke_member(ctx, op::INVOKEVIRTUAL, &MemberRef::new(PROPERTIES, method, &format!("(L{owner};)L{PROPERTIES};")), &[properties, value]);
+        if ctx.rt.pending_exception.is_some() {
+            return V::NULL;
+        }
+    }
+    invoke_member(ctx, op::INVOKEVIRTUAL, &MemberRef::new(PROPERTIES, "strength", &format!("(FF)L{PROPERTIES};")), &[properties, V::F(2.0), V::F(3.0)]);
+    if ctx.rt.pending_exception.is_none() && plank.ignited_by_lava {
+        invoke_member(ctx, op::INVOKEVIRTUAL, &MemberRef::new(PROPERTIES, "ignitedByLava", &format!("()L{PROPERTIES};")), &[properties]);
+    }
+    properties
+}
+
+// These constructors are reached through the host's context-free static field API.
+// Reuse the existing Properties, Block, and registry implementations in an empty
+// class space because vanilla planks are plain Block instances with no subclass hooks.
+struct PlankBootstrapHost<'a>(&'a mut RegistryStore);
+
+impl HostApi for PlankBootstrapHost<'_> {
+    fn get_static_field(&mut self, rt: &mut Rt, owner: &str, name: &str, desc: &str) -> Option<V> {
+        if (owner, name, desc) == (BUILTIN_REGISTRIES, "BLOCK", DEFAULTED_REGISTRY_DESC) {
+            return Some(self.0.ensure_builtin_block_registry(rt));
+        }
+        match owner {
+            MAP_COLOR => crate::minecraft::get_static_field(rt, owner, name),
+            SOUND_TYPE => crate::sound_types::get_static_field(rt, self.0, owner, name, desc),
+            INSTRUMENT => crate::note_instruments::get_static_field(rt, self.0, owner, name, desc),
+            "net/minecraft/world/level/material/PushReaction" => crate::push_reaction::get_static_field(rt, owner, name, desc),
+            "net/minecraft/world/flag/FeatureFlags" => crate::menu_types::get_static_field(rt, owner, name, desc),
+            _ => None,
+        }
+    }
+
+    fn call_method(&mut self, rt: &mut Rt, linked: &LinkedSpace, member: &MemberRef, is_static: bool, args: &[V]) -> Option<V> {
+        if let Some(value) = crate::registry_holders::call(rt, self.0, member, is_static, args) {
+            return Some(value);
+        }
+        let mut ctx = ExecCtx { rt, linked, host: self, depth: 0 };
+        crate::block_properties::call(&mut ctx, member, is_static, args)
+            .or_else(|| call_context(&mut ctx, member, is_static, args))
+    }
+}
 
 fn block_constant(rt: &mut Rt, registries: &mut RegistryStore, definition: &BlockDefinition) -> V {
     if let Some(value) = rt.get_static(BLOCKS, definition.name) {
@@ -1204,6 +1455,7 @@ fn generic_state_call(rt: &mut Rt, recv: V, name: &str, desc: &str, args: &[V]) 
         ("getDestroySpeed", "(Lnet/minecraft/world/level/BlockGetter;Lnet/minecraft/core/BlockPos;)F") => Some(rt.get_field(recv, "destroySpeed")),
         ("getMapColor", "(Lnet/minecraft/world/level/BlockGetter;Lnet/minecraft/core/BlockPos;)Lnet/minecraft/world/level/material/MapColor;") => Some(rt.get_field(recv, "mapColor")),
         ("getPistonPushReaction", "()Lnet/minecraft/world/level/material/PushReaction;") => Some(rt.get_field(recv, "pushReaction")),
+        ("instrument", "()Lnet/minecraft/world/level/block/state/properties/NoteBlockInstrument;") => Some(rt.get_field(recv, "instrument")),
         ("is", "(Lnet/minecraft/world/level/block/Block;)Z") => Some(V::bool(block == *args.first()?)),
         _ => None,
     }
@@ -1345,7 +1597,10 @@ fn registry_call(
             member.owner.as_str(),
             "net/minecraft/core/Registry"
                 | "net/minecraft/core/DefaultedRegistry"
+                | "net/minecraft/core/DefaultedMappedRegistry"
+                | "net/minecraft/core/MappedRegistry"
                 | "net/minecraft/core/WritableRegistry"
+                | "net/neoforged/neoforge/registries/BaseMappedRegistry"
                 | "net/minecraft/core/IdMap"
         )
     {
@@ -1354,7 +1609,7 @@ fn registry_call(
     let ("registry", _, key, _) = rt.handle_of(*args.first()?)? else {
         return None;
     };
-    if key != "minecraft:block" {
+    if key != BLOCK_REGISTRY {
         return None;
     }
     let name = member.name.as_str();
@@ -1381,18 +1636,36 @@ fn registry_call(
         "get" | "getOptional" | "containsKey" | "getHolder" | "getHolderOrThrow"
     ) {
         let target = *args.get(1)?;
-        let id = rt
-            .handle_of(target)
-            .and_then(|(kind, _, tag, _)| match kind {
-                "resource_location" => Some(tag.to_owned()),
-                "resource_key" => tag.split_once('|').map(|(_, id)| id.to_owned()),
-                _ => None,
-            })?;
-        if let Some(definition) = DEFINITIONS.iter().find(|definition| definition.id == id) {
+        let (kind, _, tag, _) = rt.handle_of(target)?;
+        let id = match kind {
+            "resource_location" => tag,
+            "resource_key" => {
+                let (registry, id) = tag.split_once('|')?;
+                if registry != BLOCK_REGISTRY {
+                    return Some(unsupported(rt, "block lookup with a ResourceKey from another registry"));
+                }
+                id
+            }
+            _ => return None,
+        };
+        let id = registries.resolve_alias(BLOCK_REGISTRY, id);
+        if let Some(plank) = PLANKS.iter().find(|plank| plank.id == id) {
+            plank_constant(rt, registries, plank);
+        } else if let Some(definition) = DEFINITIONS.iter().find(|definition| definition.id == id) {
             block_constant(rt, registries, definition);
         }
+        if rt.pending_exception.is_some() {
+            return Some(V::NULL);
+        }
+        if name == "getHolderOrThrow"
+            && member.desc == "(Lnet/minecraft/resources/ResourceKey;)Lnet/minecraft/core/Holder$Reference;"
+        {
+            return Some(registries.canonical_reference(BLOCK_REGISTRY, &id).unwrap_or_else(|| {
+                unsupported(rt, "holder lookup for a value outside the modeled block registry subset")
+            }));
+        }
         if registries
-            .lookup("minecraft:block", &id)
+            .lookup(BLOCK_REGISTRY, &id)
             .is_none_or(|entry| entry.value.is_null())
         {
             return Some(unsupported(
@@ -1412,6 +1685,7 @@ fn unsupported(rt: &mut Rt, reason: &str) -> V {
 
 pub fn is_subtype(sub_class: &str, super_class: &str) -> bool {
     match sub_class {
+        BLOCK => matches!(super_class, BEHAVIOUR | "net/minecraft/world/level/ItemLike"),
         PISTON_TYPE => matches!(
             super_class,
             "java/lang/Enum"
@@ -2360,6 +2634,119 @@ mod tests {
             );
         }
         assert!(ctx.rt.pending_exception.is_none());
+    }
+
+    #[test]
+    fn vanilla_window_planks_keep_their_registry_identity_and_material_values() {
+        const REGISTRY: &str = "net/minecraft/core/DefaultedRegistry";
+        const GET: &str = "(Lnet/minecraft/resources/ResourceLocation;)Ljava/lang/Object;";
+        const GET_KEY: &str = "(Ljava/lang/Object;)Lnet/minecraft/resources/ResourceLocation;";
+        const MAP_COLOR_DESC: &str = "Lnet/minecraft/world/level/material/MapColor;";
+        const SOUND_TYPE_DESC: &str = "Lnet/minecraft/world/level/block/SoundType;";
+        const INSTRUMENT_DESC: &str = "Lnet/minecraft/world/level/block/state/properties/NoteBlockInstrument;";
+        const WORLD_POS: &str = "(Lnet/minecraft/world/level/BlockGetter;Lnet/minecraft/core/BlockPos;)";
+
+        let mut prepared = crate::PreparedLoad::from_jars(Vec::new(), true).unwrap();
+        let mut rt = Rt::new();
+        let (registry, oak, spruce) = {
+            let mut ctx = ExecCtx { rt: &mut rt, linked: &prepared.linked, host: &mut prepared.loader, depth: 0 };
+            let registry = read_static_field(&mut ctx, BUILTIN_REGISTRIES, "BLOCK", DEFAULTED_REGISTRY_DESC);
+            let oak_id = ctx.rt.new_pinned_handle("net/minecraft/resources/ResourceLocation", "resource_location", 0, "minecraft:oak_planks");
+            let oak = invoke(&mut ctx, REGISTRY, "get", GET, &[registry, oak_id]);
+            assert_eq!(ctx.rt.class_of(oak), Some(BLOCK));
+            assert_eq!(read_static_field(&mut ctx, BLOCKS, "OAK_PLANKS", BLOCK_DESC), oak);
+            let spruce = read_static_field(&mut ctx, BLOCKS, "SPRUCE_PLANKS", BLOCK_DESC);
+            let spruce_id = ctx.rt.new_pinned_handle("net/minecraft/resources/ResourceLocation", "resource_location", 0, "minecraft:spruce_planks");
+            assert_eq!(invoke(&mut ctx, REGISTRY, "get", GET, &[registry, spruce_id]), spruce);
+            assert!(ctx.rt.pending_exception.is_none());
+            (registry, oak, spruce)
+        };
+
+        // The normal lifecycle fills every supported plank before freezing, while
+        // retaining whichever objects were materialized by Java before bootstrap.
+        prepared.bootstrap(&mut rt).expect("planks must initialize before the registry freezes");
+        assert!(prepared.loader.state.registries.frozen);
+        let registered_count = prepared.loader.state.registries.reference_states[BLOCK_REGISTRY].order.len();
+        bootstrap_planks(&mut rt, &mut prepared.loader.state.registries);
+        assert!(rt.pending_exception.is_none(), "cached bootstrap must remain valid after freeze");
+        assert_eq!(prepared.loader.state.registries.reference_states[BLOCK_REGISTRY].order.len(), registered_count);
+        let mut ctx = ExecCtx { rt: &mut rt, linked: &prepared.linked, host: &mut prepared.loader, depth: 0 };
+        assert_eq!(read_static_field(&mut ctx, BLOCKS, "OAK_PLANKS", BLOCK_DESC), oak);
+        assert_eq!(read_static_field(&mut ctx, BLOCKS, "SPRUCE_PLANKS", BLOCK_DESC), spruce);
+        let bass = read_static_field(&mut ctx, INSTRUMENT, "BASS", INSTRUMENT_DESC);
+        let mut seen_blocks = std::collections::BTreeSet::new();
+        let mut seen_states = std::collections::BTreeSet::new();
+        for (field, color, sound, ignited) in [
+            ("OAK_PLANKS", "WOOD", "WOOD", true),
+            ("SPRUCE_PLANKS", "PODZOL", "WOOD", true),
+            ("BIRCH_PLANKS", "SAND", "WOOD", true),
+            ("JUNGLE_PLANKS", "DIRT", "WOOD", true),
+            ("ACACIA_PLANKS", "COLOR_ORANGE", "WOOD", true),
+            ("CHERRY_PLANKS", "TERRACOTTA_WHITE", "CHERRY_WOOD", true),
+            ("DARK_OAK_PLANKS", "COLOR_BROWN", "WOOD", true),
+            ("MANGROVE_PLANKS", "COLOR_RED", "WOOD", true),
+            ("BAMBOO_PLANKS", "COLOR_YELLOW", "BAMBOO_WOOD", true),
+            ("CRIMSON_PLANKS", "CRIMSON_STEM", "NETHER_WOOD", false),
+            ("WARPED_PLANKS", "WARPED_STEM", "NETHER_WOOD", false),
+        ] {
+            let block = read_static_field(&mut ctx, BLOCKS, field, BLOCK_DESC);
+            assert_eq!(ctx.rt.class_of(block), Some(BLOCK), "{field}");
+            assert!(seen_blocks.insert(block.r()), "{field} shares a block");
+            let id = format!("minecraft:{}", field.to_ascii_lowercase());
+            let location = invoke(&mut ctx, REGISTRY, "getKey", GET_KEY, &[registry, block]);
+            assert_eq!(ctx.rt.handle_of(location).map(|(_, _, tag, _)| tag), Some(id.as_str()));
+            assert_eq!(invoke(&mut ctx, REGISTRY, "get", GET, &[registry, location]), block);
+
+            let holder = invoke(&mut ctx, BLOCK, "builtInRegistryHolder", "()Lnet/minecraft/core/Holder$Reference;", &[block]);
+            let optional = invoke(&mut ctx, REGISTRY, "getHolder", "(Lnet/minecraft/resources/ResourceLocation;)Ljava/util/Optional;", &[registry, location]);
+            assert!(!holder.is_null());
+            assert_eq!(invoke(&mut ctx, "java/util/Optional", "get", "()Ljava/lang/Object;", &[optional]), holder);
+            assert_eq!(invoke(&mut ctx, "net/minecraft/core/Holder", "value", "()Ljava/lang/Object;", &[holder]), block);
+            assert_eq!(invoke(&mut ctx, "net/minecraft/core/Holder", "isBound", "()Z", &[holder]), V::TRUE);
+            let key = crate::minecraft::new_resource_key(ctx.rt, BLOCK_REGISTRY, &id);
+            assert_eq!(invoke(&mut ctx, REGISTRY, "getHolderOrThrow", "(Lnet/minecraft/resources/ResourceKey;)Lnet/minecraft/core/Holder$Reference;", &[registry, key]), holder);
+
+            let state = invoke(&mut ctx, BLOCK, "defaultBlockState", "()Lnet/minecraft/world/level/block/state/BlockState;", &[block]);
+            let definition = invoke(&mut ctx, BLOCK, "getStateDefinition", "()Lnet/minecraft/world/level/block/state/StateDefinition;", &[block]);
+            assert_eq!(ctx.rt.class_of(state), Some(STATE));
+            assert!(seen_states.insert(state.r()), "{field} shares a state");
+            assert_eq!(invoke(&mut ctx, DEFINITION, "getOwner", "()Ljava/lang/Object;", &[definition]), block);
+            assert_eq!(invoke(&mut ctx, DEFINITION, "any", "()Lnet/minecraft/world/level/block/state/StateHolder;", &[definition]), state);
+            let states = invoke(&mut ctx, DEFINITION, "getPossibleStates", "()Lcom/google/common/collect/ImmutableList;", &[definition]);
+            assert_eq!(collection_items(ctx.rt, states), vec![state], "{field}");
+            let properties = invoke(&mut ctx, STATE_HOLDER, "getProperties", "()Ljava/util/Collection;", &[state]);
+            assert_eq!(invoke(&mut ctx, "java/util/Collection", "isEmpty", "()Z", &[properties]), V::TRUE);
+            assert_eq!(invoke(&mut ctx, STATE, "getBlockHolder", "()Lnet/minecraft/core/Holder;", &[state]), holder);
+
+            let color = read_static_field(&mut ctx, MAP_COLOR, color, MAP_COLOR_DESC);
+            let sound = read_static_field(&mut ctx, SOUND_TYPE, sound, SOUND_TYPE_DESC);
+            assert_eq!(invoke(&mut ctx, BEHAVIOUR, "defaultMapColor", &format!("(){MAP_COLOR_DESC}"), &[block]), color);
+            assert_eq!(invoke(&mut ctx, STATE, "getMapColor", &format!("{WORLD_POS}{MAP_COLOR_DESC}"), &[state, V::NULL, V::NULL]), color);
+            assert_eq!(invoke(&mut ctx, STATE, "getSoundType", &format!("(){SOUND_TYPE_DESC}"), &[state]), sound);
+            assert_eq!(invoke(&mut ctx, STATE, "instrument", &format!("(){INSTRUMENT_DESC}"), &[state]), bass);
+            assert_eq!(invoke(&mut ctx, STATE, "ignitedByLava", "()Z", &[state]), V::bool(ignited));
+            assert_eq!(invoke(&mut ctx, STATE, "requiresCorrectToolForDrops", "()Z", &[state]), V::FALSE);
+            assert_eq!(invoke(&mut ctx, STATE, "getLightEmission", "()I", &[state]), V::I(0));
+            assert_eq!(invoke(&mut ctx, BEHAVIOUR, "defaultDestroyTime", "()F", &[block]), V::F(2.0));
+            assert_eq!(invoke(&mut ctx, STATE, "getDestroySpeed", &format!("{WORLD_POS}F"), &[state, V::NULL, V::NULL]), V::F(2.0));
+            assert_eq!(invoke(&mut ctx, BLOCK, "getExplosionResistance", "()F", &[block]), V::F(3.0));
+            assert_eq!(invoke(&mut ctx, BLOCK, "getFriction", "()F", &[block]), V::F(0.6));
+            assert!(ctx.rt.pending_exception.is_none(), "{field}");
+        }
+
+        let state = invoke(&mut ctx, BLOCK, "defaultBlockState", "()Lnet/minecraft/world/level/block/state/BlockState;", &[oak]);
+        invoke(&mut ctx, STATE, "getCollisionShape", &format!("{WORLD_POS}Lnet/minecraft/world/phys/shapes/VoxelShape;"), &[state, V::NULL, V::NULL]);
+        let error = ctx.rt.take_exception().expect("collision shape requires the world implementation");
+        assert_eq!(ctx.rt.class_of(error), Some("java/lang/UnsupportedOperationException"));
+        invoke(&mut ctx, REGISTRY, "size", "()I", &[registry]);
+        let error = ctx.rt.take_exception().expect("the known block subset does not expose a complete size");
+        assert_eq!(ctx.rt.class_of(error), Some("java/lang/UnsupportedOperationException"));
+        let item_key = crate::minecraft::new_resource_key(ctx.rt, "minecraft:item", "minecraft:oak_planks");
+        for (method, result) in [("containsKey", "Z"), ("getOptional", "Ljava/util/Optional;")] {
+            invoke(&mut ctx, REGISTRY, method, &format!("(Lnet/minecraft/resources/ResourceKey;){result}"), &[registry, item_key]);
+            let error = ctx.rt.take_exception().expect("foreign ResourceKeys cannot resolve a block by path");
+            assert_eq!(ctx.rt.class_of(error), Some("java/lang/UnsupportedOperationException"));
+        }
     }
 
     #[test]
