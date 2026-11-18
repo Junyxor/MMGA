@@ -1,4 +1,4 @@
-//! AE2's amethyst SoundType constants, verified against Mojang 1.21.1 `dnm`.
+//! Selected vanilla SoundType constants, verified against Mojang 1.21.1 `dnm`.
 //! Sound references are real registered SoundEvents; playback is not implemented.
 use crate::RegistryStore;
 use mmga_classfile::MemberRef;
@@ -23,6 +23,9 @@ pub fn get_static_field(
         "LARGE_AMETHYST_BUD" => ("LARGE_AMETHYST_BUD_BREAK", "LARGE_AMETHYST_BUD_PLACE"),
         "STONE" => ("STONE_BREAK", "STONE_PLACE"),
         "WOOD" => ("WOOD_BREAK", "WOOD_PLACE"),
+        "BAMBOO_WOOD" => ("BAMBOO_WOOD_BREAK", "BAMBOO_WOOD_PLACE"),
+        "NETHER_WOOD" => ("NETHER_WOOD_BREAK", "NETHER_WOOD_PLACE"),
+        "CHERRY_WOOD" => ("CHERRY_WOOD_BREAK", "CHERRY_WOOD_PLACE"),
         "WOOL" => ("WOOL_BREAK", "WOOL_PLACE"),
         "GRAVEL" => ("GRAVEL_BREAK", "GRAVEL_PLACE"),
         "METAL" => ("METAL_BREAK", "METAL_PLACE"),
@@ -34,7 +37,8 @@ pub fn get_static_field(
     }
     let mut sounds = Vec::with_capacity(5);
     let family = match name {
-        "STONE" | "WOOD" | "WOOL" | "GRAVEL" | "METAL" | "GLASS" => name,
+        "STONE" | "WOOD" | "BAMBOO_WOOD" | "NETHER_WOOD" | "CHERRY_WOOD" | "WOOL"
+        | "GRAVEL" | "METAL" | "GLASS" => name,
         _ => "AMETHYST_CLUSTER",
     };
     let (step, hit, fall) = (
@@ -49,13 +53,17 @@ pub fn get_static_field(
         hit.as_str(),
         fall.as_str(),
     ] {
-        sounds.push(crate::sounds::get_static_field(
+        let sound = crate::sounds::get_static_field(
             rt,
             registries,
             "net/minecraft/sounds/SoundEvents",
             field,
             "Lnet/minecraft/sounds/SoundEvent;",
-        )?);
+        )?;
+        if rt.pending_exception.is_some() {
+            return Some(V::NULL);
+        }
+        sounds.push(sound);
     }
     let value = rt.new_instance(CLASS, 0);
     initialize(
@@ -252,6 +260,41 @@ mod tests {
             .expect("official sound event field");
             assert_eq!(actual, expected, "SoundType.WOOL {field}");
         }
+    }
+
+    #[test]
+    fn wooden_plank_sound_types_use_their_own_registered_sound_events() {
+        let mut rt = Rt::new();
+        let mut registries = RegistryStore::new();
+        for (name, path) in [
+            ("BAMBOO_WOOD", "bamboo_wood"),
+            ("NETHER_WOOD", "nether_wood"),
+            ("CHERRY_WOOD", "cherry_wood"),
+        ] {
+            let sound_type = get_static_field(&mut rt, &mut registries, CLASS, name, DESC)
+                .expect("verified plank sound type");
+            assert_eq!(rt.get_field(sound_type, "volume"), V::F(1.0));
+            assert_eq!(rt.get_field(sound_type, "pitch"), V::F(1.0));
+            assert_eq!(
+                get_static_field(&mut rt, &mut registries, CLASS, name, DESC),
+                Some(sound_type)
+            );
+            for (field, action) in [
+                ("breakSound", "break"),
+                ("stepSound", "step"),
+                ("placeSound", "place"),
+                ("hitSound", "hit"),
+                ("fallSound", "fall"),
+            ] {
+                let id = format!("minecraft:block.{path}.{action}");
+                assert_eq!(
+                    registries.lookup("sound_event", &id).unwrap().value,
+                    rt.get_field(sound_type, field),
+                    "{name}.{field} must retain the registered {id} reference"
+                );
+            }
+        }
+        assert!(rt.pending_exception.is_none());
     }
 
     #[test]
