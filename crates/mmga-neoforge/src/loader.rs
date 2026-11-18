@@ -1760,6 +1760,9 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::command_items::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
+        if let Some(value) = crate::recipe_serializers::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
         if let Some(value) = crate::string_representable::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
@@ -1996,6 +1999,15 @@ impl HostApi for FmlLoader {
                 return Some(value);
             }
             if let Some(value) = crate::command_items::call(&mut ctx, member, is_static, args) {
+                return Some(value);
+            }
+            if let Some(value) = crate::recipe_types::call(&mut ctx, member, is_static, args) {
+                return Some(value);
+            }
+            if let Some(value) = crate::recipe_serializers::call(&mut ctx, member, is_static, args) {
+                return Some(value);
+            }
+            if let Some(value) = crate::ticket_controllers::call(&mut ctx, member, is_static, args) {
                 return Some(value);
             }
             if let Some(value) = crate::entity_selector_options::call(&mut ctx, member, is_static, args) {
@@ -2359,6 +2371,18 @@ impl HostApi for FmlLoader {
             return true;
         }
         if crate::command_items::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::recipe_types::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::recipe_serializers::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::ticket_controllers::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::guava_multimaps::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::registry_holders::is_subtype(sub_class, super_class) {
