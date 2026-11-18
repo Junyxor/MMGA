@@ -1011,6 +1011,44 @@ pub const BUILTIN_EVENTS: &[BuiltinEventSpec] = &[
         is_cancellable: false,
         is_abstract: true,
     },
+    // NeoForge 1.21.1 commit 89e887b367ab0c11cb58ce8500920efadc17b803.
+    // MobEffectEvent source blob f1d00719dfb1cc6717f23921cdf1c2a27752f71e.
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/living/MobEffectEvent",
+        superclass: "net/neoforged/neoforge/event/entity/living/LivingEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: true,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/living/MobEffectEvent$Added",
+        superclass: "net/neoforged/neoforge/event/entity/living/MobEffectEvent",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/living/MobEffectEvent$Remove",
+        superclass: "net/neoforged/neoforge/event/entity/living/MobEffectEvent",
+        is_mod_bus: false,
+        is_cancellable: true,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/living/MobEffectEvent$Expired",
+        superclass: "net/neoforged/neoforge/event/entity/living/MobEffectEvent",
+        is_mod_bus: false,
+        is_cancellable: true,
+        is_abstract: false,
+    },
+    // LivingShieldBlockEvent source blob 6207535891350bdc8232c603345febb51bd9ed8b.
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/entity/living/LivingShieldBlockEvent",
+        superclass: "net/neoforged/neoforge/event/entity/living/LivingEvent",
+        is_mod_bus: false,
+        is_cancellable: true,
+        is_abstract: false,
+    },
     BuiltinEventSpec {
         class: "net/neoforged/neoforge/event/entity/living/LivingIncomingDamageEvent",
         superclass: "net/neoforged/neoforge/event/entity/living/LivingEvent",
@@ -1497,6 +1535,65 @@ pub fn dispatch_event_on_bus(
 mod tests {
     use super::*;
     use mmga_runtime::{ExecCtx, LinkedSpace, NullHost, Rt};
+
+    #[test]
+    fn ysm_living_event_subscribers_have_valid_game_bus_metadata() {
+        let linked = LinkedSpace::new();
+        let host = NullHost;
+        let mut bus = EventBusEngine::new();
+        let living = "net/neoforged/neoforge/event/entity/living/LivingEvent";
+        let effect = "net/neoforged/neoforge/event/entity/living/MobEffectEvent";
+        for (class, parent, cancellable) in [
+            (
+                "net/neoforged/neoforge/event/entity/living/MobEffectEvent$Added",
+                effect,
+                false,
+            ),
+            (
+                "net/neoforged/neoforge/event/entity/living/MobEffectEvent$Remove",
+                effect,
+                true,
+            ),
+            (
+                "net/neoforged/neoforge/event/entity/living/MobEffectEvent$Expired",
+                effect,
+                true,
+            ),
+            (
+                "net/neoforged/neoforge/event/entity/living/LivingShieldBlockEvent",
+                living,
+                true,
+            ),
+        ] {
+            let metadata = event_class_metadata(&linked, &host, class).unwrap();
+            let spec = find_builtin_event(class).unwrap();
+            assert_eq!(spec.superclass, parent);
+            assert_eq!(spec.is_cancellable, cancellable);
+            assert!(event_matches(living, class));
+            assert!(validate_event_bus(
+                &BusId::Mod("yes_steve_model".into()),
+                class,
+                metadata.is_mod_bus,
+            )
+            .is_err());
+            bus.register_listener_with_metadata(
+                BusId::Game,
+                class.into(),
+                EventPriority::Normal,
+                false,
+                V::NULL,
+                EventCallback::Native(hit),
+                metadata,
+            )
+            .unwrap();
+        }
+        assert_eq!(bus.listener_count(), 4);
+        let base = find_builtin_event(effect).unwrap();
+        assert_eq!(base.superclass, living);
+        assert!(base.is_abstract);
+        assert!(!base.is_mod_bus);
+        assert!(!base.is_cancellable);
+    }
 
     #[test]
     fn builtin_event_catalog_has_unique_classes_and_complete_acyclic_parent_chains() {
