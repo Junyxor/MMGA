@@ -159,6 +159,89 @@ fn class_name(rt: &Rt, class: V) -> Option<String> {
     };
     Some(name.into())
 }
+fn is_enum_class(ctx: &ExecCtx<'_>, class: &str) -> Result<bool, String> {
+    if let Some(bytecode) = ctx.linked.bytecode_classes.get(class) {
+        return Ok(bytecode.access & mmga_classfile::access::ENUM != 0
+            && bytecode.superclass.as_deref() == Some("java/lang/Enum"));
+    }
+    if ctx.linked.has_class(class) {
+        return Ok(ctx.linked.superclass_of(class) == Some("java/lang/Enum"));
+    }
+    if known_bootstrap(class) || primitive(class) || class.starts_with('[') {
+        return Ok(false);
+    }
+    if ctx.host.is_api_subtype(class, "java/lang/Enum") {
+        return Ok(true);
+    }
+    if ctx.linked.has_class(class) {
+        return Ok(false);
+    }
+    Err(class.to_owned())
+}
+
+fn enum_constants(ctx: &mut ExecCtx<'_>, class: &str) -> V {
+    match is_enum_class(ctx, class) {
+        Ok(false) => return V::NULL,
+        Err(class) => {
+            return ctx.rt.throw_exception(
+                "java/lang/UnsupportedOperationException",
+                &format!("Enum class metadata is unavailable for {class}"),
+            );
+        }
+        Ok(true) => {}
+    }
+    let descriptor = format!("()[L{class};");
+    let values = crate::invoke_member(
+        ctx,
+        op::INVOKESTATIC,
+        &MemberRef::new(class, "values", &descriptor),
+        &[],
+    );
+    if ctx.rt.pending_exception.is_some() {
+        return V::NULL;
+    }
+    let Some((array_class, values)) = ctx.rt.get_obj(values).and_then(|object| match &object.data {
+        Data::Array(values) => Some((object.class.clone(), values.clone())),
+        _ => None,
+    }) else {
+        return ctx.rt.throw_exception(
+            "java/lang/ClassCastException",
+            &format!("Enum {class}.values() did not return an array"),
+        );
+    };
+    if array_class != format!("[L{class};") {
+        return ctx.rt.throw_exception(
+            "java/lang/ClassCastException",
+            &format!("Enum {class}.values() returned {array_class}"),
+        );
+    }
+    for (ordinal, value) in values.iter().enumerate() {
+        if value.is_null() {
+            return ctx.rt.throw_exception(
+                "java/lang/NullPointerException",
+                &format!("Enum {class}.values() contains null at ordinal {ordinal}"),
+            );
+        }
+        if !ctx
+            .linked
+            .is_subtype(ctx.rt.class_of(*value).unwrap_or("java/lang/Object"), class, ctx.host)
+        {
+            return ctx.rt.throw_exception(
+                "java/lang/ClassCastException",
+                &format!("Enum {class}.values() contains a value of another class"),
+            );
+        }
+        if ctx.rt.get_field(*value, "$ordinal") != V::I(ordinal as i32)
+            || ctx.rt.get_field(*value, "$name").is_null()
+        {
+            return ctx.rt.throw_exception(
+                "java/lang/UnsupportedOperationException",
+                &format!("Enum {class}.values() has invalid name or ordinal metadata"),
+            );
+        }
+    }
+    ctx.rt.alloc(array_class, 0, Data::Array(values))
+}
 fn resolve_class(
     ctx: &mut ExecCtx<'_>,
     name: &str,
@@ -235,22 +318,23 @@ pub fn call(ctx: &mut ExecCtx<'_>, member: &MemberRef, is_static: bool, args: &[
     let owner = member.owner.as_str();
     let name = member.name.as_str();
     let desc = member.desc.as_str();
+    if owner == CLASS
+        && !is_static
+        && name == "getEnumConstants"
+        && desc == "()[Ljava/lang/Object;"
+    {
+        let class = class_name(ctx.rt, *args.first()?)?;
+        return Some(enum_constants(ctx, &class));
+    }
     if owner == CLASS && !is_static && name == "isEnum" && desc == "()Z" {
         let class = class_name(ctx.rt, *args.first()?)?;
-        let is_enum = if let Some(cf) = ctx.linked.bytecode_classes.get(&class) {
-            cf.access & mmga_classfile::access::ENUM != 0
-                && cf.superclass.as_deref() == Some("java/lang/Enum")
-        } else if ctx.linked.has_native_class(&class) {
-            ctx.linked.superclass_of(&class) == Some("java/lang/Enum")
-        } else if known_bootstrap(&class) || primitive(&class) || class.starts_with('[') {
-            false
-        } else {
-            return Some(ctx.rt.throw_exception(
+        return Some(match is_enum_class(ctx, &class) {
+            Ok(is_enum) => V::bool(is_enum),
+            Err(class) => ctx.rt.throw_exception(
                 "java/lang/UnsupportedOperationException",
                 &format!("Enum class metadata is unavailable for {class}"),
-            ));
-        };
-        return Some(V::bool(is_enum));
+            ),
+        });
     }
     if owner == CLASS
         && !is_static
@@ -1334,6 +1418,203 @@ mod tests {
         let unknown = class(ctx.rt, "test/Unknown");
         invoke(&mut ctx, CLASS, "isEnum", "()Z", false, &[unknown]);
         error(&mut ctx, "UnsupportedOperationException");
+    }
+
+    #[test]
+    fn class_get_enum_constants_uses_real_enum_metadata_and_returns_fresh_arrays() {
+        use std::process::Command;
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "mmga-get-enum-constants-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("Sample.java");
+        std::fs::write(
+            &source,
+            "package sample; public enum Sample { FIRST { @Override public String toString() { return \"first\"; } }, SECOND; } final class Ordinary {}",
+        )
+        .unwrap();
+        let output = Command::new("javac")
+            .arg("-g")
+            .arg("-d")
+            .arg(&dir)
+            .arg(&source)
+            .output()
+            .expect("javac is needed to compile the reflection fixture");
+        assert!(
+            output.status.success(),
+            "javac failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let mut classes = std::collections::BTreeMap::new();
+        for (name, file) in [
+            ("sample/Sample", "sample/Sample.class"),
+            ("sample/Sample$1", "sample/Sample$1.class"),
+            ("sample/Ordinary", "sample/Ordinary.class"),
+        ] {
+            let bytecode = std::fs::read(dir.join(file)).unwrap();
+            let class = mmga_classfile::ClassFile::parse(&bytecode).unwrap();
+            assert_eq!(class.name, name);
+            classes.insert(name.to_owned(), class);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        let mut linked = LinkedSpace::new();
+        linked.add_bytecode_classes(classes);
+        let mut rt = Rt::new();
+        let mut host = NullHost;
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        let enum_class = class(ctx.rt, "sample/Sample");
+        let first = invoke(
+            &mut ctx,
+            CLASS,
+            "getEnumConstants",
+            "()[Ljava/lang/Object;",
+            false,
+            &[enum_class],
+        );
+        assert!(ctx.rt.pending_exception.is_none());
+        let Some(Data::Array(first_values)) = ctx.rt.get_obj(first).map(|object| object.data.clone())
+        else {
+            panic!("getEnumConstants did not return an array");
+        };
+        assert_eq!(first_values.len(), 2);
+        assert_eq!(ctx.rt.str_of(ctx.rt.get_field(first_values[0], "$name")), Some("FIRST"));
+        assert_eq!(ctx.rt.get_field(first_values[0], "$ordinal"), V::I(0));
+        assert_eq!(ctx.rt.class_of(first_values[0]), Some("sample/Sample$1"));
+        assert_eq!(ctx.rt.str_of(ctx.rt.get_field(first_values[1], "$name")), Some("SECOND"));
+        assert_eq!(ctx.rt.get_field(first_values[1], "$ordinal"), V::I(1));
+
+        let second = invoke(
+            &mut ctx,
+            CLASS,
+            "getEnumConstants",
+            "()[Ljava/lang/Object;",
+            false,
+            &[enum_class],
+        );
+        assert_ne!(first, second, "each reflection call returns a fresh array");
+        let Some(Data::Array(second_values)) = ctx.rt.get_obj(second).map(|object| &object.data)
+        else {
+            panic!("second getEnumConstants did not return an array");
+        };
+        assert_eq!(first_values.as_slice(), second_values.as_slice());
+
+        for name in ["sample/Sample$1", "sample/Ordinary", "[Lsample/Sample;"] {
+            let ordinary = class(ctx.rt, name);
+            assert_eq!(
+                invoke(
+                    &mut ctx,
+                    CLASS,
+                    "getEnumConstants",
+                    "()[Ljava/lang/Object;",
+                    false,
+                    &[ordinary],
+                ),
+                V::NULL,
+                "{name} is not an enum declaration"
+            );
+            assert!(ctx.rt.pending_exception.is_none());
+        }
+    }
+
+    struct ApiEnumHost;
+
+    impl crate::HostApi for ApiEnumHost {
+        fn get_static_field(
+            &mut self,
+            _rt: &mut Rt,
+            _owner: &str,
+            _name: &str,
+            _desc: &str,
+        ) -> Option<V> {
+            None
+        }
+
+        fn call_method(
+            &mut self,
+            rt: &mut Rt,
+            _linked: &LinkedSpace,
+            member: &MemberRef,
+            is_static: bool,
+            _args: &[V],
+        ) -> Option<V> {
+            if is_static
+                && member.owner == "api/Mode"
+                && member.name == "values"
+                && member.desc == "()[Lapi/Mode;"
+            {
+                let values = ["FIRST", "SECOND"]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(ordinal, name)| {
+                        if let Some(value) = rt.get_static("api/Mode", name) {
+                            return value;
+                        }
+                        let class = if ordinal == 0 {
+                            "api/Mode$1"
+                        } else {
+                            "api/Mode"
+                        };
+                        let value = rt.new_instance(class, 0);
+                        let enum_name = rt.intern_str(name);
+                        rt.put_field(value, "$name", enum_name);
+                        rt.put_field(value, "$ordinal", V::I(ordinal as i32));
+                        rt.put_static("api/Mode", name, value);
+                        value
+                    })
+                    .collect();
+                return Some(rt.alloc("[Lapi/Mode;", 0, Data::Array(values)));
+            }
+            None
+        }
+
+        fn is_api_subtype(&self, sub_class: &str, super_class: &str) -> bool {
+            (sub_class == "api/Mode" && super_class == "java/lang/Enum")
+                || (sub_class == "api/Mode$1" && super_class == "api/Mode")
+        }
+    }
+
+    #[test]
+    fn class_get_enum_constants_uses_host_enum_hierarchy_and_keeps_constant_body_identity() {
+        let linked = LinkedSpace::new();
+        let mut rt = Rt::new();
+        let mut host = ApiEnumHost;
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &linked,
+            host: &mut host,
+            depth: 0,
+        };
+        let enum_class = class(ctx.rt, "api/Mode");
+        let constants = invoke(
+            &mut ctx,
+            CLASS,
+            "getEnumConstants",
+            "()[Ljava/lang/Object;",
+            false,
+            &[enum_class],
+        );
+        let Some(Data::Array(values)) = ctx.rt.get_obj(constants).map(|object| object.data.clone())
+        else {
+            panic!("host enum constants were not returned as an array");
+        };
+        assert_eq!(values.len(), 2);
+        assert_eq!(ctx.rt.class_of(values[0]), Some("api/Mode$1"));
+        assert_eq!(ctx.rt.class_of(values[1]), Some("api/Mode"));
+        assert_eq!(ctx.rt.str_of(ctx.rt.get_field(values[0], "$name")), Some("FIRST"));
+        assert_eq!(ctx.rt.get_field(values[0], "$ordinal"), V::I(0));
+        assert!(ctx.rt.pending_exception.is_none());
     }
 
     fn first_constructor(ctx: &mut ExecCtx<'_>, args: &[V]) -> V {
