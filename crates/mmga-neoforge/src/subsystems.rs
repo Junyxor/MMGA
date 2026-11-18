@@ -435,12 +435,14 @@ pub struct BrigadierNode {
     pub executes: Option<V>,
     pub argument_type: Option<V>,
     pub builder_callbacks: BTreeMap<String, V>,
+    pub requirement_is_default: bool,
     pub children: Vec<u64>,
 }
 
 #[derive(Debug, Default, Clone)]
 pub struct BrigadierTree {
     next_id: u64,
+    default_requirement: Option<V>,
     pub nodes: BTreeMap<u64, BrigadierNode>,
     pub roots: Vec<u64>,
 }
@@ -457,6 +459,7 @@ impl BrigadierTree {
                 executes: None,
                 argument_type: None,
                 builder_callbacks: BTreeMap::new(),
+                requirement_is_default: true,
                 children: Vec::new(),
             },
         );
@@ -466,7 +469,7 @@ impl BrigadierTree {
     pub fn set_executes(&mut self, rt: &mut Rt, node_id: u64, cmd_closure: V) {
         rt.pin(cmd_closure);
         if let Some(n) = self.nodes.get_mut(&node_id) {
-            n.executes = Some(cmd_closure);
+            n.executes = (!cmd_closure.is_null()).then_some(cmd_closure);
         }
     }
     pub fn set_argument_type(&mut self, rt: &mut Rt, node_id: u64, argument: V) {
@@ -478,8 +481,48 @@ impl BrigadierTree {
     pub fn set_builder_callback(&mut self, rt: &mut Rt, node_id: u64, name: &str, value: V) {
         rt.pin(value);
         if let Some(node) = self.nodes.get_mut(&node_id) {
+            if name == "requires" {
+                node.requirement_is_default = self.default_requirement == Some(value);
+            }
             node.builder_callbacks.insert(name.into(), value);
         }
+    }
+
+    /// Brigadier 1.3.10 ArgumentBuilder's default `source -> true` predicate.
+    /// A real closure keeps it callable through Predicate.test, including null.
+    pub fn default_requirement(&mut self, rt: &mut Rt) -> V {
+        if let Some(predicate) = self.default_requirement {
+            return predicate;
+        }
+        let predicate = rt.alloc("java/util/function/Predicate", 0, mmga_runtime::Data::Closure(Box::new(mmga_runtime::ClosureData {
+            interface_class: "java/util/function/Predicate".into(),
+            sam_name: "test".into(),
+            sam_desc: "(Ljava/lang/Object;)Z".into(),
+            instantiated_desc: "(Ljava/lang/Object;)Z".into(),
+            captures: vec![],
+            target: mmga_runtime::ClosureTarget::MethodHandle {
+                handle_kind: 6,
+                member: mmga_classfile::MemberRef::new("mmga/internal/BrigadierDefaultRequirement", "test", "(Ljava/lang/Object;)Z"),
+            },
+        })));
+        rt.pin(predicate);
+        self.default_requirement = Some(predicate);
+        predicate
+    }
+
+    pub fn requirement(&mut self, rt: &mut Rt, node_id: u64) -> Option<V> {
+        let explicit = self.nodes.get(&node_id)?.builder_callbacks.get("requires").copied();
+        Some(explicit.unwrap_or_else(|| self.default_requirement(rt)))
+    }
+
+    /// build() copies builder state, while its already-built children stay shared.
+    pub fn snapshot_node(&mut self, node_id: u64) -> Option<u64> {
+        let mut snapshot = self.nodes.get(&node_id)?.clone();
+        self.next_id += 1;
+        let id = self.next_id;
+        snapshot.node_id = id;
+        self.nodes.insert(id, snapshot);
+        Some(id)
     }
 
     pub fn add_child(&mut self, parent_id: u64, child_id: u64) {
@@ -555,13 +598,13 @@ impl BrigadierTree {
         if matches!(&node.kind,CommandNodeKind::Literal(literal) if literal!=token) {
             return Ok(None);
         }
-        if node.builder_callbacks.contains_key("requires") {
+        if !node.requirement_is_default {
             return Err(
                 "Command node requires an unimplemented sender permission predicate".into(),
             );
         }
-        if node.builder_callbacks.contains_key("redirect")
-            || node.builder_callbacks.contains_key("fork")
+        if node.builder_callbacks.get("redirect").is_some_and(|value| !value.is_null())
+            || node.builder_callbacks.get("fork").is_some_and(|value| value.i() != 0)
         {
             return Err("Command redirect/fork execution is not implemented".into());
         }
@@ -756,12 +799,105 @@ mod tests {
             false,
             &[literal, V::NULL],
         );
-        let error = rt.take_exception().unwrap();
-        assert_eq!(rt.class_of(error), Some("java/lang/NullPointerException"));
+        assert!(rt.pending_exception.is_none());
         assert_eq!(
             tree.nodes[&id].builder_callbacks.get("requires"),
-            Some(&predicate)
+            Some(&V::NULL)
         );
+        assert!(tree.match_command_checked("/guarded").unwrap_err().contains("permission predicate"));
+    }
+
+    struct CommandTestHost(BrigadierTree);
+    impl mmga_runtime::HostApi for CommandTestHost {
+        fn get_static_field(&mut self, _: &mut Rt, _: &str, _: &str, _: &str) -> Option<V> { None }
+        fn call_method(&mut self, rt: &mut Rt, _: &mmga_runtime::LinkedSpace, member: &mmga_classfile::MemberRef, is_static: bool, args: &[V]) -> Option<V> {
+            crate::minecraft::call_brigadier(rt, &mut self.0, &BTreeMap::new(), member, is_static, args)
+        }
+    }
+    const LB: &str = "com/mojang/brigadier/builder/LiteralArgumentBuilder";
+    const LN: &str = "com/mojang/brigadier/tree/LiteralCommandNode";
+    fn cmd(ctx: &mut mmga_runtime::ExecCtx<'_>, owner: &str, name: &str, desc: &str, args: &[V]) -> V {
+        mmga_runtime::invoke_member(ctx, if name=="literal" {mmga_classfile::op::INVOKESTATIC}else{mmga_classfile::op::INVOKEVIRTUAL}, &mmga_classfile::MemberRef::new(owner,name,desc),args)
+    }
+    fn literal(ctx: &mut mmga_runtime::ExecCtx<'_>, name: &str) -> V {
+        let text=ctx.rt.new_str(name);
+        cmd(ctx,LB,"literal","(Ljava/lang/String;)Lcom/mojang/brigadier/builder/LiteralArgumentBuilder;",&[text])
+    }
+    fn build(ctx: &mut mmga_runtime::ExecCtx<'_>, value: V) -> V {
+        cmd(ctx,LB,"build","()Lcom/mojang/brigadier/tree/LiteralCommandNode;",&[value])
+    }
+    #[test]
+    fn catnip_build_redirect_copies_default_predicate_and_null_forward_state() {
+        // Actual CatnipCommands.buildRedirect sequence; Brigadier 1.3.10 jar SHA1
+        // d15b53a14cf20fdcaa98f731af5dda654452c010 verifies the default lambda.
+        let mut rt=Rt::new(); let linked=mmga_runtime::LinkedSpace::new();
+        let mut host=CommandTestHost(BrigadierTree::default());
+        let (alias_id,command);
+        {
+            let mut ctx=mmga_runtime::ExecCtx{rt:&mut rt,linked:&linked,host:&mut host,depth:0};
+            let original=literal(&mut ctx,"util"); let child=literal(&mut ctx,"flyspeed");
+            command=ctx.rt.new_instance("test/Command",0);
+            cmd(&mut ctx,LB,"executes","(Lcom/mojang/brigadier/Command;)Lcom/mojang/brigadier/builder/ArgumentBuilder;",&[child,command]);
+            cmd(&mut ctx,LB,"then","(Lcom/mojang/brigadier/builder/ArgumentBuilder;)Lcom/mojang/brigadier/builder/ArgumentBuilder;",&[original,child]);
+            let original=build(&mut ctx,original); let alias=literal(&mut ctx,"u");
+            let requirement=cmd(&mut ctx,LN,"getRequirement","()Ljava/util/function/Predicate;",&[original]);
+            assert!(!requirement.is_null());
+            for source in [V::NULL,original] {
+                assert_eq!(cmd(&mut ctx,"java/util/function/Predicate","test","(Ljava/lang/Object;)Z",&[requirement,source]),V::TRUE);
+            }
+            cmd(&mut ctx,LB,"requires","(Ljava/util/function/Predicate;)Lcom/mojang/brigadier/builder/ArgumentBuilder;",&[alias,requirement]);
+            let target=cmd(&mut ctx,LN,"getRedirect","()Lcom/mojang/brigadier/tree/CommandNode;",&[original]);
+            let modifier=cmd(&mut ctx,LN,"getRedirectModifier","()Lcom/mojang/brigadier/RedirectModifier;",&[original]);
+            let fork=cmd(&mut ctx,LN,"isFork","()Z",&[original]);
+            assert!(target.is_null()); assert!(modifier.is_null()); assert_eq!(fork,V::FALSE);
+            cmd(&mut ctx,LB,"forward","(Lcom/mojang/brigadier/tree/CommandNode;Lcom/mojang/brigadier/RedirectModifier;Z)Lcom/mojang/brigadier/builder/ArgumentBuilder;",&[alias,target,modifier,fork]);
+            let command_ref=cmd(&mut ctx,LN,"getCommand","()Lcom/mojang/brigadier/Command;",&[original]);
+            cmd(&mut ctx,LB,"executes","(Lcom/mojang/brigadier/Command;)Lcom/mojang/brigadier/builder/ArgumentBuilder;",&[alias,command_ref]);
+            let children=cmd(&mut ctx,LN,"getChildren","()Ljava/util/Collection;",&[original]);
+            let children=match &ctx.rt.get_obj(children).unwrap().data { mmga_runtime::Data::List(xs)=>xs.clone(), _=>panic!("children") };
+            for child in children { cmd(&mut ctx,LB,"then","(Lcom/mojang/brigadier/tree/CommandNode;)Lcom/mojang/brigadier/builder/ArgumentBuilder;",&[alias,child]); }
+            let alias=build(&mut ctx,alias); alias_id=ctx.rt.handle_of(alias).unwrap().1;
+            assert_eq!(cmd(&mut ctx,LN,"getRequirement","()Ljava/util/function/Predicate;",&[alias]),requirement);
+            assert_eq!(cmd(&mut ctx,LN,"canUse","(Ljava/lang/Object;)Z",&[alias,V::NULL]),V::TRUE);
+            assert!(ctx.rt.pending_exception.is_none());
+        }
+        host.0.register_root(alias_id);
+        assert_eq!(host.0.match_command_checked("/u flyspeed").unwrap().unwrap().0,command);
+    }
+
+    #[test]
+    fn brigadier_null_requirement_defers_npe_and_built_nodes_snapshot_state() {
+        let mut rt=Rt::new(); let linked=mmga_runtime::LinkedSpace::new();
+        let mut host=CommandTestHost(BrigadierTree::default());
+        let mut ctx=mmga_runtime::ExecCtx{rt:&mut rt,linked:&linked,host:&mut host,depth:0};
+        let builder=literal(&mut ctx,"guarded"); let command=ctx.rt.new_instance("test/Command",0);
+        cmd(&mut ctx,LB,"executes","(Lcom/mojang/brigadier/Command;)Lcom/mojang/brigadier/builder/ArgumentBuilder;",&[builder,command]);
+        let before=build(&mut ctx,builder);
+        cmd(&mut ctx,LB,"executes","(Lcom/mojang/brigadier/Command;)Lcom/mojang/brigadier/builder/ArgumentBuilder;",&[builder,V::NULL]);
+        cmd(&mut ctx,LB,"requires","(Ljava/util/function/Predicate;)Lcom/mojang/brigadier/builder/ArgumentBuilder;",&[builder,V::NULL]);
+        let after=build(&mut ctx,builder);
+        assert!(ctx.rt.pending_exception.is_none());
+        assert_eq!(cmd(&mut ctx,LN,"getCommand","()Lcom/mojang/brigadier/Command;",&[before]),command);
+        assert!(cmd(&mut ctx,LN,"getCommand","()Lcom/mojang/brigadier/Command;",&[after]).is_null());
+        assert!(!cmd(&mut ctx,LN,"getRequirement","()Ljava/util/function/Predicate;",&[before]).is_null());
+        assert!(cmd(&mut ctx,LN,"getRequirement","()Ljava/util/function/Predicate;",&[after]).is_null());
+        cmd(&mut ctx,LN,"canUse","(Ljava/lang/Object;)Z",&[after,V::NULL]);
+        let error=ctx.rt.take_exception().unwrap(); assert_eq!(ctx.rt.class_of(error),Some("java/lang/NullPointerException"));
+        let redirected=literal(&mut ctx,"redirect"); let modifier=ctx.rt.new_instance("test/RedirectModifier",0);
+        cmd(&mut ctx,LB,"forward","(Lcom/mojang/brigadier/tree/CommandNode;Lcom/mojang/brigadier/RedirectModifier;Z)Lcom/mojang/brigadier/builder/ArgumentBuilder;",&[redirected,before,modifier,V::TRUE]);
+        let built=build(&mut ctx,redirected);
+        assert_eq!(cmd(&mut ctx,LN,"getRedirect","()Lcom/mojang/brigadier/tree/CommandNode;",&[built]),before);
+        assert_eq!(cmd(&mut ctx,LN,"getRedirectModifier","()Lcom/mojang/brigadier/RedirectModifier;",&[built]),modifier);
+        assert_eq!(cmd(&mut ctx,LN,"isFork","()Z",&[built]),V::TRUE);
+        cmd(&mut ctx,LB,"then","(Lcom/mojang/brigadier/tree/CommandNode;)Lcom/mojang/brigadier/builder/ArgumentBuilder;",&[redirected,before]);
+        let error=ctx.rt.take_exception().unwrap(); assert_eq!(ctx.rt.class_of(error),Some("java/lang/IllegalStateException"));
+        drop(ctx);
+        let built_id=rt.handle_of(built).unwrap().1;
+        host.0.register_root(built_id);
+        assert!(host.0.match_command_checked("/redirect").unwrap_err().contains("redirect/fork"));
+        let after_id=rt.handle_of(after).unwrap().1;
+        host.0.register_root(after_id);
+        assert!(host.0.match_command_checked("/guarded").unwrap_err().contains("permission predicate"));
     }
 
     #[test]

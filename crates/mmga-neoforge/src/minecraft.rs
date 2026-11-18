@@ -1875,6 +1875,11 @@ pub fn call_brigadier(
     let owner = member.owner.as_str();
     let name = member.name.as_str();
 
+    if owner == "mmga/internal/BrigadierDefaultRequirement"
+        && is_static && name == "test" && member.desc == "(Ljava/lang/Object;)Z" {
+        return Some(V::TRUE);
+    }
+
     if owner == "net/neoforged/neoforge/event/RegisterCommandsEvent" && !is_static {
         return match name {
             "getDispatcher" => Some(rt.new_pinned_handle(
@@ -2079,41 +2084,48 @@ pub fn call_brigadier(
         };
         let tag = tag.to_owned();
         return match name {
+            "getRequirement" => commands.requirement(rt, node_id),
+            "getRedirect" => Some(commands.nodes.get(&node_id)?.builder_callbacks.get("redirect").copied().unwrap_or(V::NULL)),
+            "getRedirectModifier" => Some(commands.nodes.get(&node_id)?.builder_callbacks.get("redirectModifier").copied().unwrap_or(V::NULL)),
+            "isFork" => Some(commands.nodes.get(&node_id)?.builder_callbacks.get("fork").copied().unwrap_or(V::FALSE)),
+            "getCommand" => Some(commands.nodes.get(&node_id)?.executes.unwrap_or(V::NULL)),
             "getType" if member.desc=="()Lcom/mojang/brigadier/arguments/ArgumentType;"=>{
                 Some(commands.nodes.get(&node_id)?.argument_type.unwrap_or_else(||rt.throw_exception("java/lang/UnsupportedOperationException","Command argument type metadata is unavailable")))
             }
             "then" => {
+                if commands.nodes.get(&node_id)?.builder_callbacks.get("redirect").is_some_and(|value| !value.is_null()) {
+                    return Some(rt.throw_exception("java/lang/IllegalStateException", "Cannot add children to a redirected node"));
+                }
                 if let Some(("cmd_node", child_id, _, _)) = args.get(1).and_then(|&v| rt.handle_of(v)) {
+                    let child_id = if member.desc.starts_with("(Lcom/mojang/brigadier/builder/") { commands.snapshot_node(child_id)? } else { child_id };
                     commands.add_child(node_id, child_id);
                 }
                 Some(recv)
             }
             "executes" => {
                 if let Some(&cmd) = args.get(1) {
-                    if !cmd.is_null() {
-                        commands.set_executes(rt, node_id, cmd);
-                    }
+                    commands.set_executes(rt, node_id, cmd);
                 }
                 Some(recv)
             }
             "requires" | "suggests"=>{
                 let callback=*args.get(1)?;
-                if callback.is_null(){return Some(rt.throw_exception("java/lang/NullPointerException","Command builder callback is null"));}
                 commands.set_builder_callback(rt,node_id,name,callback);Some(recv)
             },
             "redirect" | "fork" | "forward"=>{
                 let target=*args.get(1)?;
                 if let Some(node)=commands.nodes.get(&node_id){if !node.children.is_empty(){return Some(rt.throw_exception("java/lang/IllegalStateException","Cannot forward a node with children"));}}
                 commands.set_builder_callback(rt,node_id,"redirect",target);
-                if name=="fork" || name=="forward" {
-                    let modifier=*args.get(2)?;commands.set_builder_callback(rt,node_id,"redirectModifier",modifier);
-                    let fork=if name=="fork"{V::TRUE}else{*args.get(3)?};commands.set_builder_callback(rt,node_id,"fork",fork);
-                }
+                let modifier=if args.len()>2{args[2]}else{V::NULL};
+                commands.set_builder_callback(rt,node_id,"redirectModifier",modifier);
+                let fork=if name=="fork"{V::TRUE}else if name=="forward"{*args.get(3)?}else{V::FALSE};
+                commands.set_builder_callback(rt,node_id,"fork",fork);
                 Some(recv)
             },
             "build" => {
                 let class=if matches!(&commands.nodes.get(&node_id)?.kind,CommandNodeKind::Argument{..}){"com/mojang/brigadier/tree/ArgumentCommandNode"}else{"com/mojang/brigadier/tree/LiteralCommandNode"};
-                Some(rt.new_handle(class,"cmd_node",node_id,tag))
+                let built_id=commands.snapshot_node(node_id)?;
+                Some(rt.new_handle(class,"cmd_node",built_id,tag))
             },
             _ => None,
         };
@@ -2127,6 +2139,7 @@ pub fn call_brigadier(
                     return None;
                 };
                 let tag = tag.to_owned();
+                let node_id = commands.snapshot_node(node_id)?;
                 commands.register_root(node_id);
                 Some(rt.new_handle(
                     "com/mojang/brigadier/tree/LiteralCommandNode",
@@ -2217,10 +2230,30 @@ pub fn call_brigadier(
                     .unwrap_or_default();
                 Some(rt.new_str(tag))
             }
-            "getRequirement" => Some(V::NULL),
-            "getRedirect" => Some(V::NULL),
-            "getRedirectModifier" => Some(V::NULL),
-            "isFork" => Some(V::FALSE),
+            "getRequirement" => {
+                let (_, node_id, _, _) = rt.handle_of(args[0])?;
+                if rt.handle_of(args[0]).is_some_and(|(kind, ..)| kind == "cmd_root") {
+                    Some(commands.default_requirement(rt))
+                } else {
+                    commands.requirement(rt, node_id)
+                }
+            }
+            "getRedirect" | "getRedirectModifier" | "isFork" => {
+                let (_, node_id, _, _) = rt.handle_of(args[0])?;
+                let field=match name { "getRedirect"=>"redirect", "getRedirectModifier"=>"redirectModifier", _=>"fork" };
+                Some(commands.nodes.get(&node_id).and_then(|node|node.builder_callbacks.get(field)).copied().unwrap_or(if name=="isFork"{V::FALSE}else{V::NULL}))
+            }
+            "canUse" if member.desc == "(Ljava/lang/Object;)Z" => {
+                let (_, node_id, _, _) = rt.handle_of(args[0])?;
+                let predicate=if rt.handle_of(args[0]).is_some_and(|(kind, ..)|kind=="cmd_root"){commands.default_requirement(rt)}else{commands.requirement(rt,node_id)?};
+                if predicate.is_null() {
+                    Some(rt.throw_exception("java/lang/NullPointerException", "Command requirement is null"))
+                } else if predicate == commands.default_requirement(rt) {
+                    Some(V::TRUE)
+                } else {
+                    Some(rt.throw_exception("java/lang/UnsupportedOperationException", "Command permission predicate execution is not implemented"))
+                }
+            }
             "getCommand" => {
                 let cmd = rt
                     .handle_of(args[0])
