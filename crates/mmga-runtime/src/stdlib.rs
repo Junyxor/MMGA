@@ -7,7 +7,10 @@ use crate::value::V;
 use mmga_classfile::MemberRef;
 
 /// Resolves `GETSTATIC` on built-in JDK / logging / Mixin classes.
-pub fn stdlib_get_static(rt: &mut Rt, owner: &str, name: &str, _desc: &str) -> Option<V> {
+pub fn stdlib_get_static(rt: &mut Rt, owner: &str, name: &str, desc: &str) -> Option<V> {
+    if let Some(value) = crate::guava_stopwatch::get_static(rt, owner, name, desc) {
+        return Some(value);
+    }
     match (owner, name) {
         ("java/lang/System", "out") => {
             Some(rt.new_pinned_handle("java/io/PrintStream", "print_stream", 1, "System.out"))
@@ -95,10 +98,16 @@ pub fn stdlib_call(
     if let Some(value) = crate::guava_views::call(ctx, member, is_static, args) {
         return Some(value);
     }
+    if let Some(value) = crate::guava_stopwatch::call(ctx, member, is_static, args) {
+        return Some(value);
+    }
     if let Some(value) = crate::enum_sets::call(ctx, member, is_static, args) {
         return Some(value);
     }
     if let Some(value) = crate::array_utils::call(ctx, member, is_static, args) {
+        return Some(value);
+    }
+    if let Some(value) = crate::collections_add_all::call(ctx, member, is_static, args) {
         return Some(value);
     }
     if let Some(value) = crate::string_utils::call(ctx, member, is_static, args) {
@@ -1710,7 +1719,36 @@ fn dispatch_list_instance(
             }
             prev
         }
-        "add" | "addLast" | "offer" => {
+        "addFirst" | "addLast" => {
+            if desc != "(Ljava/lang/Object;)V" || args.len() != 1 {
+                return None;
+            }
+            if matches!(ctx.rt.class_of(recv), Some(
+                "com/google/common/collect/ImmutableList"
+                    | "com/google/common/collect/RegularImmutableList"
+                    | "com/google/common/collect/SingletonImmutableList"
+            )) {
+                return Some(ctx.rt.throw_exception(
+                    "java/lang/UnsupportedOperationException", "immutable List",
+                ));
+            }
+            let (descriptor, arguments) = if name == "addFirst" {
+                ("(ILjava/lang/Object;)V", vec![recv, V::I(0), args[0]])
+            } else {
+                ("(Ljava/lang/Object;)Z", vec![recv, args[0]])
+            };
+            crate::invoke_member(
+                ctx,
+                mmga_classfile::op::INVOKEINTERFACE,
+                &MemberRef::new("java/util/List", "add", descriptor),
+                &arguments,
+            );
+            if ctx.rt.pending_exception.is_some() {
+                return Some(V::NULL);
+            }
+            V::Void
+        }
+        "add" | "offer" => {
             if desc.starts_with("(I") && args.len() == 2 {
                 let idx = (args[0].i().max(0) as usize).min(
                     match ctx.rt.get_obj(recv).map(|o| &o.data) {

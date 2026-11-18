@@ -528,6 +528,8 @@ pub(crate) fn known_native_jdk_class(cls: &str) -> bool {
 
 fn jdk_supertypes(cls: &str) -> &'static [&'static str] {
     match cls {
+        "java/util/concurrent/TimeUnit" => &["java/lang/Enum"],
+        "com/google/common/base/Ticker$1" => &["com/google/common/base/Ticker"],
         "mmga/internal/ApplicationClassLoader" | "mmga/internal/PlatformClassLoader" => &["java/lang/ClassLoader"],
         "mmga/internal/ServiceIterator" => &["java/util/Iterator"],
         "mmga/internal/ServiceProvider" => &["java/util/ServiceLoader$Provider"],

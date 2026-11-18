@@ -4,8 +4,10 @@
 pub mod fxhash;
 pub mod heap;
 mod guava_views;
+mod guava_stopwatch;
 mod enum_sets;
 mod array_utils;
+mod collections_add_all;
 mod string_utils;
 mod stream_collectors;
 mod jdk_state;
@@ -16,6 +18,9 @@ pub mod linked;
 pub mod stdlib;
 pub mod value;
 pub mod vm;
+
+#[cfg(test)]
+mod list_endpoint_tests;
 
 pub use fxhash::{fnv1a_64, FxHashMap, FxHashSet, FxHasher};
 pub use heap::{ClosureData, ClosureTarget, Data, Object, Rt, RuntimeTelemetry};
