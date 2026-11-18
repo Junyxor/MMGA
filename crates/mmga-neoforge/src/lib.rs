@@ -23,6 +23,7 @@ pub mod custom_data;
 pub mod data_maps;
 pub mod item_stack;
 pub mod fluid_content;
+pub mod fluid_properties;
 pub mod ingredients;
 pub mod direction;
 pub mod interaction_hand;

@@ -2035,6 +2035,9 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::fluid_content::call(rt, linked, self, member, is_static, args) {
             return Some(value);
         }
+        if let Some(value) = crate::fluid_properties::call(rt, member, is_static, args) {
+            return Some(value);
+        }
         if let Some(value) = crate::container_items::call(rt, linked, self, member, is_static, args) {
             return Some(value);
         }
@@ -2337,7 +2340,10 @@ impl HostApi for FmlLoader {
         if crate::resource_reload::is_subtype(sub_class, super_class) {
             return true;
         }
-        if crate::advancements::is_subtype(sub_class, super_class) || crate::fluid_content::is_subtype(sub_class, super_class) {
+        if crate::advancements::is_subtype(sub_class, super_class)
+            || crate::fluid_content::is_subtype(sub_class, super_class)
+            || crate::fluid_properties::is_subtype(sub_class, super_class)
+        {
             return true;
         }
         if crate::ingredients::is_subtype(sub_class, super_class) {
