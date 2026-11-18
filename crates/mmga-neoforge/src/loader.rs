@@ -393,7 +393,7 @@ impl FmlLoader {
         command_line: &str,
         is_player: bool,
     ) -> Result<(i32, Vec<String>), String> {
-        let Some((cmd_closure, parsed_args)) = self.state.commands.match_command(command_line)
+        let Some((cmd_closure, parsed_args)) = self.state.commands.match_command_checked(command_line)?
         else {
             return Err(format!("unknown or incomplete command `{command_line}`"));
         };
@@ -568,6 +568,7 @@ impl FmlLoader {
         self.state.registries.freeze_checked(rt);
         raise_if_pending(rt, "freezing registries")?;
         self.drain_registry_callbacks(rt, linked)?;
+        for root in self.state.commands.as_vm_root_values() { rt.pin(root); }
         Ok(())
     }
 
@@ -1738,6 +1739,9 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::global_positions::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
+        if let Some(value) = crate::command_items::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
         if let Some(value) = crate::string_representable::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
@@ -1813,6 +1817,9 @@ impl HostApi for FmlLoader {
         args: &[V],
     ) -> Option<V> {
         if let Some(value)=imc_events::call(self,rt,linked,member,is_static,args) {return Some(value);}
+        if let Some(value) = crate::command_items::call_context(rt, &self.state.registries, member, is_static, args) {
+            return Some(value);
+        }
         if is_static && member.owner == "net/neoforged/fml/ModLoader" && member.name == "postEventWrapContainerInModOrder"
             && member.desc == "(Lnet/neoforged/bus/api/Event;)V" {
             return Some(fml_post::post_wrapped_in_mod_order(self,rt,linked,*args.first()?));
@@ -1968,6 +1975,9 @@ impl HostApi for FmlLoader {
                 return Some(value);
             }
             if let Some(value) = crate::global_positions::call(&mut ctx, member, is_static, args) {
+                return Some(value);
+            }
+            if let Some(value) = crate::command_items::call(&mut ctx, member, is_static, args) {
                 return Some(value);
             }
             if let Some(value) = crate::entity_selector_options::call(&mut ctx, member, is_static, args) {
@@ -2304,6 +2314,9 @@ impl HostApi for FmlLoader {
             return true;
         }
         if crate::global_positions::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::command_items::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::registry_holders::is_subtype(sub_class, super_class) {

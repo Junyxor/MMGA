@@ -16,6 +16,7 @@ pub mod advancements;
 pub mod capabilities;
 pub mod codecs;
 pub mod common_components;
+pub mod command_items;
 pub mod components;
 pub mod container_items;
 pub mod custom_data;

@@ -1928,18 +1928,22 @@ pub fn call_brigadier(
         && is_static
         && name == "argument"
     {
+        let argument=*args.get(1)?;
+        if argument.is_null(){return Some(rt.throw_exception("java/lang/NullPointerException","Command argument type is null"));}
         let arg_name = rt.str_of(*args.first()?)?.to_owned();
-        let kind = match args.get(1).and_then(|&v| rt.handle_of(v)) {
+        let kind = match rt.handle_of(argument) {
             Some(("cmd_arg_type", _, "greedy", _)) => ArgumentKind::GreedyString,
             Some(("cmd_arg_type", _, "int", _)) => ArgumentKind::Integer,
             Some(("cmd_arg_type", _, "float", _)) => ArgumentKind::Float,
             Some(("cmd_arg_type", _, "bool", _)) => ArgumentKind::Bool,
-            _ => ArgumentKind::Word,
+            Some(("cmd_arg_type", _, "word", _))=>ArgumentKind::Word,
+            _ => ArgumentKind::Opaque,
         };
         let node_id = commands.alloc_node(CommandNodeKind::Argument {
             name: arg_name.clone(),
             kind,
         });
+        commands.set_argument_type(rt,node_id,argument);
         return Some(rt.new_handle(
             "com/mojang/brigadier/builder/RequiredArgumentBuilder",
             "cmd_node",
@@ -2075,6 +2079,9 @@ pub fn call_brigadier(
         };
         let tag = tag.to_owned();
         return match name {
+            "getType" if member.desc=="()Lcom/mojang/brigadier/arguments/ArgumentType;"=>{
+                Some(commands.nodes.get(&node_id)?.argument_type.unwrap_or_else(||rt.throw_exception("java/lang/UnsupportedOperationException","Command argument type metadata is unavailable")))
+            }
             "then" => {
                 if let Some(("cmd_node", child_id, _, _)) = args.get(1).and_then(|&v| rt.handle_of(v)) {
                     commands.add_child(node_id, child_id);
@@ -2089,13 +2096,25 @@ pub fn call_brigadier(
                 }
                 Some(recv)
             }
-            "requires" | "suggests" | "redirect" | "fork" | "forward" => Some(recv),
-            "build" => Some(rt.new_handle(
-                "com/mojang/brigadier/tree/LiteralCommandNode",
-                "cmd_node",
-                node_id,
-                tag,
-            )),
+            "requires" | "suggests"=>{
+                let callback=*args.get(1)?;
+                if callback.is_null(){return Some(rt.throw_exception("java/lang/NullPointerException","Command builder callback is null"));}
+                commands.set_builder_callback(rt,node_id,name,callback);Some(recv)
+            },
+            "redirect" | "fork" | "forward"=>{
+                let target=*args.get(1)?;
+                if let Some(node)=commands.nodes.get(&node_id){if !node.children.is_empty(){return Some(rt.throw_exception("java/lang/IllegalStateException","Cannot forward a node with children"));}}
+                commands.set_builder_callback(rt,node_id,"redirect",target);
+                if name=="fork" || name=="forward" {
+                    let modifier=*args.get(2)?;commands.set_builder_callback(rt,node_id,"redirectModifier",modifier);
+                    let fork=if name=="fork"{V::TRUE}else{*args.get(3)?};commands.set_builder_callback(rt,node_id,"fork",fork);
+                }
+                Some(recv)
+            },
+            "build" => {
+                let class=if matches!(&commands.nodes.get(&node_id)?.kind,CommandNodeKind::Argument{..}){"com/mojang/brigadier/tree/ArgumentCommandNode"}else{"com/mojang/brigadier/tree/LiteralCommandNode"};
+                Some(rt.new_handle(class,"cmd_node",node_id,tag))
+            },
             _ => None,
         };
     }

@@ -419,6 +419,7 @@ pub enum ArgumentKind {
     Integer,
     Float,
     Bool,
+    Opaque,
 }
 
 #[derive(Debug, Clone)]
@@ -432,6 +433,8 @@ pub struct BrigadierNode {
     pub node_id: u64,
     pub kind: CommandNodeKind,
     pub executes: Option<V>,
+    pub argument_type: Option<V>,
+    pub builder_callbacks: BTreeMap<String, V>,
     pub children: Vec<u64>,
 }
 
@@ -452,6 +455,8 @@ impl BrigadierTree {
                 node_id: id,
                 kind,
                 executes: None,
+                argument_type: None,
+                builder_callbacks: BTreeMap::new(),
                 children: Vec::new(),
             },
         );
@@ -462,6 +467,18 @@ impl BrigadierTree {
         rt.pin(cmd_closure);
         if let Some(n) = self.nodes.get_mut(&node_id) {
             n.executes = Some(cmd_closure);
+        }
+    }
+    pub fn set_argument_type(&mut self, rt: &mut Rt, node_id: u64, argument: V) {
+        rt.pin(argument);
+        if let Some(node) = self.nodes.get_mut(&node_id) {
+            node.argument_type = Some(argument);
+        }
+    }
+    pub fn set_builder_callback(&mut self, rt: &mut Rt, node_id: u64, name: &str, value: V) {
+        rt.pin(value);
+        if let Some(node) = self.nodes.get_mut(&node_id) {
+            node.builder_callbacks.insert(name.into(), value);
         }
     }
 
@@ -478,6 +495,15 @@ impl BrigadierTree {
             self.roots.push(root_id);
         }
     }
+    pub fn as_vm_root_values(&self) -> Vec<V> {
+        let mut roots = Vec::new();
+        for node in self.nodes.values() {
+            roots.push(node.executes.unwrap_or(V::NULL));
+            roots.push(node.argument_type.unwrap_or(V::NULL));
+            roots.extend(node.builder_callbacks.values().copied());
+        }
+        roots
+    }
 
     /// Matches a slash command line (e.g. `"/kinetic speed 64"`) against registered Brigadier roots,
     /// returning `(matched_closure, parsed_arguments_map)`.
@@ -485,18 +511,32 @@ impl BrigadierTree {
         &self,
         command_line: &str,
     ) -> Option<(V, BTreeMap<String, ConfigPrimitive>)> {
+        self.match_command_checked(command_line).ok().flatten()
+    }
+
+    pub fn match_command_checked(
+        &self,
+        command_line: &str,
+    ) -> Result<Option<(V, BTreeMap<String, ConfigPrimitive>)>, String> {
         let trimmed = command_line.trim().trim_start_matches('/');
         let tokens: Vec<&str> = trimmed.split_whitespace().collect();
         if tokens.is_empty() {
-            return None;
+            return Ok(None);
         }
+        let mut unsupported = None;
         for &root_id in &self.roots {
             let mut args = BTreeMap::new();
-            if let Some(exec) = self.match_from(root_id, &tokens, 0, &mut args) {
-                return Some((exec, args));
+            match self.match_from(root_id, &tokens, 0, &mut args) {
+                Ok(Some(exec)) => return Ok(Some((exec, args))),
+                Ok(None) => {}
+                Err(error) => unsupported = Some(error),
             }
         }
-        None
+        if let Some(error) = unsupported {
+            Err(error)
+        } else {
+            Ok(None)
+        }
     }
 
     fn match_from(
@@ -505,29 +545,52 @@ impl BrigadierTree {
         tokens: &[&str],
         idx: usize,
         args: &mut BTreeMap<String, ConfigPrimitive>,
-    ) -> Option<V> {
-        let node = self.nodes.get(&node_id)?;
-        let token = *tokens.get(idx)?;
+    ) -> Result<Option<V>, String> {
+        let Some(node) = self.nodes.get(&node_id) else {
+            return Ok(None);
+        };
+        let Some(token) = tokens.get(idx).copied() else {
+            return Ok(None);
+        };
+        if matches!(&node.kind,CommandNodeKind::Literal(literal) if literal!=token) {
+            return Ok(None);
+        }
+        if node.builder_callbacks.contains_key("requires") {
+            return Err(
+                "Command node requires an unimplemented sender permission predicate".into(),
+            );
+        }
+        if node.builder_callbacks.contains_key("redirect")
+            || node.builder_callbacks.contains_key("fork")
+        {
+            return Err("Command redirect/fork execution is not implemented".into());
+        }
         let next_idx = match &node.kind {
             CommandNodeKind::Literal(lit) => {
                 if lit != token {
-                    return None;
+                    return Ok(None);
                 }
                 idx + 1
             }
             CommandNodeKind::Argument { name, kind } => match kind {
                 ArgumentKind::Integer => {
-                    let v = token.parse::<i32>().ok()?;
+                    let Ok(v) = token.parse::<i32>() else {
+                        return Ok(None);
+                    };
                     args.insert(name.clone(), ConfigPrimitive::Int(v));
                     idx + 1
                 }
                 ArgumentKind::Float => {
-                    let v = token.parse::<f64>().ok()?;
+                    let Ok(v) = token.parse::<f64>() else {
+                        return Ok(None);
+                    };
                     args.insert(name.clone(), ConfigPrimitive::Double(v));
                     idx + 1
                 }
                 ArgumentKind::Bool => {
-                    let v = token.parse::<bool>().ok()?;
+                    let Ok(v) = token.parse::<bool>() else {
+                        return Ok(None);
+                    };
                     args.insert(name.clone(), ConfigPrimitive::Bool(v));
                     idx + 1
                 }
@@ -539,20 +602,34 @@ impl BrigadierTree {
                     args.insert(name.clone(), ConfigPrimitive::Text(tokens[idx..].join(" ")));
                     tokens.len()
                 }
+                ArgumentKind::Opaque => {
+                    return Err(format!(
+                        "Argument `{name}` uses an unimplemented command parser"
+                    ))
+                }
             },
         };
 
         if next_idx == tokens.len() {
-            return node.executes;
+            return Ok(node.executes);
         }
+        let mut unsupported = None;
         for &child_id in &node.children {
             let mut branch_args = args.clone();
-            if let Some(found) = self.match_from(child_id, tokens, next_idx, &mut branch_args) {
-                *args = branch_args;
-                return Some(found);
+            match self.match_from(child_id, tokens, next_idx, &mut branch_args) {
+                Ok(Some(found)) => {
+                    *args = branch_args;
+                    return Ok(Some(found));
+                }
+                Ok(None) => {}
+                Err(error) => unsupported = Some(error),
             }
         }
-        None
+        if let Some(error) = unsupported {
+            Err(error)
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -560,6 +637,132 @@ impl BrigadierTree {
 mod tests {
     use super::*;
     use mmga_runtime::Rt;
+
+    #[test]
+    fn custom_brigadier_argument_is_retained_and_is_never_parsed_as_a_word() {
+        let mut rt = Rt::new();
+        let mut tree = BrigadierTree::default();
+        let name = rt.intern_str("value");
+        let argument = rt.new_instance("test/ActualArgumentType", 0);
+        let builder=crate::minecraft::call_brigadier(&mut rt,&mut tree,&BTreeMap::new(),&mmga_classfile::MemberRef::new("net/minecraft/commands/Commands","argument","(Ljava/lang/String;Lcom/mojang/brigadier/arguments/ArgumentType;)Lcom/mojang/brigadier/builder/RequiredArgumentBuilder;"),true,&[name,argument]).unwrap();
+        let id = rt.handle_of(builder).unwrap().1;
+        assert!(
+            !matches!(
+                &tree.nodes[&id].kind,
+                CommandNodeKind::Argument {
+                    kind: ArgumentKind::Word,
+                    ..
+                }
+            ),
+            "Unknown argument type cannot become the word parser"
+        );
+        let got = crate::minecraft::call_brigadier(
+            &mut rt,
+            &mut tree,
+            &BTreeMap::new(),
+            &mmga_classfile::MemberRef::new(
+                "com/mojang/brigadier/builder/RequiredArgumentBuilder",
+                "getType",
+                "()Lcom/mojang/brigadier/arguments/ArgumentType;",
+            ),
+            false,
+            &[builder],
+        );
+        assert_eq!(got, Some(argument));
+        let root = tree.alloc_node(CommandNodeKind::Literal("inspect".into()));
+        tree.add_child(root, id);
+        tree.register_root(root);
+        let command = rt.new_instance("java/util/function/Function", 0);
+        tree.set_executes(&mut rt, id, command);
+        assert!(tree.match_command("/inspect arbitrary").is_none());
+        let error = tree
+            .match_command_checked("/inspect arbitrary")
+            .unwrap_err();
+        assert!(error.contains("unimplemented command parser"));
+        let literal = tree.alloc_node(CommandNodeKind::Literal("known".into()));
+        tree.add_child(root, literal);
+        tree.set_executes(&mut rt, literal, command);
+        assert_eq!(
+            tree.match_command_checked("/inspect known")
+                .unwrap()
+                .unwrap()
+                .0,
+            command,
+            "A real literal alternative remains available"
+        );
+        crate::minecraft::call_brigadier(&mut rt,&mut tree,&BTreeMap::new(),&mmga_classfile::MemberRef::new("net/minecraft/commands/Commands","argument","(Ljava/lang/String;Lcom/mojang/brigadier/arguments/ArgumentType;)Lcom/mojang/brigadier/builder/RequiredArgumentBuilder;"),true,&[name,V::NULL]);
+        let error = rt.take_exception().unwrap();
+        assert_eq!(rt.class_of(error), Some("java/lang/NullPointerException"));
+    }
+
+    #[test]
+    fn builder_callbacks_are_preserved_and_permission_controls_do_not_become_unconditional() {
+        let mut rt = Rt::new();
+        let mut tree = BrigadierTree::default();
+        let name = rt.intern_str("guarded");
+        let predicate = rt.new_instance("java/util/function/Predicate", 0);
+        let suggestions = rt.new_instance("com/mojang/brigadier/suggestion/SuggestionProvider", 0);
+        let literal = crate::minecraft::call_brigadier(
+            &mut rt,
+            &mut tree,
+            &BTreeMap::new(),
+            &mmga_classfile::MemberRef::new(
+                "net/minecraft/commands/Commands",
+                "literal",
+                "(Ljava/lang/String;)Lcom/mojang/brigadier/builder/LiteralArgumentBuilder;",
+            ),
+            true,
+            &[name],
+        )
+        .unwrap();
+        let id = rt.handle_of(literal).unwrap().1;
+        crate::minecraft::call_brigadier(
+            &mut rt,
+            &mut tree,
+            &BTreeMap::new(),
+            &mmga_classfile::MemberRef::new(
+                "com/mojang/brigadier/builder/LiteralArgumentBuilder",
+                "requires",
+                "(Ljava/util/function/Predicate;)Lcom/mojang/brigadier/builder/ArgumentBuilder;",
+            ),
+            false,
+            &[literal, predicate],
+        );
+        crate::minecraft::call_brigadier(&mut rt,&mut tree,&BTreeMap::new(),&mmga_classfile::MemberRef::new("com/mojang/brigadier/builder/LiteralArgumentBuilder","suggests","(Lcom/mojang/brigadier/suggestion/SuggestionProvider;)Lcom/mojang/brigadier/builder/RequiredArgumentBuilder;"),false,&[literal,suggestions]);
+        assert_eq!(
+            tree.nodes[&id].builder_callbacks.get("requires"),
+            Some(&predicate)
+        );
+        assert_eq!(
+            tree.nodes[&id].builder_callbacks.get("suggests"),
+            Some(&suggestions)
+        );
+        tree.register_root(id);
+        let command = rt.new_instance("java/util/function/Function", 0);
+        tree.set_executes(&mut rt, id, command);
+        assert!(tree
+            .match_command_checked("/guarded")
+            .unwrap_err()
+            .contains("permission predicate"));
+        crate::minecraft::call_brigadier(
+            &mut rt,
+            &mut tree,
+            &BTreeMap::new(),
+            &mmga_classfile::MemberRef::new(
+                "com/mojang/brigadier/builder/LiteralArgumentBuilder",
+                "requires",
+                "(Ljava/util/function/Predicate;)Lcom/mojang/brigadier/builder/ArgumentBuilder;",
+            ),
+            false,
+            &[literal, V::NULL],
+        );
+        let error = rt.take_exception().unwrap();
+        assert_eq!(rt.class_of(error), Some("java/lang/NullPointerException"));
+        assert_eq!(
+            tree.nodes[&id].builder_callbacks.get("requires"),
+            Some(&predicate)
+        );
+    }
 
     #[test]
     fn config_spec_clamps_toml_overrides() {
