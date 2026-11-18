@@ -230,6 +230,9 @@ impl PreparedLoad {
 
         let mut linked = LinkedSpace::new();
         crate::direction::register_types(&mut linked);
+        crate::interaction_hand::register_types(&mut linked);
+        crate::rarity::register_types(&mut linked);
+        crate::particle_types::register_types(&mut linked);
         linked.services = services;
         linked.add_bytecode_classes(classes);
         let mut loader = FmlLoader {
@@ -1712,6 +1715,21 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::direction::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
+        if let Some(value) = crate::interaction_hand::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
+        if let Some(value) = crate::rarity::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
+        if let Some(value) = crate::particle_types::get_static_field(rt, &mut self.state.registries, owner, name, desc) {
+            return Some(value);
+        }
+        if let Some(value) = crate::enchantment_keys::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
+        if let Some(value) = crate::mob_category::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
         if let Some(value) = crate::blocks::get_static_field(rt, &mut self.state.registries, owner, name, desc) {
             return Some(value);
         }
@@ -2050,6 +2068,18 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::direction::call(rt, member, is_static, args) {
             return Some(value);
         }
+        if let Some(value) = crate::interaction_hand::call(rt, member, is_static, args) {
+            return Some(value);
+        }
+        if let Some(value) = crate::rarity::call(rt, member, is_static, args) {
+            return Some(value);
+        }
+        if let Some(value) = crate::particle_types::call(rt, member, is_static, args) {
+            return Some(value);
+        }
+        if let Some(value) = crate::mob_category::call(rt, member, is_static, args) {
+            return Some(value);
+        }
         if let Some(value) = crate::attributes::call(rt, member, is_static, args) {
             return Some(value);
         }
@@ -2311,6 +2341,18 @@ impl HostApi for FmlLoader {
             return true;
         }
         if crate::direction::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::interaction_hand::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::rarity::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::particle_types::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::mob_category::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::global_positions::is_subtype(sub_class, super_class) {
