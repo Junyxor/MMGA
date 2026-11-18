@@ -1,7 +1,7 @@
 //! Codec.ResultFunction receives actual decoded pairs and encoded prefix results.
 use super::*;
 const FUNCTION: &str = "com/mojang/serialization/Codec$ResultFunction";
-fn pair(rt: &mut Rt, value: V, remainder: serde_json::Value) -> V {
+pub(super) fn pair(rt: &mut Rt, value: V, remainder: serde_json::Value) -> V {
     let pair = rt.new_instance("com/mojang/datafixers/util/Pair", 0);
     let remainder = json::from_value(rt, remainder);
     rt.put_field(pair, "first", value);

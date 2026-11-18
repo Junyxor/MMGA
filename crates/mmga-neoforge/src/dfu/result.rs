@@ -36,6 +36,79 @@ pub(super) fn message(ctx: &mut ExecCtx<'_>, result: V) -> String {
         .unwrap_or("DFU error")
         .to_owned()
 }
+
+/// Matches DataResult.Error.promotePartial, preserving lifecycle and the original error
+/// object when it has no partial value. Returns None only when Java callback/message
+/// evaluation has already raised an exception in the runtime.
+pub(super) fn promote_partial(ctx: &mut ExecCtx<'_>, value: V, consumer: V) -> Option<V> {
+    if ctx.rt.get_field(value, "$success") == V::TRUE {
+        return Some(value);
+    }
+    let message = message(ctx, value);
+    if ctx.rt.pending_exception.is_some() {
+        return None;
+    }
+    let message = ctx.rt.new_str(message);
+    invoke_member(
+        ctx,
+        op::INVOKEINTERFACE,
+        &MemberRef::new(
+            "java/util/function/Consumer",
+            "accept",
+            "(Ljava/lang/Object;)V",
+        ),
+        &[consumer, message],
+    );
+    if ctx.rt.pending_exception.is_some() {
+        return None;
+    }
+    let partial = ctx.rt.get_field(value, "$partial");
+    if partial.is_null() {
+        return Some(value);
+    }
+    let promoted = success(ctx.rt, partial);
+    let lifecycle = ctx.rt.get_field(value, "$lifecycle");
+    ctx.rt.put_field(promoted, "$lifecycle", lifecycle);
+    Some(promoted)
+}
+
+/// Implements Decoder.parse's DataResult.map(Pair::getFirst) while retaining the
+/// original error when it has no partial and carrying its lifecycle through mapping.
+pub(super) fn map_pair_first(ctx: &mut ExecCtx<'_>, result: V) -> Option<V> {
+    let success = ctx.rt.get_field(result, "$success") == V::TRUE;
+    let field = if success { "$value" } else { "$partial" };
+    let pair = ctx.rt.get_field(result, field);
+    if !success && pair.is_null() {
+        return Some(result);
+    }
+    if ctx.rt.class_of(pair) != Some("com/mojang/datafixers/util/Pair") {
+        ctx.rt.throw_exception(
+            "java/lang/ClassCastException",
+            "Codec.parse requires decoded Pair value",
+        );
+        return None;
+    }
+    let first = ctx.rt.get_field(pair, "first");
+    let mapped = if success {
+        success_result(ctx, first, result)
+    } else {
+        let mapped = clone_result(ctx.rt, result);
+        ctx.rt.put_field(mapped, "$partial", first);
+        mapped
+    };
+    Some(mapped)
+}
+
+fn success_result(ctx: &mut ExecCtx<'_>, value: V, previous: V) -> V {
+    let mapped = success(ctx.rt, value);
+    ctx.rt.put_field(
+        mapped,
+        "$lifecycle",
+        ctx.rt.get_field(previous, "$lifecycle"),
+    );
+    mapped
+}
+
 fn lifecycle(rt: &mut Rt, kind: &str, version: i32) -> V {
     let key = format!("{kind}:{version}");
     if let Some(v) = rt.get_static("com/mojang/serialization/Lifecycle", &key) {
