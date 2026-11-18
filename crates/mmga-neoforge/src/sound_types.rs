@@ -23,6 +23,7 @@ pub fn get_static_field(
         "LARGE_AMETHYST_BUD" => ("LARGE_AMETHYST_BUD_BREAK", "LARGE_AMETHYST_BUD_PLACE"),
         "STONE" => ("STONE_BREAK", "STONE_PLACE"),
         "WOOD" => ("WOOD_BREAK", "WOOD_PLACE"),
+        "WOOL" => ("WOOL_BREAK", "WOOL_PLACE"),
         "GRAVEL" => ("GRAVEL_BREAK", "GRAVEL_PLACE"),
         "METAL" => ("METAL_BREAK", "METAL_PLACE"),
         "GLASS" => ("GLASS_BREAK", "GLASS_PLACE"),
@@ -33,7 +34,7 @@ pub fn get_static_field(
     }
     let mut sounds = Vec::with_capacity(5);
     let family = match name {
-        "STONE" | "WOOD" | "GRAVEL" | "METAL" | "GLASS" => name,
+        "STONE" | "WOOD" | "WOOL" | "GRAVEL" | "METAL" | "GLASS" => name,
         _ => "AMETHYST_CLUSTER",
     };
     let (step, hit, fall) = (
@@ -220,6 +221,39 @@ mod tests {
             assert!(ctx.rt.pending_exception.is_none());
         }
     }
+
+    #[test]
+    fn wool_sound_type_uses_the_matching_official_sound_event_family() {
+        let mut rt = Rt::new();
+        let mut registries = RegistryStore::new();
+        let sound_type = get_static_field(&mut rt, &mut registries, CLASS, "WOOL", DESC)
+            .expect("official SoundType.WOOL constant");
+        assert_eq!(
+            get_static_field(&mut rt, &mut registries, CLASS, "WOOL", DESC),
+            Some(sound_type)
+        );
+        assert_eq!(rt.get_field(sound_type, "volume"), V::F(1.0));
+        assert_eq!(rt.get_field(sound_type, "pitch"), V::F(1.0));
+        for (field, sound_name) in [
+            ("breakSound", "WOOL_BREAK"),
+            ("stepSound", "WOOL_STEP"),
+            ("placeSound", "WOOL_PLACE"),
+            ("hitSound", "WOOL_HIT"),
+            ("fallSound", "WOOL_FALL"),
+        ] {
+            let actual = rt.get_field(sound_type, field);
+            let expected = crate::sounds::get_static_field(
+                &mut rt,
+                &mut registries,
+                "net/minecraft/sounds/SoundEvents",
+                sound_name,
+                "Lnet/minecraft/sounds/SoundEvent;",
+            )
+            .expect("official sound event field");
+            assert_eq!(actual, expected, "SoundType.WOOL {field}");
+        }
+    }
+
     #[test]
     fn custom_sound_type_constructor_retains_null_and_real_references() {
         let mut rt = Rt::new();

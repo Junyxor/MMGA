@@ -104,6 +104,11 @@ pub fn get_static_field(
         "WOOD_STEP" => ("block.wood.step", SOUND_DESC),
         "WOOD_HIT" => ("block.wood.hit", SOUND_DESC),
         "WOOD_FALL" => ("block.wood.fall", SOUND_DESC),
+        "WOOL_BREAK" => ("block.wool.break", SOUND_DESC),
+        "WOOL_FALL" => ("block.wool.fall", SOUND_DESC),
+        "WOOL_HIT" => ("block.wool.hit", SOUND_DESC),
+        "WOOL_PLACE" => ("block.wool.place", SOUND_DESC),
+        "WOOL_STEP" => ("block.wool.step", SOUND_DESC),
         "STONE_BREAK" => ("block.stone.break", SOUND_DESC),
         "STONE_STEP" => ("block.stone.step", SOUND_DESC),
         "STONE_PLACE" => ("block.stone.place", SOUND_DESC),
@@ -123,8 +128,6 @@ pub fn get_static_field(
         "GLASS_PLACE" => ("block.glass.place", SOUND_DESC),
         "GLASS_HIT" => ("block.glass.hit", SOUND_DESC),
         "GLASS_FALL" => ("block.glass.fall", SOUND_DESC),
-        "WOOL_BREAK" => ("block.wool.break", SOUND_DESC),
-        "WOOL_HIT" => ("block.wool.hit", SOUND_DESC),
         _ => return None,
     };
     if desc != declared_desc {
