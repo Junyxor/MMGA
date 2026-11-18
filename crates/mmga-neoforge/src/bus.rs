@@ -255,6 +255,16 @@ pub const BUILTIN_EVENTS: &[BuiltinEventSpec] = &[
         is_abstract: false,
     },
     BuiltinEventSpec {
+        // NeoForge 1.21.1 branch commit 89e887b367ab0c11cb58ce8500920efadc17b803,
+        // source blob 4fb6c4c2fb7fd83723a95120024e78e7c81de529. Declares
+        // `extends Event`, fires on NeoForge.EVENT_BUS, and implements no cancel API.
+        class: "net/neoforged/neoforge/event/village/VillagerTradesEvent",
+        superclass: "net/neoforged/bus/api/Event",
+        is_mod_bus: false,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    BuiltinEventSpec {
         // Official source blob 7d606cb229ff7c48c009f756dd6532f3bc7fd722.
         class: "net/neoforged/neoforge/server/permission/events/PermissionGatherEvent",
         superclass: "net/neoforged/bus/api/Event",
@@ -614,6 +624,16 @@ pub const BUILTIN_EVENTS: &[BuiltinEventSpec] = &[
     // RegisterDataMapTypesEvent 3bde6da598112becb2b6d57a08632d32b2f51997.
     BuiltinEventSpec {
         class: "net/neoforged/neoforge/event/AddPackFindersEvent",
+        superclass: "net/neoforged/bus/api/Event",
+        is_mod_bus: true,
+        is_cancellable: false,
+        is_abstract: false,
+    },
+    // NeoForge 1.21.1 commit 89e887b367ab0c11cb58ce8500920efadc17b803,
+    // source blob b1f847c25d06514de25a91180c5a212982e20204: final, extends Event,
+    // implements IModBusEvent, and exposes no cancellation API.
+    BuiltinEventSpec {
+        class: "net/neoforged/neoforge/event/ModifyDefaultComponentsEvent",
         superclass: "net/neoforged/bus/api/Event",
         is_mod_bus: true,
         is_cancellable: false,
@@ -1630,6 +1650,62 @@ mod tests {
         );
         assert!(rejected.unwrap_err().contains("IModBusEvent"));
         assert!(is_mod_bus_event_class(event_class));
+    }
+
+    #[test]
+    fn villager_trades_event_is_a_concrete_non_cancellable_game_bus_event() {
+        let event_class = "net/neoforged/neoforge/event/village/VillagerTradesEvent";
+        let metadata = find_builtin_event(event_class).expect("official event catalog entry");
+        assert_eq!(metadata.superclass, "net/neoforged/bus/api/Event");
+        assert!(!metadata.is_mod_bus);
+        assert!(!metadata.is_cancellable);
+        assert!(!metadata.is_abstract);
+
+        let mut engine = EventBusEngine::new();
+        assert!(engine
+            .register_listener(
+                BusId::Game,
+                event_class.into(),
+                EventPriority::Normal,
+                false,
+                V::NULL,
+                EventCallback::Native(hit),
+            )
+            .is_ok());
+        assert!(engine
+            .register_listener(
+                BusId::Mod("ae2".into()),
+                event_class.into(),
+                EventPriority::Normal,
+                false,
+                V::NULL,
+                EventCallback::Native(hit),
+            )
+            .unwrap_err()
+            .contains("IModBusEvent"));
+        assert!(!is_mod_bus_event_class(event_class));
+    }
+
+    #[test]
+    fn modify_default_components_event_is_a_concrete_non_cancellable_mod_bus_event() {
+        let event_class = "net/neoforged/neoforge/event/ModifyDefaultComponentsEvent";
+        let metadata = find_builtin_event(event_class).expect("official event catalog entry");
+        assert_eq!(metadata.superclass, "net/neoforged/bus/api/Event");
+        assert!(metadata.is_mod_bus);
+        assert!(!metadata.is_cancellable);
+        assert!(!metadata.is_abstract);
+
+        let linked = LinkedSpace::new();
+        let host = NullHost;
+        let metadata = event_class_metadata(&linked, &host, event_class).unwrap();
+        assert!(metadata.is_mod_bus);
+        assert!(!metadata.is_abstract);
+        assert!(is_mod_bus_event_class(event_class));
+
+        assert!(validate_event_bus(&BusId::Mod("mekanism".into()), event_class, metadata.is_mod_bus).is_ok());
+        assert!(validate_event_bus(&BusId::Game, event_class, metadata.is_mod_bus)
+            .unwrap_err()
+            .contains("IModBusEvent"));
     }
 
     #[test]
