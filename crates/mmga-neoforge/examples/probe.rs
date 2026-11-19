@@ -265,7 +265,9 @@ fn scan_zip_classes(
         if file.is_dir() {
             continue;
         }
-        let name = file.name().to_owned();
+        let name = file.name()
+            .map_err(|error| format!("{label}: entry {idx} has an invalid name: {error}"))?
+            .into_owned();
         if name.split('/').any(|seg| seg == "..") {
             continue;
         }

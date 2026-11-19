@@ -115,7 +115,9 @@ impl ModJar {
             if file.is_dir() {
                 continue;
             }
-            let entry_name = file.name().trim_start_matches('/').to_owned();
+            let entry_name = file.name()
+                .map_err(|error| format!("{}: zip entry #{idx} has an invalid name: {error}", self.source_name))?
+                .trim_start_matches('/').to_owned();
             // Reject path traversal
             if entry_name.split('/').any(|seg| seg == "..") {
                 continue;
