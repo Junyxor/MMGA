@@ -3,7 +3,7 @@
 
 use mmga_runtime::{Data, ExecCtx, HostApi, LinkedSpace, Rt, V};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// NeoForge `EventPriority` ordinals (`HIGHEST = 0` .. `LOWEST = 4`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -1333,6 +1333,16 @@ impl EventBusEngine {
             *map.entry(l.event_class.clone()).or_insert(0) += 1;
         }
         map
+    }
+
+    /// Exact classes bound on the game bus, regardless of whether their native
+    /// engine hook is present in the currently executing host.
+    pub fn game_listener_events(&self) -> BTreeSet<String> {
+        self.listeners
+            .iter()
+            .filter(|listener| listener.bus == BusId::Game)
+            .map(|listener| listener.event_class.clone())
+            .collect()
     }
 
     /// Validates bus/event compatibility per NeoForge `EventBus` rules and registers the listener.

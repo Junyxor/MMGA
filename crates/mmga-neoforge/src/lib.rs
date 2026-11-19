@@ -38,6 +38,8 @@ pub mod deferred_holders;
 pub mod deferred_items;
 pub mod deferred_registers;
 pub mod loader;
+pub mod host_world;
+pub mod native_world_calls;
 pub mod logging_markers;
 pub mod loot_functions;
 pub mod minecraft;

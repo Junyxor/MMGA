@@ -1,5 +1,7 @@
-//! Authoritative Rust World, BlockState, Entity, Player, and ItemStack Simulation State
-//! exposed natively to NeoForge mods (and synchronized with Horizon's server/engine hooks).
+//! Diagnostic world model used by the standalone probe.
+//!
+//! Native Horizon callbacks use `host_world::HostWorld` instead. This model is
+//! not a Minecraft world engine and its counters do not prove real gameplay.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

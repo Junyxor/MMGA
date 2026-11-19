@@ -117,15 +117,26 @@ pub struct ImcEntry {
     pub node: V,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServerLifecycle {
+    Loading, Ready, AboutToStart, Starting, Running, Ticking, Stopping, Stopped, Failed,
+}
+
 /// NeoForge `FML` / `ModLoader` host. Owns [`NeoForgeState`] and the bus handles mods see.
 #[derive(Debug)]
 pub struct FmlLoader {
     pub state: NeoForgeState,
+    /// Synchronous real-world endpoint supplied only during a native callback.
+    pub host_world: Option<Box<dyn crate::host_world::HostWorld>>,
+    /// Native execution must not fall back to the probe's synthetic world API.
+    pub native_world_required: bool,
     pub phase: LoadPhase,
     pub mods: Vec<LoadedMod>,
     pub dedicated_server: bool,
     /// Phase labels in the order `bootstrap` entered them.
     pub trace: Vec<&'static str>,
+    server_lifecycle: ServerLifecycle,
+    tick_watermark: Option<u32>,
     game_bus: Option<V>,
     mod_buses: BTreeMap<String, V>,
     mod_containers: BTreeMap<String, V>,
@@ -238,10 +249,14 @@ impl PreparedLoad {
         linked.add_bytecode_classes(classes);
         let mut loader = FmlLoader {
             state: NeoForgeState::new(),
+            host_world: None,
+            native_world_required: false,
             phase: LoadPhase::Discovered,
             mods,
             dedicated_server,
             trace: Vec::new(),
+            server_lifecycle: ServerLifecycle::Loading,
+            tick_watermark: None,
             game_bus: None,
             mod_buses: BTreeMap::new(),
             mod_containers: BTreeMap::new(),
@@ -271,6 +286,16 @@ impl FmlLoader {
 
     /// Constructs mods and advances through server start.
     pub fn bootstrap(&mut self, rt: &mut Rt, linked: &LinkedSpace) -> Result<(), String> {
+        self.load_mods(rt, linked)?;
+        self.server_about_to_start(rt, linked)?;
+        self.server_starting(rt, linked)?;
+        self.server_started(rt, linked)
+    }
+
+    /// Loads through FMLLoadComplete, without pretending a game server has started.
+    pub fn load_mods(&mut self, rt: &mut Rt, linked: &LinkedSpace) -> Result<(), String> {
+        self.require_server_lifecycle(ServerLifecycle::Loading)?;
+        self.server_lifecycle = ServerLifecycle::Failed;
         crate::blocks::bootstrap_planks(rt, &mut self.state.registries);
         raise_if_pending(rt, "bootstrapping vanilla planks")?;
         crate::dust_particles::bootstrap(rt, &mut self.state.registries);
@@ -328,12 +353,28 @@ impl FmlLoader {
             "net/neoforged/fml/event/lifecycle/FMLLoadCompleteEvent",
         )?;
         self.enter(LoadPhase::LoadComplete);
+        self.server_lifecycle = ServerLifecycle::Ready;
+        Ok(())
+    }
 
-        self.post_game(
-            rt,
-            linked,
+    /// Forwards the real host's about-to-start event exactly once.
+    pub fn server_about_to_start(&mut self, rt: &mut Rt, linked: &LinkedSpace) -> Result<(), String> {
+        if self.server_lifecycle == ServerLifecycle::Stopped {
+            // Registrations live for the process; a later world gets a fresh server.
+            self.state.world = crate::WorldState::new();
+            self.state.commands = crate::BrigadierTree::default();
+            self.tick_watermark = None;
+            self.server_lifecycle = ServerLifecycle::Ready;
+        }
+        self.dispatch_server_stage(rt, linked, ServerLifecycle::Ready, ServerLifecycle::AboutToStart,
             "net/neoforged/neoforge/event/server/ServerAboutToStartEvent",
-        )?;
+        )
+    }
+
+    /// Forwards server starting and builds the Java command tree at that point.
+    pub fn server_starting(&mut self, rt: &mut Rt, linked: &LinkedSpace) -> Result<(), String> {
+        self.require_server_lifecycle(ServerLifecycle::AboutToStart)?;
+        self.server_lifecycle = ServerLifecycle::Failed;
         self.post_game(
             rt,
             linked,
@@ -344,13 +385,56 @@ impl FmlLoader {
             linked,
             "net/neoforged/neoforge/event/RegisterCommandsEvent",
         )?;
-        self.post_game(
-            rt,
-            linked,
+        self.server_lifecycle = ServerLifecycle::Starting;
+        Ok(())
+    }
+
+    /// Forwards server started only when the host has actually opened its worlds.
+    pub fn server_started(&mut self, rt: &mut Rt, linked: &LinkedSpace) -> Result<(), String> {
+        self.dispatch_server_stage(rt, linked, ServerLifecycle::Starting, ServerLifecycle::Running,
             "net/neoforged/neoforge/event/server/ServerStartedEvent",
         )?;
         self.enter(LoadPhase::ServerStarted);
         self.enter(LoadPhase::Running);
+        Ok(())
+    }
+
+    fn require_server_lifecycle(&self, expected: ServerLifecycle) -> Result<(), String> {
+        if self.server_lifecycle != expected {
+            return Err(format!("server lifecycle expected {expected:?}, found {:?}", self.server_lifecycle));
+        }
+        Ok(())
+    }
+
+    fn dispatch_server_stage(
+        &mut self, rt: &mut Rt, linked: &LinkedSpace, expected: ServerLifecycle,
+        next: ServerLifecycle, event: &str,
+    ) -> Result<(), String> {
+        self.require_server_lifecycle(expected)?;
+        // A callback can have partial effects. Failed dispatch cannot be retried as if nothing ran.
+        self.server_lifecycle = ServerLifecycle::Failed;
+        self.post_game(rt, linked, event)?;
+        self.server_lifecycle = next;
+        Ok(())
+    }
+
+    /// Starts the Java pre-tick event at the authoritative host's pre-tick boundary.
+    pub fn server_tick_pre(&mut self, rt: &mut Rt, linked: &LinkedSpace) -> Result<(), String> {
+        self.require_server_lifecycle(ServerLifecycle::Running)?;
+        self.tick_watermark = Some(rt.enter_young_epoch());
+        self.dispatch_server_stage(rt, linked, ServerLifecycle::Running, ServerLifecycle::Ticking,
+            "net/neoforged/neoforge/event/tick/ServerTickEvent$Pre")
+    }
+
+    /// Completes a matched host tick; the local counter remains diagnostic modeled state.
+    pub fn server_tick_post(&mut self, rt: &mut Rt, linked: &LinkedSpace) -> Result<(), String> {
+        self.require_server_lifecycle(ServerLifecycle::Ticking)?;
+        self.server_lifecycle = ServerLifecycle::Failed;
+        self.state.world.tick();
+        self.post_game(rt, linked, "net/neoforged/neoforge/event/tick/ServerTickEvent$Post")?;
+        let watermark = self.tick_watermark.take().expect("pre-tick sets the GC watermark");
+        let _ = rt.collect_young(watermark, &[]);
+        self.server_lifecycle = ServerLifecycle::Running;
         Ok(())
     }
 
@@ -362,32 +446,27 @@ impl FmlLoader {
         ticks: u32,
     ) -> Result<(), String> {
         for _ in 0..ticks {
-            let watermark = rt.enter_young_epoch();
-            self.post_game(
-                rt,
-                linked,
-                "net/neoforged/neoforge/event/tick/ServerTickEvent$Pre",
-            )?;
-            self.state.world.tick();
-            self.post_game(
-                rt,
-                linked,
-                "net/neoforged/neoforge/event/tick/ServerTickEvent$Post",
-            )?;
-            let _ = rt.collect_young(watermark, &[]);
+            self.server_tick_pre(rt, linked)?;
+            self.server_tick_post(rt, linked)?;
         }
         Ok(())
     }
 
     pub fn stop_server(&mut self, rt: &mut Rt, linked: &LinkedSpace) -> Result<(), String> {
-        self.post_game(
-            rt,
-            linked,
+        self.server_stopping(rt, linked)?;
+        self.server_stopped(rt, linked)
+    }
+
+    /// Forwards the real host's stopping event without prematurely posting stopped.
+    pub fn server_stopping(&mut self, rt: &mut Rt, linked: &LinkedSpace) -> Result<(), String> {
+        self.dispatch_server_stage(rt, linked, ServerLifecycle::Running, ServerLifecycle::Stopping,
             "net/neoforged/neoforge/event/server/ServerStoppingEvent",
-        )?;
-        self.post_game(
-            rt,
-            linked,
+        )
+    }
+
+    /// Completes shutdown after the real host has stopped.
+    pub fn server_stopped(&mut self, rt: &mut Rt, linked: &LinkedSpace) -> Result<(), String> {
+        self.dispatch_server_stage(rt, linked, ServerLifecycle::Stopping, ServerLifecycle::Stopped,
             "net/neoforged/neoforge/event/server/ServerStoppedEvent",
         )?;
         self.enter(LoadPhase::Stopped);
@@ -1606,6 +1685,10 @@ impl FmlLoader {
                 Some(V::Void)
             }
             ("net/minecraft/server/level/ServerLevel", "setBlock") => {
+                if self.native_world_required {
+                    return Some(rt.throw_exception("java/lang/UnsupportedOperationException",
+                        "Native Horizon requires the real Level.setBlock(BlockPos,BlockState,int) API"));
+                }
                 let x = args.first().copied().unwrap_or(V::I(0)).i();
                 let y = args.get(1).copied().unwrap_or(V::I(0)).i();
                 let z = args.get(2).copied().unwrap_or(V::I(0)).i();
@@ -1864,6 +1947,13 @@ impl HostApi for FmlLoader {
         is_static: bool,
         args: &[V],
     ) -> Option<V> {
+        if let Some(world) = self.host_world.as_deref_mut() {
+            if let Some(value) = crate::native_world_calls::call(
+                rt, &self.state.registries, world, member, is_static, args,
+            ) {
+                return Some(value);
+            }
+        }
         if let Some(value)=imc_events::call(self,rt,linked,member,is_static,args) {return Some(value);}
         if let Some(value) = crate::command_items::call_context(rt, &self.state.registries, member, is_static, args) {
             return Some(value);
@@ -3176,6 +3266,29 @@ side = "CLIENT"
         let jar = ModJar::from_path(&jar_path).unwrap();
         let _ = std::fs::remove_dir_all(jar_path.parent().unwrap());
 
+        let mut staged = PreparedLoad::from_jars(vec![jar.clone()], true).unwrap();
+        let mut staged_rt = Rt::new();
+        staged.loader.load_mods(&mut staged_rt, &staged.linked).unwrap();
+        assert_eq!(staged.loader.phase, LoadPhase::LoadComplete);
+        let lines = staged_rt.get_static("com/example/pulse/PulseLog", "LINES").unwrap();
+        assert_eq!(staged_rt.value_to_string(lines), "[common-setup]");
+        assert_eq!(staged.loader.state.world.get_block(&BlockCoord::overworld(0, 64, 0)), "minecraft:air");
+        let posted = staged.loader.state.bus.events_posted;
+        assert!(staged.loader.server_started(&mut staged_rt, &staged.linked).is_err());
+        assert!(staged.loader.server_tick_pre(&mut staged_rt, &staged.linked).is_err());
+        assert!(staged.loader.load_mods(&mut staged_rt, &staged.linked).is_err());
+        assert_eq!(staged.loader.state.bus.events_posted, posted, "invalid order must not execute callbacks");
+        staged.loader.server_about_to_start(&mut staged_rt, &staged.linked).unwrap();
+        staged.loader.server_starting(&mut staged_rt, &staged.linked).unwrap();
+        assert_eq!(staged_rt.value_to_string(lines), "[common-setup]");
+        assert_eq!(staged.loader.state.world.get_block(&BlockCoord::overworld(0, 64, 0)), "minecraft:air");
+        staged.loader.server_started(&mut staged_rt, &staged.linked).unwrap();
+        assert_eq!(staged_rt.value_to_string(lines), "[common-setup, server-started]");
+        assert_eq!(staged.loader.state.world.get_block(&BlockCoord::overworld(0, 64, 0)), "pulse:pulse_block");
+        let posted = staged.loader.state.bus.events_posted;
+        assert!(staged.loader.server_started(&mut staged_rt, &staged.linked).is_err());
+        assert_eq!(staged.loader.state.bus.events_posted, posted, "duplicate host events cannot redispatch");
+
         let mut prepared = PreparedLoad::from_jars(vec![jar], true).unwrap();
         assert_eq!(prepared.loader.mods.len(), 1);
         assert_eq!(prepared.loader.mods[0].mod_id, "pulse");
@@ -3198,6 +3311,9 @@ side = "CLIENT"
             ]
         );
         assert!(prepared.loader.mods[0].instance.is_some());
+        assert_eq!(staged.loader.trace, prepared.loader.trace);
+        assert_eq!(staged.loader.state.bus.events_posted, prepared.loader.state.bus.events_posted);
+        assert_eq!(staged.loader.state.bus.callbacks_invoked, prepared.loader.state.bus.callbacks_invoked);
 
         let block = prepared
             .loader
@@ -3240,6 +3356,34 @@ side = "CLIENT"
             .stop_server(&mut rt, &prepared.linked)
             .unwrap();
         assert_eq!(prepared.loader.phase, LoadPhase::Stopped);
+        staged.loader.server_tick_pre(&mut staged_rt, &staged.linked).unwrap();
+        assert_eq!(staged.loader.state.world.game_time, 0, "pre-tick is before the host's world tick");
+        let posted = staged.loader.state.bus.events_posted;
+        assert!(staged.loader.server_tick_pre(&mut staged_rt, &staged.linked).is_err());
+        assert_eq!(staged.loader.state.bus.events_posted, posted);
+        staged.loader.server_tick_post(&mut staged_rt, &staged.linked).unwrap();
+        assert_eq!(staged.loader.state.world.game_time, 1);
+        assert!(staged.loader.server_tick_post(&mut staged_rt, &staged.linked).is_err());
+        staged.loader.server_stopping(&mut staged_rt, &staged.linked).unwrap();
+        assert_eq!(staged.loader.phase, LoadPhase::Running, "stopping does not falsely report stopped");
+        assert!(staged.loader.server_tick_pre(&mut staged_rt, &staged.linked).is_err());
+        staged.loader.server_stopped(&mut staged_rt, &staged.linked).unwrap();
+        assert_eq!(staged.loader.phase, LoadPhase::Stopped);
+        assert!(staged.loader.server_stopped(&mut staged_rt, &staged.linked).is_err());
+        let original_block = staged.loader.state.registries.lookup("block", "pulse:pulse_block").unwrap().value;
+        let listeners = staged.loader.state.bus.listener_count();
+        staged.loader.server_about_to_start(&mut staged_rt, &staged.linked).unwrap();
+        assert_eq!(staged.loader.state.world.game_time, 0);
+        assert_eq!(staged.loader.state.world.get_block(&BlockCoord::overworld(0, 64, 0)), "minecraft:air");
+        staged.loader.server_starting(&mut staged_rt, &staged.linked).unwrap();
+        staged.loader.server_started(&mut staged_rt, &staged.linked).unwrap();
+        let reopened_lines = staged_rt.get_static("com/example/pulse/PulseLog", "LINES").unwrap();
+        assert_eq!(staged_rt.value_to_string(reopened_lines), "[common-setup, server-started, server-started]");
+        assert_eq!(staged.loader.state.registries.lookup("block", "pulse:pulse_block").unwrap().value, original_block);
+        assert_eq!(staged.loader.state.bus.listener_count(), listeners);
+        staged.loader.tick_server(&mut staged_rt, &staged.linked, 1).unwrap();
+        assert_eq!(staged.loader.state.world.game_time, 1);
+        staged.loader.stop_server(&mut staged_rt, &staged.linked).unwrap();
 
         assert!(
             rt.telemetry.unmapped_calls.is_empty(),
