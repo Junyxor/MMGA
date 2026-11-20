@@ -51,3 +51,39 @@ horizon-launcher native-build <extracted-source-folder> --instance <test-instanc
 The `.hmod` carries dependency pins and feature selections matching that Nightly's prebuilt registry graph. The shared ZIP dependency was upgraded to **9.1.3** because the earlier 2.2.2 dependency introduced a fuzzing-only `arbitrary/derive` edge that Horizon correctly refused. ZIP filename decoding errors now propagate through both the JAR reader and the probe. The core's declared Rust minimum is **1.88**; native builds use the SDK's newer managed toolchain. The minimum version itself was not independently tested.
 
 `horizon-launcher play` requires the operator's Minecraft-owning Microsoft account. Signing in and an actual world run are the remaining manual validation steps; native-build success alone is not a gameplay acceptance result. The historical 17-group probe result must not be presented as a Horizon mod-compatibility result.
+
+## Opt-in source-built 1.21.1 host package
+
+The default command above still produces the same reviewed 26.3 archive. A separate,
+explicit package target is available for the locally tested 1.21.1 Horizon port:
+
+```powershell
+python tools/package_horizon.py --game-version 1.21.1 `
+  --host-revision 0b14f8acfd97fa2c750e42795249dcc981178ca4 `
+  --source-revision 2d97cd7e77ae2f7dc9d36d387554cc00cdbca714 `
+  --sdk-rustc 1.98.0 --sdk-target x86_64-pc-windows-msvc `
+  --output target/horizon-mod/mmga-horizon-1.21.1-dev.hmod `
+  --stage-dir target/horizon-mod/stage-1.21.1
+```
+
+These values are distinct: `--host-revision` is the native host's **embedded ABI
+identity**, while `--source-revision` records the port's source HEAD. This host was
+built with Rust **1.98.0/MSVC**. It is not the published Nightly's **1.99.1/GNU** SDK,
+and this package does not claim compatibility with that launcher build route.
+Changing any identity requires another reviewed target; arbitrary revisions,
+compiler versions and target triples are refused. The SDK path in the package
+remains a build input supplied by the matching source-built host. The source-only
+archive contains no SDK, native library, game resource or Java mod JAR.
+
+The packager first validates the canonical 26.3 manifest pins. It then changes only
+the selected archive's host game, target metadata, exact registration-version check
+and runtime status. The checkout's 26.3 Rust source is unchanged. Source drift that
+removes or duplicates the reviewed version check is refused; the 1.21.1 artifact
+continues to reject every other host game version. Metadata is not used to bypass
+the registration gate or the host's native build-identity checks.
+
+The actual local 1.21.1 host fixture has exercised the supported lifecycle and
+propertyless vanilla block read/write bridge. This does not establish guest
+registry registration, payload networking or broad NeoForge-mod compatibility.
+Those existing refusals remain in place. A 1.21.1 package target is an explicit
+host build selection, not a promise that arbitrary NeoForge 1.21.1 mods will run.

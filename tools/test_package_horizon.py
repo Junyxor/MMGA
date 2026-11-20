@@ -11,6 +11,80 @@ import package_horizon as package
 
 
 class NativePackageTests(unittest.TestCase):
+    def test_default_target_remains_the_reviewed_26_3_package(self):
+        files = package.collect()
+        manifest = tomllib.loads(files["horizon-mod.toml"].decode())
+        self.assertEqual(manifest["native"]["game"], "26.3")
+        for name in ("horizon-mod.toml", "src/config.rs", "src/runtime.rs"):
+            self.assertEqual(files[name], (package.ROOT / "horizon" / name).read_bytes())
+        self.assertEqual(package.archive(files), package.archive(package.collect()))
+
+    def test_explicit_1_21_1_target_changes_the_archive_gate_without_changing_sources(self):
+        before = {
+            name: (package.ROOT / "horizon/src" / name).read_bytes()
+            for name in ("config.rs", "runtime.rs")
+        }
+        files = package.collect(
+            game_version="1.21.1",
+            host_revision=package.PIN,
+            source_revision="2d97cd7e77ae2f7dc9d36d387554cc00cdbca714",
+            sdk_rustc="1.98.0",
+            sdk_target="x86_64-pc-windows-msvc",
+        )
+        manifest = tomllib.loads(files["horizon-mod.toml"].decode())
+        self.assertEqual(manifest["native"], {"game": "1.21.1", "horizon": package.PIN, "mixins": package.MIXINS})
+        self.assertEqual(manifest["properties"]["host_source_revision"], "2d97cd7e77ae2f7dc9d36d387554cc00cdbca714")
+        self.assertEqual(manifest["properties"]["host_rustc"], "1.98.0")
+        self.assertEqual(manifest["properties"]["host_target"], "x86_64-pc-windows-msvc")
+        self.assertIn(b'context.game_version() != "1.21.1"', files["src/config.rs"])
+        self.assertNotIn(b'context.game_version() != "26.3"', files["src/config.rs"])
+        self.assertIn(b"targets Horizon game 1.21.1", files["src/config.rs"])
+        self.assertIn(b"virtual Minecraft 1.21.1 / Horizon 1.21.1", files["src/runtime.rs"])
+        for name, data in before.items():
+            self.assertEqual((package.ROOT / "horizon/src" / name).read_bytes(), data)
+        package.validate(files)
+
+    def test_1_21_1_target_refuses_missing_or_unreviewed_host_identities(self):
+        reviewed = dict(
+            game_version="1.21.1", host_revision=package.PIN,
+            source_revision="2d97cd7e77ae2f7dc9d36d387554cc00cdbca714",
+            sdk_rustc="1.98.0", sdk_target="x86_64-pc-windows-msvc",
+        )
+        for key in ("host_revision", "source_revision", "sdk_rustc", "sdk_target"):
+            missing = dict(reviewed)
+            missing.pop(key)
+            with self.subTest(missing=key), self.assertRaises(ValueError):
+                package.collect(**missing)
+        for key, wrong in (
+            ("host_revision", "f" * 40), ("source_revision", "f" * 40),
+            ("sdk_rustc", "1.99.1"), ("sdk_target", "x86_64-pc-windows-gnu"),
+            ("game_version", "1.21.4"),
+        ):
+            invalid = dict(reviewed)
+            invalid[key] = wrong
+            with self.subTest(field=key), self.assertRaises(ValueError):
+                package.collect(**invalid)
+
+    def test_1_21_1_target_refuses_source_gate_drift_instead_of_broadening_support(self):
+        target = package.PackageTarget.select(
+            "1.21.1", package.PIN, package.DEV_SOURCE_REVISION,
+            package.DEV_RUSTC, package.DEV_TARGET,
+        )
+        baseline = {
+            name: (package.ROOT / "horizon" / name).read_bytes()
+            for name in ("horizon-mod.toml", "src/config.rs", "src/runtime.rs")
+        }
+        for original in (
+            baseline["src/config.rs"].replace(b'context.game_version() != "26.3"', b'true'),
+            baseline["src/config.rs"] + b'\n// context.game_version() != "26.3"\n',
+        ):
+            files = dict(baseline)
+            files["src/config.rs"] = original
+            with self.subTest(source=original[-50:]), self.assertRaises(ValueError):
+                target.adapt(files, tomllib.loads(files["horizon-mod.toml"].decode()))
+        with self.assertRaises(ValueError):
+            package.collect(host_revision=package.PIN)
+
     def test_collect_packages_three_original_crates_and_registry_lock(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

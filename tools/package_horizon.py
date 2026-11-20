@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -25,6 +26,61 @@ CRATES = ("mmga-classfile", "mmga-runtime", "mmga-neoforge")
 SDK_PATH = ".horizon/sdk/api/crates/horizon-mod-api"
 PIN = "0b14f8acfd97fa2c750e42795249dcc981178ca4"
 MIXINS = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"
+DEV_SOURCE_REVISION = "2d97cd7e77ae2f7dc9d36d387554cc00cdbca714"
+DEV_RUSTC = "1.98.0"
+DEV_TARGET = "x86_64-pc-windows-msvc"
+
+
+@dataclass(frozen=True)
+class PackageTarget:
+    game: str = "26.3"
+    host_revision: str = PIN
+    source_revision: str | None = None
+    sdk_rustc: str | None = None
+    sdk_target: str | None = None
+
+    @classmethod
+    def select(cls, game_version: str, host_revision: str | None, source_revision: str | None,
+               sdk_rustc: str | None, sdk_target: str | None) -> PackageTarget:
+        if game_version == "26.3":
+            if any(value is not None for value in (host_revision, source_revision, sdk_rustc, sdk_target)):
+                raise ValueError("26.3 uses its reviewed published SDK; development host options require --game-version 1.21.1")
+            return cls()
+        if game_version != "1.21.1":
+            raise ValueError(f"unsupported Horizon game target {game_version!r}")
+        if (host_revision, source_revision, sdk_rustc, sdk_target) != (PIN, DEV_SOURCE_REVISION, DEV_RUSTC, DEV_TARGET):
+            raise ValueError(
+                "1.21.1 requires the explicitly reviewed development host: "
+                f"--host-revision {PIN} --source-revision {DEV_SOURCE_REVISION} "
+                f"--sdk-rustc {DEV_RUSTC} --sdk-target {DEV_TARGET}; "
+                "source HEAD, embedded ABI identity and published SDK toolchain are distinct"
+            )
+        return cls(game_version, host_revision, source_revision, sdk_rustc, sdk_target)
+
+    def adapt(self, files: dict[str, bytes], manifest: dict) -> None:
+        if self.game == "26.3":
+            return
+
+        def replace_once(path: str, before: bytes, after: bytes) -> None:
+            original = files[path]
+            if original.count(before) != 1:
+                raise ValueError(f"{path}: reviewed version gate changed; expected exactly one {before!r}")
+            files[path] = original.replace(before, after)
+
+        # Adapt only the archive's reviewed copy. The checkout remains the
+        # strict 26.3 adapter, and a 1.21.1 package remains strict to 1.21.1.
+        replace_once("src/config.rs", b'context.game_version() != "26.3"', b'context.game_version() != "1.21.1"')
+        replace_once("src/config.rs", b"MMGA native bridge targets Horizon game 26.3", b"MMGA native bridge targets Horizon game 1.21.1")
+        replace_once("src/runtime.rs", b"virtual Minecraft 1.21.1 / Horizon 26.3", b"virtual Minecraft 1.21.1 / Horizon 1.21.1")
+        manifest["native"]["game"] = self.game
+        manifest.setdefault("properties", {}).update({
+            "host_source_revision": self.source_revision,
+            "host_abi_revision": self.host_revision,
+            "host_rustc": self.sdk_rustc,
+            "host_target": self.sdk_target,
+            "host_build_kind": "development-source-msvc",
+        })
+        files["horizon-mod.toml"] = cargo_toml(manifest)
 
 
 def scalar(value: object) -> str:
@@ -148,7 +204,10 @@ def standalone(original: dict, workspace: dict, owner: str, root: bool = False) 
     return manifest
 
 
-def collect(root: Path = ROOT) -> dict[str, bytes]:
+def collect(root: Path = ROOT, *, game_version: str = "26.3", host_revision: str | None = None,
+            source_revision: str | None = None, sdk_rustc: str | None = None,
+            sdk_target: str | None = None) -> dict[str, bytes]:
+    target = PackageTarget.select(game_version, host_revision, source_revision, sdk_rustc, sdk_target)
     workspace = tomllib.loads(source_bytes(root / "Cargo.toml").decode())["workspace"]
     adapter = root / "horizon"
     text = source_bytes(adapter / "horizon-mod.toml")
@@ -183,6 +242,7 @@ def collect(root: Path = ROOT) -> dict[str, bytes]:
     for name in ("README.md", "LICENSE", "NOTICE.md"):
         if (adapter / name).exists():
             files[name] = source_bytes(adapter / name)
+    target.adapt(files, manifest)
     validate(files)
     return files
 
@@ -234,9 +294,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "target/horizon-mod/mmga.hmod")
     parser.add_argument("--stage-dir", type=Path, help="also write the identical source tree for official validation")
+    parser.add_argument("--game-version", choices=("26.3", "1.21.1"), default="26.3",
+                        help="host game target (default: reviewed published 26.3 SDK)")
+    parser.add_argument("--host-revision", help="embedded native host ABI identity; required for the 1.21.1 development target")
+    parser.add_argument("--source-revision", help="reviewed 1.21.1 host source HEAD, separate from its embedded ABI identity")
+    parser.add_argument("--sdk-rustc", help="compiler release of the reviewed source-built host")
+    parser.add_argument("--sdk-target", help="target triple of the reviewed source-built host")
     args = parser.parse_args()
     try:
-        files = collect()
+        files = collect(game_version=args.game_version, host_revision=args.host_revision,
+                        source_revision=args.source_revision, sdk_rustc=args.sdk_rustc, sdk_target=args.sdk_target)
         data = archive(files)
         if args.stage_dir:
             if args.stage_dir.exists() and any(args.stage_dir.iterdir()):
@@ -249,7 +316,12 @@ def main() -> int:
         partial = args.output.with_suffix(".hmod.partial")
         partial.write_bytes(data)
         partial.replace(args.output)
-        print(json.dumps({"package": str(args.output.resolve()), "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data), "files": len(files), "horizon": PIN}, indent=2))
+        result = {"package": str(args.output.resolve()), "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data), "files": len(files), "horizon": PIN}
+        if args.game_version != "26.3":
+            result.update(game=args.game_version, host_abi_revision=args.host_revision,
+                          host_source_revision=args.source_revision, host_rustc=args.sdk_rustc,
+                          host_target=args.sdk_target, host_build_kind="development-source-msvc")
+        print(json.dumps(result, indent=2))
         return 0
     except (OSError, ValueError, KeyError, tomllib.TOMLDecodeError) as error:
         print(f"package_horizon: {error}", file=sys.stderr)
