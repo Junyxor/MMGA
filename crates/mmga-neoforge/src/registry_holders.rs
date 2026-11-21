@@ -140,10 +140,19 @@ impl RegistryStore {
     /// stable lifecycle. Exposing this configuration does not materialize the
     /// missing vanilla values or claim complete enumeration/protocol IDs.
     pub fn ensure_builtin_block_registry(&mut self, rt: &mut Rt) -> V {
-        const BLOCK_REGISTRY: &str = "minecraft:block";
+        self.ensure_builtin_intrusive_registry(rt, "minecraft:block")
+    }
+
+    /// ITEM uses the same default-air intrusive registration contract as BLOCK.
+    /// Configuring that contract does not populate absent vanilla item values.
+    pub fn ensure_builtin_item_registry(&mut self, rt: &mut Rt) -> V {
+        self.ensure_builtin_intrusive_registry(rt, "minecraft:item")
+    }
+
+    fn ensure_builtin_intrusive_registry(&mut self, rt: &mut Rt, registry: &str) -> V {
         if let Some(config) = self
             .reference_states
-            .get(BLOCK_REGISTRY)
+            .get(registry)
             .and_then(|state| state.config.as_ref())
         {
             return config.handle;
@@ -153,9 +162,9 @@ impl RegistryStore {
             "net/minecraft/core/DefaultedMappedRegistry",
             "registry",
             0,
-            BLOCK_REGISTRY,
+            registry,
         );
-        let state = self.reference_states.entry(BLOCK_REGISTRY.into()).or_default();
+        let state = self.reference_states.entry(registry.into()).or_default();
         state.config = Some(ReferenceConfig {
             intrusive: true,
             default_key: Some("minecraft:air".into()),

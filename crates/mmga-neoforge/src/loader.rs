@@ -8,7 +8,7 @@
 
 use crate::{
     dispatch_event_on_bus, BusId, ContentProperties, DeferredSupplier,
-    EventCallback, EventPriority, NeoForgeState, REGISTRATION_ORDER,
+    EventCallback, EventPriority, NeoForgeState, RegistryStore, REGISTRATION_ORDER,
 };
 use mmga_classfile::{
     op, parse_method_descriptor, resolve_mod_load_order, version_in_range, ClassFile,
@@ -240,11 +240,14 @@ impl PreparedLoad {
         }
 
         let mut linked = LinkedSpace::new();
+        crate::basic_items::register_types(&mut linked);
         crate::direction::register_types(&mut linked);
         crate::interaction_hand::register_types(&mut linked);
         crate::rarity::register_types(&mut linked);
+        crate::rotation::register_types(&mut linked);
         crate::particle_types::register_types(&mut linked);
         crate::dust_particles::register_types(&mut linked);
+        crate::shapes::register_types(&mut linked);
         linked.services = services;
         linked.add_bytecode_classes(classes);
         let mut loader = FmlLoader {
@@ -712,7 +715,7 @@ impl FmlLoader {
                 invoke_closure(&mut ctx, item.supplier, &[])
             };
             raise_if_pending(rt, &format!("registering `{}`", item.full_id))?;
-            let props = content_properties(rt, &item.registry_key, value);
+            let props = content_properties(rt, &self.state.registries, &item.registry_key, value);
             self.state.registries.register_direct(
                 rt,
                 &item.registry_key,
@@ -1726,6 +1729,12 @@ impl HostApi for FmlLoader {
         {
             return Some(self.state.registries.ensure_builtin_block_registry(rt));
         }
+        if owner == "net/minecraft/core/registries/BuiltInRegistries"
+            && name == "ITEM"
+            && desc == "Lnet/minecraft/core/DefaultedRegistry;"
+        {
+            return Some(self.state.registries.ensure_builtin_item_registry(rt));
+        }
         if owner == "net/neoforged/neoforge/common/NeoForge" && name == "EVENT_BUS" {
             return Some(self.game_bus_handle(rt));
         }
@@ -1816,6 +1825,9 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::rarity::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
+        if let Some(value) = crate::rotation::get_static_field(rt, owner, name, desc) {
+            return Some(value);
+        }
         if let Some(value) = crate::particle_types::get_static_field(
             rt,
             &mut self.state.registries,
@@ -1832,6 +1844,9 @@ impl HostApi for FmlLoader {
             name,
             desc,
         ) {
+            return Some(value);
+        }
+        if let Some(value) = crate::shapes::get_static_field(rt, owner, name, desc) {
             return Some(value);
         }
         if let Some(value) = crate::blocks::get_static_field(rt, &mut self.state.registries, owner, name, desc) {
@@ -2073,8 +2088,26 @@ impl HostApi for FmlLoader {
                 return Some(value);
             }
         }
+        {
+            let mut ctx = ExecCtx { rt, linked, host: self, depth: 0 };
+            if let Some(value) = crate::shapes::call(&mut ctx, member, is_static, args) {
+                return Some(value);
+            }
+        }
+        if let Some(value) = crate::rotation::call(rt, member, is_static, args) {
+            return Some(value);
+        }
+        if let Some(value) = crate::direction_ops::call(rt, member, is_static, args) {
+            return Some(value);
+        }
         if let Some(value) = crate::blocks::call(rt, &mut self.state.registries, member, is_static, args) {
             return Some(value);
+        }
+        {
+            let mut ctx = ExecCtx { rt, linked, host: self, depth: 0 };
+            if let Some(value) = crate::basic_items::call(&mut ctx, member, is_static, args) {
+                return Some(value);
+            }
         }
         if let Some(value) = crate::dust_particles::call(rt, &mut self.state.registries, member, is_static, args) {
             return Some(value);
@@ -2260,6 +2293,11 @@ impl HostApi for FmlLoader {
         if let Some(value) = crate::codecs::call(rt, linked, self, member, is_static, args) {
             return Some(value);
         }
+        if let Some(value) = crate::payloads::call(
+            rt, &mut self.state.network, self.constructing.as_deref(), member, is_static, args,
+        ) {
+            return Some(value);
+        }
         if let Some(value) = crate::minecraft::call_network_and_codecs(
             rt,
             linked,
@@ -2351,7 +2389,7 @@ impl HostApi for FmlLoader {
                     if rt.pending_exception.is_some() {
                         return Some(V::Void);
                     }
-                    let props = content_properties(rt, &reg_key, val);
+                    let props = content_properties(rt, &self.state.registries, &reg_key, val);
                     self.state
                         .registries
                         .register_direct(rt, &reg_key, &id_str, &ns, val, props);
@@ -2496,6 +2534,12 @@ impl HostApi for FmlLoader {
             return true;
         }
         if crate::direction::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::shapes::is_subtype(sub_class, super_class) {
+            return true;
+        }
+        if crate::rotation::is_subtype(sub_class, super_class) {
             return true;
         }
         if crate::interaction_hand::is_subtype(sub_class, super_class) {
@@ -2807,7 +2851,7 @@ fn instance_field(rt: &Rt, obj: V, name: &str) -> Option<V> {
     }
 }
 
-fn content_properties(rt: &Rt, registry: &str, value: V) -> ContentProperties {
+fn content_properties(rt: &Rt, registries: &RegistryStore, registry: &str, value: V) -> ContentProperties {
     let kind = if registry.ends_with("block") {
         "block"
     } else if registry.contains("item") {
@@ -2815,19 +2859,38 @@ fn content_properties(rt: &Rt, registry: &str, value: V) -> ContentProperties {
     } else {
         "object"
     };
-    let block_properties = instance_field(rt, value, "properties");
+    let properties = instance_field(rt, value, "properties");
+    let property = |name| properties.and_then(|props| instance_field(rt, props, name));
+    let state = instance_field(rt, value, "defaultBlockState");
+    let state_field = |name| state.and_then(|state| instance_field(rt, state, name));
+    let block_for_item = instance_field(rt, value, "block").and_then(|block| {
+        let mut matches = registries.entries.get("minecraft:block")?.values()
+            .filter(|entry| !block.is_null() && entry.value == block);
+        let entry = matches.next()?;
+        matches.next().is_none().then(|| entry.id.clone())
+    });
     ContentProperties {
         kind: kind.into(),
         template: rt.class_of(value).unwrap_or(kind).to_owned(),
-        hardness: block_properties
-            .and_then(|props| instance_field(rt, props, "destroyTime"))
+        hardness: state_field("destroySpeed")
             .or_else(|| instance_field(rt, value, "hardness"))
             .map(V::f),
         resistance: instance_field(rt, value, "explosionResistance")
+            .or_else(|| property("explosionResistance"))
             .or_else(|| instance_field(rt, value, "resistance"))
             .map(V::f),
         max_stack_size: instance_field(rt, value, "maxStackSize").map(|v| v.i()),
-        ..ContentProperties::default()
+        max_damage: instance_field(rt, value, "maxDamage").map(V::i),
+        friction: instance_field(rt, value, "friction").or_else(|| property("friction")).map(V::f),
+        light_level: state_field("lightEmission").map(V::i),
+        no_occlusion: property("canOcclude").is_some_and(|v| v == V::FALSE),
+        requires_correct_tool: property("requiresCorrectToolForDrops") == Some(V::TRUE),
+        random_ticks: property("isRandomlyTicking") == Some(V::TRUE),
+        rarity: instance_field(rt, value, "rarity")
+            .and_then(|rarity| instance_field(rt, rarity, "name"))
+            .and_then(|name| rt.str_of(name)).map(str::to_owned),
+        fire_resistant: instance_field(rt, value, "fireResistant") == Some(V::TRUE),
+        block_for_item,
     }
 }
 

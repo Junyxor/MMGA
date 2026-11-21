@@ -929,7 +929,7 @@ pub fn call_network_and_codecs(
     member: &MemberRef,
     is_static: bool,
     args: &[V],
-    extract_net: impl FnOnce(&mut dyn mmga_runtime::HostApi) -> (&mut crate::NetworkStore, Option<String>),
+    _extract_net: impl FnOnce(&mut dyn mmga_runtime::HostApi) -> (&mut crate::NetworkStore, Option<String>),
 ) -> Option<V> {
     let owner = member.owner.as_str();
     let name = member.name.as_str();
@@ -1028,72 +1028,6 @@ pub fn call_network_and_codecs(
         };
     }
 
-    // 4. `RegisterPayloadHandlersEvent` & `PayloadRegistrar`
-    if owner == "net/neoforged/neoforge/network/event/RegisterPayloadHandlersEvent"
-        && !is_static
-        && name == "registrar"
-    {
-        let version = rt.str_of(*args.get(1)?)?.to_owned();
-        let (_, cur_mod) = extract_net(host);
-        let ns = cur_mod.unwrap_or_else(|| "minecraft".into());
-        let reg = rt.new_instance(
-            "net/neoforged/neoforge/network/registration/PayloadRegistrar",
-            0,
-        );
-        let ns_v = rt.new_str(ns);
-        let ver_v = rt.new_str(version);
-        rt.put_field(reg, "$ns", ns_v);
-        rt.put_field(reg, "$ver", ver_v);
-        return Some(reg);
-    }
-
-    if owner == "net/neoforged/neoforge/network/registration/PayloadRegistrar" && !is_static {
-        let recv = *args.first()?;
-        return match name {
-            "versioned" => {
-                let ver_v = *args.get(1)?;
-                let next = rt.new_instance(owner, 0);
-                let ns_v = rt.get_field(recv, "$ns");
-                rt.put_field(next, "$ns", ns_v);
-                rt.put_field(next, "$ver", ver_v);
-                Some(next)
-            }
-            "optional" | "executesOn" => Some(recv),
-            "playToServer"
-            | "playToClient"
-            | "playBidirectional"
-            | "configurationToServer"
-            | "configurationToClient"
-            | "configurationBidirectional"
-            | "commonToServer"
-            | "commonToClient"
-            | "commonBidirectional" => {
-                let ns = rt
-                    .str_of(rt.get_field(recv, "$ns"))
-                    .unwrap_or("minecraft")
-                    .to_owned();
-                let ver = rt
-                    .str_of(rt.get_field(recv, "$ver"))
-                    .unwrap_or("1")
-                    .to_owned();
-                let type_obj = *args.get(1)?;
-                let payload_id = loc_str(rt, rt.get_field(type_obj, "id"))
-                    .unwrap_or_else(|| format!("{ns}:unknown"));
-                let handler = args.get(3).copied().unwrap_or(V::NULL);
-                let dir = if name.ends_with("ToServer") {
-                    "play_to_server"
-                } else if name.ends_with("ToClient") {
-                    "play_to_client"
-                } else {
-                    "bidirectional"
-                };
-                let (net, _) = extract_net(host);
-                net.register_channel(rt, ns, ver, payload_id, dir, handler);
-                Some(recv)
-            }
-            _ => None,
-        };
-    }
 
     None
 }

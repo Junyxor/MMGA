@@ -374,7 +374,33 @@ pub struct RegisteredPayloadChannel {
     pub protocol_version: String,
     pub payload_id: String,
     pub direction: &'static str, // "play_to_server", "play_to_client", "bidirectional"
+    /// The retained guest codec, not a claim that the channel has a native transport.
+    pub codec: V,
     pub handler_closure: V,
+    pub protocol: PayloadProtocol,
+    pub flow: PayloadFlow,
+    pub optional: bool,
+    pub handler_thread: PayloadHandlerThread,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayloadProtocol {
+    Play,
+    Configuration,
+    Common,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayloadFlow {
+    ToServer,
+    ToClient,
+    Bidirectional,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayloadHandlerThread {
+    Main,
+    Network,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -399,8 +425,24 @@ impl NetworkStore {
             protocol_version: protocol_version.into(),
             payload_id: payload_id.into(),
             direction,
+            codec: V::NULL,
             handler_closure,
+            protocol: PayloadProtocol::Play,
+            flow: match direction {
+                "play_to_server" => PayloadFlow::ToServer,
+                "play_to_client" => PayloadFlow::ToClient,
+                _ => PayloadFlow::Bidirectional,
+            },
+            optional: false,
+            handler_thread: PayloadHandlerThread::Main,
         });
+    }
+
+    /// Preserve the actual registration operands until a transport can execute them.
+    pub fn register_payload(&mut self, rt: &mut Rt, channel: RegisteredPayloadChannel) {
+        rt.pin(channel.codec);
+        rt.pin(channel.handler_closure);
+        self.channels.push(channel);
     }
 
     pub fn send(&mut self, payload_id: impl Into<String>, bytes: Vec<u8>) {

@@ -1,5 +1,35 @@
 # 未修改 NeoForge 模组的兼容性记录
 
+## 2026-11-21 增量检查点
+
+本次只重新推进 Mekanism，并验证下列共用 API；下面的 17 组矩阵仍是
+2026-11-18 的完整测试集记录，没有把未重跑的结果冒充本轮结果。
+
+- 工作区回归：**379 项通过**（classfile 9 / runtime 51 / NeoForge 319），
+  3 项需要本地游戏 JAR 的 oracle 测试默认忽略，已由专用工具另行执行通过。
+- 新增 `Block.box`、VoxelShape 合并/边界/移动/碰撞、Rotation 和 Direction
+  值变换。使用操作者持有的真实 Minecraft 1.21.1 JAR 对照：16 组方框输入、
+  1,024 组布尔合并、1,176 组碰撞、8 组移动/优化与引用身份、196 组整数旋转，
+  以及全部旋转组合和六方向变换。可重复入口为
+  `tools/test_shapes_parity.py --classpath-file PATH --java JAVA --javac JAVAC`。
+- Mekanism 10.7.19.85 的原始 JAR 已越过形状、Rotation 和 Direction 阻塞；
+  下一处是 `EnumProperty.create(String, Class)`，位置
+  `AttributeStateBoilerValveMode.<clinit>`。仍停在 Discovered，构造未完成，
+  0 登记项、9 配置、26 监听器；注册、setup、tick、玩法和渲染均未到达。
+  原始日志保留在 `.local/shapes1211-evidence/mekanism-direction.log`。
+- PayloadRegistrar 保留不可变修饰器、协议/方向/线程、实际编码器和处理器；
+  4 项行为测试执行真实字节往返、GC 后闭包及处理器、错误传播和注册拒绝。
+  本轮注册语义独立核对到官方 NeoForge **21.1.248** 字节码；21.1.266 的
+  官方 Maven 连接超时，不能宣称其注册语义已完成独立核验。
+  编解码器测试不是网络传输测试，Horizon 仍拒绝 guest 网络通道。
+- 基础 Item/BlockItem 构造保留属性快照和原 Block 引用，ITEM 注册表使用
+  默认 air 的 intrusive holder 配置。新增类不代表自定义 Java 子类已经可玩。
+
+Horizon 侧的实际世界验证和限制单独记录在 [Horizon 接入记录](horizon-integration.md)。
+未做相同硬件、相同 Mod 和相同玩法负载下的官方 NeoForge 对照，不宣称性能提升。
+
+## 历史完整测试集：2026-11-18
+
 这是 **独立探针** 的历史完整测试集检查点，不能作为 Horizon 玩法兼容结论。2026-11-19 新增的 Horizon `.hmod`、官方原生构建和验证边界见 [Horizon 接入记录](horizon-integration.md)。当前核心已因 ZIP 9.1.3 将声明的 Rust 最低版本改为 1.88；下面的 1.83 仅指当时检查点，未单独验证。
 
 验证日期：**2026-11-18**；平台：Windows x86_64；目标为 **Minecraft 1.21.1 / NeoForge 21.1.266**。
