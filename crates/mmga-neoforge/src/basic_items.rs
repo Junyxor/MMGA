@@ -252,6 +252,40 @@ mod tests {
     }
 
     #[test]
+    fn invalid_item_signatures_cannot_fall_back_to_legacy_success() {
+        let mut prepared = PreparedLoad::from_jars(Vec::new(), true).unwrap();
+        let mut rt = Rt::new();
+        let props = rt.new_instance(PROPERTIES, 0);
+        let item = rt.new_instance(ITEM, 0);
+        let mut ctx = ExecCtx {
+            rt: &mut rt,
+            linked: &prepared.linked,
+            host: &mut prepared.loader,
+            depth: 0,
+        };
+        invoke(&mut ctx, ITEM, "<init>", "()V", &[item]);
+        let exception = ctx.rt.take_exception().expect("unsupported constructor");
+        assert!(ctx
+            .rt
+            .exception_summary(exception)
+            .contains("UnsupportedOperationException"));
+        invoke(&mut ctx, PROPERTIES, "<init>", "()V", &[props]);
+        invoke(
+            &mut ctx,
+            PROPERTIES,
+            "stacksTo",
+            &format!("(J)L{PROPERTIES};"),
+            &[props, V::J(12)],
+        );
+        let exception = ctx.rt.take_exception().expect("unsupported overload");
+        assert!(ctx
+            .rt
+            .exception_summary(exception)
+            .contains("UnsupportedOperationException"));
+        assert_eq!(ctx.rt.get_field(props, "maxStackSize"), V::I(64));
+    }
+
+    #[test]
     fn durable_item_validation_matches_vanilla_and_does_not_invent_a_fallback() {
         let mut prepared = PreparedLoad::from_jars(Vec::new(), true).unwrap();
         let mut rt = Rt::new();

@@ -5,7 +5,7 @@
 本次只重新推进 Mekanism，并验证下列共用 API；下面的 17 组矩阵仍是
 2026-11-18 的完整测试集记录，没有把未重跑的结果冒充本轮结果。
 
-- 工作区回归：**379 项通过**（classfile 9 / runtime 51 / NeoForge 319），
+- 工作区回归：**380 项通过**（classfile 9 / runtime 51 / NeoForge 320），
   3 项需要本地游戏 JAR 的 oracle 测试默认忽略，已由专用工具另行执行通过。
 - 新增 `Block.box`、VoxelShape 合并/边界/移动/碰撞、Rotation 和 Direction
   值变换。使用操作者持有的真实 Minecraft 1.21.1 JAR 对照：16 组方框输入、
@@ -23,7 +23,9 @@
   官方 Maven 连接超时，不能宣称其注册语义已完成独立核验。
   编解码器测试不是网络传输测试，Horizon 仍拒绝 guest 网络通道。
 - 基础 Item/BlockItem 构造保留属性快照和原 Block 引用，ITEM 注册表使用
-  默认 air 的 intrusive holder 配置。新增类不代表自定义 Java 子类已经可玩。
+  默认 air 的 intrusive holder 配置。删除旧的按方法名接收 Item 构造器与
+  stacksTo 的分支；错误签名必须报错，不能通过旧入口伪装成功。
+  新增类不代表自定义 Java 子类已经可玩。
 
 Horizon 侧的实际世界验证和限制单独记录在 [Horizon 接入记录](horizon-integration.md)。
 未做相同硬件、相同 Mod 和相同玩法负载下的官方 NeoForge 对照，不宣称性能提升。

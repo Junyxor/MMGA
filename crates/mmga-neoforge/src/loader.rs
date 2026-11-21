@@ -1673,20 +1673,6 @@ impl FmlLoader {
                 }
                 Some(V::Void)
             }
-            ("net/minecraft/world/item/Item$Properties", "<init>") => Some(V::Void),
-            ("net/minecraft/world/item/Item$Properties", "stacksTo") => {
-                let count = args.get(1).copied().unwrap_or(V::I(64));
-                rt.put_field(args[0], "maxStackSize", count);
-                Some(args[0])
-            }
-            ("net/minecraft/world/item/Item", "<init>") => {
-                if let Some(props) = args.get(1).copied() {
-                    if let Some(count) = instance_field(rt, props, "maxStackSize") {
-                        rt.put_field(args[0], "maxStackSize", count);
-                    }
-                }
-                Some(V::Void)
-            }
             ("net/minecraft/server/level/ServerLevel", "setBlock") => {
                 if self.native_world_required {
                     return Some(rt.throw_exception("java/lang/UnsupportedOperationException",
