@@ -1,0 +1,263 @@
+{
+  "commit": "5be16a611796a74a36a1a0ff5ebbf59ea80e6e6d",
+  "groups": [
+    {
+      "group": "mekanism",
+      "exit": 1,
+      "log": "verified-5be16a6-mekanism.log",
+      "result": [
+        "opened Mekanism-1.21.1-10.7.19.85.jar in 495.1855ms classes=2975 mods=mekanism nested=[]",
+        "load order: mekanism@10.7.19 entry=mekanism/common/Mekanism",
+        "BOOTSTRAP FAILED at Discovered (trace=[\"discovered\"], mod_entries=0, configs=9, listeners=26): constructing mod `mekanism` (mekanism/common/Mekanism): java.lang.UnsupportedOperationException: MMGA does not implement `net/minecraft/world/level/block/Block.box.(DDDDDD)Lnet/minecraft/world/phys/shapes/VoxelShape;` (at mekanism.common.content.blocktype.BlockShapes.box)",
+        "loader_checkpoint last_completed_phase=discovered scope=entire-mod-set per_mod_registration_setup_callbacks=not-tracked",
+        "  mod_state id=mekanism entry=mekanism/common/Mekanism instance_present=false construction=not-completed-or-not-reached",
+        "degraded=false loading_issues=0",
+        "probe_result=failed operation=bootstrap modeled_tick=not-started"
+      ]
+    },
+    {
+      "group": "create",
+      "exit": 1,
+      "log": "verified-5be16a6-create.log",
+      "result": [
+        "opened create-1.21.1-6.0.10.jar in 737.8125ms classes=3805 mods=create nested=[\"META-INF/jarjar/Registrate-MC1.21-1.3.0+67.jar\", \"META-INF/jarjar/flywheel-neoforge-1.21.1-1.0.6.jar\", \"META-INF/jarjar/ponder-neoforge-1.0.82+mc1.21.1.jar\"]",
+        "load order: ponder@1.0.82+mc1.21.1 entry=net/createmod/ponder/NeoForgePonder, create@6.0.10 entry=com/simibubi/create/Create",
+        "BOOTSTRAP FAILED at Discovered (trace=[\"discovered\"], mod_entries=12, configs=1, listeners=89): constructing mod `create` (com/simibubi/create/Create): java.lang.UnsupportedOperationException: MMGA does not implement `GETSTATIC net/minecraft/tags/BlockTags.DRIPSTONE_REPLACEABLE:Lnet/minecraft/tags/TagKey;` (at com.simibubi.create.foundation.data.CreateRegistrate.paletteStoneBlock)",
+        "loader_checkpoint last_completed_phase=discovered scope=entire-mod-set per_mod_registration_setup_callbacks=not-tracked",
+        "  mod_state id=ponder entry=net/createmod/ponder/NeoForgePonder instance_present=true construction=completed",
+        "  mod_state id=create entry=com/simibubi/create/Create instance_present=false construction=not-completed-or-not-reached",
+        "degraded=false loading_issues=0",
+        "probe_result=failed operation=bootstrap modeled_tick=not-started"
+      ]
+    },
+    {
+      "group": "ysm",
+      "exit": 0,
+      "log": "verified-5be16a6-ysm.log",
+      "result": [
+        "opened ysm-2.6.5-neoforge+mc1.21.1-release.jar in 821.5801ms classes=933 mods=yes_steve_model nested=[]",
+        "load order: yes_steve_model@2.6.5-neoforge+mc1.21.1 entry=com/elfmcys/yesstevemodel/YesSteveModel",
+        "bootstrap returned Ok phase=Running trace=[\"discovered\", \"constructed\", \"registered\", \"common-setup\", \"sided-setup\", \"load-complete\", \"server-started\", \"running\"] mod_entries=0 configs=0 channels=0 commands=1 listeners=15 loading_issues=1 events_posted=31 callbacks=5 unmapped=0",
+        "loader_checkpoint last_completed_phase=running scope=entire-mod-set per_mod_registration_setup_callbacks=not-tracked",
+        "  mod_state id=yes_steve_model entry=com/elfmcys/yesstevemodel/YesSteveModel instance_present=true construction=completed",
+        "degraded=true loading_issues=1",
+        "tick_server(1) returned Ok game_time=1",
+        "probe_result=ok operation=modeled-lifecycle-and-one-tick"
+      ]
+    },
+    {
+      "group": "ponder",
+      "exit": 0,
+      "log": "verified-5be16a6-ponder.log",
+      "result": [
+        "opened ponder-neoforge-1.0.82+mc1.21.1.jar in 52.1866ms classes=470 mods=ponder nested=[]",
+        "load order: ponder@1.0.82+mc1.21.1 entry=net/createmod/ponder/NeoForgePonder",
+        "bootstrap returned Ok phase=Running trace=[\"discovered\", \"constructed\", \"registered\", \"common-setup\", \"sided-setup\", \"load-complete\", \"server-started\", \"running\"] mod_entries=1 configs=1 channels=0 commands=3 listeners=5 loading_issues=0 events_posted=32 callbacks=2 unmapped=0",
+        "loader_checkpoint last_completed_phase=running scope=entire-mod-set per_mod_registration_setup_callbacks=not-tracked",
+        "  mod_state id=ponder entry=net/createmod/ponder/NeoForgePonder instance_present=true construction=completed",
+        "degraded=false loading_issues=0",
+        "tick_server(1) returned Ok game_time=1",
+        "probe_result=ok operation=modeled-lifecycle-and-one-tick"
+      ]
+    },
+    {
+      "group": "jade",
+      "exit": 1,
+      "log": "verified-5be16a6-jade.log",
+      "result": [
+        "opened Jade-1.21.1-NeoForge-15.10.6.jar in 39.1759ms classes=301 mods=jade nested=[]",
+        "load order: jade@15.10.6+neoforge entry=snownee/jade/util/CommonProxy",
+        "BOOTSTRAP FAILED at Registered (trace=[\"discovered\", \"constructed\", \"registered\"], mod_entries=0, configs=0, listeners=4): dispatching `net/neoforged/neoforge/network/event/RegisterPayloadHandlersEvent`: java.lang.UnsupportedOperationException: MMGA does not implement complete global Block.BLOCK_STATE_REGISTRY and protocol IDs (at snownee.jade.impl.BlockAccessorImpl$SyncData.<clinit>)",
+        "loader_checkpoint last_completed_phase=registered scope=entire-mod-set per_mod_registration_setup_callbacks=not-tracked",
+        "  mod_state id=jade entry=snownee/jade/util/CommonProxy instance_present=true construction=completed",
+        "degraded=false loading_issues=0",
+        "probe_result=failed operation=bootstrap modeled_tick=not-started"
+      ]
+    },
+    {
+      "group": "curios",
+      "exit": 0,
+      "log": "verified-5be16a6-curios.log",
+      "result": [
+        "opened curios-neoforge-9.5.1+1.21.1.jar in 21.5371ms classes=152 mods=curios nested=[]",
+        "load order: curios@9.5.1+1.21.1 entry=top/theillusivec4/curios/Curios",
+        "bootstrap returned Ok phase=Running trace=[\"discovered\", \"constructed\", \"registered\", \"common-setup\", \"sided-setup\", \"load-complete\", \"server-started\", \"running\"] mod_entries=6 configs=3 channels=17 commands=1 listeners=21 loading_issues=0 events_posted=39 callbacks=6 unmapped=0",
+        "loader_checkpoint last_completed_phase=running scope=entire-mod-set per_mod_registration_setup_callbacks=not-tracked",
+        "  mod_state id=curios entry=top/theillusivec4/curios/Curios instance_present=true construction=completed",
+        "degraded=false loading_issues=0",
+        "tick_server(1) returned Ok game_time=1",
+        "probe_result=ok operation=modeled-lifecycle-and-one-tick"
+      ]
+    },
+    {
+      "group": "waystones-balm",
+      "exit": 1,
+      "log": "verified-5be16a6-waystones-balm.log",
+      "result": [
+        "opened balm-neoforge-1.21.1-21.0.67.jar in 47.9226ms classes=605 mods=balm nested=[\"META-INF/jarjar/kuma-api-neoforge-21.0.8+1.21.jar\"]",
+        "opened waystones-neoforge-1.21.1-21.1.47.jar in 42.594ms classes=387 mods=waystones nested=[]",
+        "load order: balm@21.0.67 entry=net/blay09/mods/balm/neoforge/NeoForgeBalm, waystones@21.1.47 entry=net/blay09/mods/waystones/NeoForgeWaystones",
+        "BOOTSTRAP FAILED at Discovered (trace=[\"discovered\"], mod_entries=0, configs=0, listeners=0): constructing mod `balm` (net/blay09/mods/balm/neoforge/NeoForgeBalm): java.lang.UnsupportedOperationException: MMGA does not implement `com/google/common/collect/Tables.synchronizedTable.(Lcom/google/common/collect/Table;)Lcom/google/common/collect/Table;` (at net.blay09.mods.balm.neoforge.event.NeoForgeBalmEvents.<init>)",
+        "loader_checkpoint last_completed_phase=discovered scope=entire-mod-set per_mod_registration_setup_callbacks=not-tracked",
+        "  mod_state id=balm entry=net/blay09/mods/balm/neoforge/NeoForgeBalm instance_present=false construction=not-completed-or-not-reached",
+        "  mod_state id=waystones entry=net/blay09/mods/waystones/NeoForgeWaystones instance_present=false construction=not-completed-or-not-reached",
+        "degraded=false loading_issues=0",
+        "probe_result=failed operation=bootstrap modeled_tick=not-started"
+      ]
+    },
+    {
+      "group": "balm",
+      "exit": 1,
+      "log": "verified-5be16a6-balm.log",
+      "result": [
+        "opened balm-neoforge-1.21.1-21.0.67.jar in 52.2887ms classes=605 mods=balm nested=[\"META-INF/jarjar/kuma-api-neoforge-21.0.8+1.21.jar\"]",
+        "load order: balm@21.0.67 entry=net/blay09/mods/balm/neoforge/NeoForgeBalm",
+        "BOOTSTRAP FAILED at Discovered (trace=[\"discovered\"], mod_entries=0, configs=0, listeners=0): constructing mod `balm` (net/blay09/mods/balm/neoforge/NeoForgeBalm): java.lang.UnsupportedOperationException: MMGA does not implement `com/google/common/collect/Tables.synchronizedTable.(Lcom/google/common/collect/Table;)Lcom/google/common/collect/Table;` (at net.blay09.mods.balm.neoforge.event.NeoForgeBalmEvents.<init>)",
+        "loader_checkpoint last_completed_phase=discovered scope=entire-mod-set per_mod_registration_setup_callbacks=not-tracked",
+        "  mod_state id=balm entry=net/blay09/mods/balm/neoforge/NeoForgeBalm instance_present=false construction=not-completed-or-not-reached",
+        "degraded=false loading_issues=0",
+        "probe_result=failed operation=bootstrap modeled_tick=not-started"
+      ]
+    },
+    {
+      "group": "backpacks-core",
+      "exit": 1,
+      "log": "verified-5be16a6-backpacks-core.log",
+      "result": [
+        "opened sophisticatedcore-1.21.1-1.5.38.2484.jar in 98.3477ms classes=851 mods=sophisticatedcore nested=[]",
+        "opened sophisticatedbackpacks-1.21.1-3.26.21.2249.jar in 47.1493ms classes=381 mods=sophisticatedbackpacks nested=[]",
+        "load order: sophisticatedcore@1.5.38 entry=net/p3pp3rf1y/sophisticatedcore/SophisticatedCore, sophisticatedbackpacks@3.26.21 entry=net/p3pp3rf1y/sophisticatedbackpacks/SophisticatedBackpacks",
+        "BOOTSTRAP FAILED at Constructed (trace=[\"discovered\", \"constructed\"], mod_entries=74, configs=4, listeners=50): registering `sophisticatedcore:xp_still`: java.lang.UnsupportedOperationException: BaseFlowingFluid construction requires an intrusive Fluid registry holder and executable subclass state-definition hooks; MMGA does not implement that constructor (at net.p3pp3rf1y.sophisticatedcore.init.ModFluids.lambda$static$0)",
+        "loader_checkpoint last_completed_phase=constructed scope=entire-mod-set per_mod_registration_setup_callbacks=not-tracked",
+        "  mod_state id=sophisticatedcore entry=net/p3pp3rf1y/sophisticatedcore/SophisticatedCore instance_present=true construction=completed",
+        "  mod_state id=sophisticatedbackpacks entry=net/p3pp3rf1y/sophisticatedbackpacks/SophisticatedBackpacks instance_present=true construction=completed",
+        "degraded=false loading_issues=0",
+        "probe_result=failed operation=bootstrap modeled_tick=not-started"
+      ]
+    },
+    {
+      "group": "core",
+      "exit": 1,
+      "log": "verified-5be16a6-core.log",
+      "result": [
+        "opened sophisticatedcore-1.21.1-1.5.38.2484.jar in 125.4008ms classes=851 mods=sophisticatedcore nested=[]",
+        "load order: sophisticatedcore@1.5.38 entry=net/p3pp3rf1y/sophisticatedcore/SophisticatedCore",
+        "BOOTSTRAP FAILED at Constructed (trace=[\"discovered\", \"constructed\"], mod_entries=63, configs=2, listeners=20): registering `sophisticatedcore:xp_still`: java.lang.UnsupportedOperationException: BaseFlowingFluid construction requires an intrusive Fluid registry holder and executable subclass state-definition hooks; MMGA does not implement that constructor (at net.p3pp3rf1y.sophisticatedcore.init.ModFluids.lambda$static$0)",
+        "loader_checkpoint last_completed_phase=constructed scope=entire-mod-set per_mod_registration_setup_callbacks=not-tracked",
+        "  mod_state id=sophisticatedcore entry=net/p3pp3rf1y/sophisticatedcore/SophisticatedCore instance_present=true construction=completed",
+        "degraded=false loading_issues=0",
+        "probe_result=failed operation=bootstrap modeled_tick=not-started"
+      ]
+    },
+    {
+      "group": "ae2-guideme",
+      "exit": 1,
+      "log": "verified-5be16a6-ae2-guideme.log",
+      "result": [
+        "opened guideme-21.1.22.jar in 517.2626ms classes=5113 mods=guideme nested=[]",
+        "opened appliedenergistics2-19.2.19.jar in 265.6053ms classes=1825 mods=ae2 nested=[]",
+        "load order: guideme@21.1.22 entry=guideme/internal/GuideME, ae2@19.2.19 entry=appeng/core/AppEngServer",
+        "BOOTSTRAP FAILED at Constructed (trace=[\"discovered\", \"constructed\"], mod_entries=37, configs=2, listeners=31): registering `ae2:flawless_budding_quartz`: java.lang.UnsupportedOperationException: MMGA does not implement `net/minecraft/world/level/block/state/properties/IntegerProperty.create.(Ljava/lang/String;II)Lnet/minecraft/world/level/block/state/properties/IntegerProperty;` (at appeng.api.orientation.IOrientationStrategy.<clinit>)",
+        "loader_checkpoint last_completed_phase=constructed scope=entire-mod-set per_mod_registration_setup_callbacks=not-tracked",
+        "  mod_state id=guideme entry=guideme/internal/GuideME instance_present=true construction=completed",
+        "  mod_state id=ae2 entry=appeng/core/AppEngServer instance_present=true construction=completed",
+        "degraded=false loading_issues=0",
+        "probe_result=failed operation=bootstrap modeled_tick=not-started"
+      ]
+    },
+    {
+      "group": "guideme",
+      "exit": 0,
+      "log": "verified-5be16a6-guideme.log",
+      "result": [
+        "opened guideme-21.1.22.jar in 487.766ms classes=5113 mods=guideme nested=[]",
+        "load order: guideme@21.1.22 entry=guideme/internal/GuideME",
+        "bootstrap returned Ok phase=Running trace=[\"discovered\", \"constructed\", \"registered\", \"common-setup\", \"sided-setup\", \"load-complete\", \"server-started\", \"running\"] mod_entries=4 configs=0 channels=1 commands=1 listeners=2 loading_issues=0 events_posted=32 callbacks=2 unmapped=0",
+        "loader_checkpoint last_completed_phase=running scope=entire-mod-set per_mod_registration_setup_callbacks=not-tracked",
+        "  mod_state id=guideme entry=guideme/internal/GuideME instance_present=true construction=completed",
+        "degraded=false loading_issues=0",
+        "tick_server(1) returned Ok game_time=1",
+        "probe_result=ok operation=modeled-lifecycle-and-one-tick"
+      ]
+    },
+    {
+      "group": "appleskin",
+      "exit": 0,
+      "log": "verified-5be16a6-appleskin.log",
+      "result": [
+        "opened appleskin-neoforge-mc1.21-3.0.9.jar in 6.9744ms classes=36 mods=appleskin nested=[]",
+        "load order: appleskin@3.0.9+mc1.21 entry=squeek/appleskin/AppleSkin",
+        "bootstrap returned Ok phase=Running trace=[\"discovered\", \"constructed\", \"registered\", \"common-setup\", \"sided-setup\", \"load-complete\", \"server-started\", \"running\"] mod_entries=0 configs=1 channels=2 commands=0 listeners=3 loading_issues=0 events_posted=31 callbacks=1 unmapped=0",
+        "loader_checkpoint last_completed_phase=running scope=entire-mod-set per_mod_registration_setup_callbacks=not-tracked",
+        "  mod_state id=appleskin entry=squeek/appleskin/AppleSkin instance_present=true construction=completed",
+        "degraded=false loading_issues=0",
+        "tick_server(1) returned Ok game_time=1",
+        "probe_result=ok operation=modeled-lifecycle-and-one-tick"
+      ]
+    },
+    {
+      "group": "ferritecore",
+      "exit": 0,
+      "log": "verified-5be16a6-ferritecore.log",
+      "result": [
+        "opened ferritecore-7.0.3-neoforge.jar in 11.0415ms classes=77 mods=ferritecore nested=[]",
+        "load order: ferritecore@7.0.3 entry=malte0811/ferritecore/ModMainForge",
+        "bootstrap returned Ok phase=Running trace=[\"discovered\", \"constructed\", \"registered\", \"common-setup\", \"sided-setup\", \"load-complete\", \"server-started\", \"running\"] mod_entries=0 configs=0 channels=0 commands=0 listeners=0 loading_issues=0 events_posted=31 callbacks=0 unmapped=0",
+        "loader_checkpoint last_completed_phase=running scope=entire-mod-set per_mod_registration_setup_callbacks=not-tracked",
+        "  mod_state id=ferritecore entry=malte0811/ferritecore/ModMainForge instance_present=true construction=completed",
+        "degraded=false loading_issues=0",
+        "tick_server(1) returned Ok game_time=1",
+        "probe_result=ok operation=modeled-lifecycle-and-one-tick"
+      ]
+    },
+    {
+      "group": "cloth",
+      "exit": 0,
+      "log": "verified-5be16a6-cloth.log",
+      "result": [
+        "opened cloth-config-15.0.140-neoforge.jar in 71.8764ms classes=633 mods=cloth_config nested=[]",
+        "load order: cloth_config@15.0.140 entry=me/shedaniel/clothconfig/ClothConfigForge",
+        "bootstrap returned Ok phase=Running trace=[\"discovered\", \"constructed\", \"registered\", \"common-setup\", \"sided-setup\", \"load-complete\", \"server-started\", \"running\"] mod_entries=0 configs=0 channels=0 commands=0 listeners=0 loading_issues=0 events_posted=31 callbacks=0 unmapped=0",
+        "loader_checkpoint last_completed_phase=running scope=entire-mod-set per_mod_registration_setup_callbacks=not-tracked",
+        "  mod_state id=cloth_config entry=me/shedaniel/clothconfig/ClothConfigForge instance_present=true construction=completed",
+        "degraded=false loading_issues=0",
+        "tick_server(1) returned Ok game_time=1",
+        "probe_result=ok operation=modeled-lifecycle-and-one-tick"
+      ]
+    },
+    {
+      "group": "clumps",
+      "exit": 0,
+      "log": "verified-5be16a6-clumps.log",
+      "result": [
+        "opened Clumps-neoforge-1.21.1-19.0.0.1.jar in 3.1792ms classes=15 mods=clumps nested=[]",
+        "load order: clumps@19.0.0.1 entry=com/blamejared/clumps/Clumps",
+        "bootstrap returned Ok phase=Running trace=[\"discovered\", \"constructed\", \"registered\", \"common-setup\", \"sided-setup\", \"load-complete\", \"server-started\", \"running\"] mod_entries=0 configs=0 channels=0 commands=0 listeners=0 loading_issues=0 events_posted=31 callbacks=0 unmapped=0",
+        "loader_checkpoint last_completed_phase=running scope=entire-mod-set per_mod_registration_setup_callbacks=not-tracked",
+        "  mod_state id=clumps entry=com/blamejared/clumps/Clumps instance_present=true construction=completed",
+        "degraded=false loading_issues=0",
+        "tick_server(1) returned Ok game_time=1",
+        "probe_result=ok operation=modeled-lifecycle-and-one-tick"
+      ]
+    },
+    {
+      "group": "original3",
+      "exit": 1,
+      "log": "verified-5be16a6-original3.log",
+      "result": [
+        "opened Mekanism-1.21.1-10.7.19.85.jar in 483.0894ms classes=2975 mods=mekanism nested=[]",
+        "opened create-1.21.1-6.0.10.jar in 662.0024ms classes=3805 mods=create nested=[\"META-INF/jarjar/Registrate-MC1.21-1.3.0+67.jar\", \"META-INF/jarjar/flywheel-neoforge-1.21.1-1.0.6.jar\", \"META-INF/jarjar/ponder-neoforge-1.0.82+mc1.21.1.jar\"]",
+        "opened ysm-2.6.5-neoforge+mc1.21.1-release.jar in 748.3714ms classes=933 mods=yes_steve_model nested=[]",
+        "load order: mekanism@10.7.19 entry=mekanism/common/Mekanism, ponder@1.0.82+mc1.21.1 entry=net/createmod/ponder/NeoForgePonder, yes_steve_model@2.6.5-neoforge+mc1.21.1 entry=com/elfmcys/yesstevemodel/YesSteveModel, create@6.0.10 entry=com/simibubi/create/Create",
+        "BOOTSTRAP FAILED at Discovered (trace=[\"discovered\"], mod_entries=0, configs=9, listeners=26): constructing mod `mekanism` (mekanism/common/Mekanism): java.lang.UnsupportedOperationException: MMGA does not implement `net/minecraft/world/level/block/Block.box.(DDDDDD)Lnet/minecraft/world/phys/shapes/VoxelShape;` (at mekanism.common.content.blocktype.BlockShapes.box)",
+        "loader_checkpoint last_completed_phase=discovered scope=entire-mod-set per_mod_registration_setup_callbacks=not-tracked",
+        "  mod_state id=mekanism entry=mekanism/common/Mekanism instance_present=false construction=not-completed-or-not-reached",
+        "  mod_state id=ponder entry=net/createmod/ponder/NeoForgePonder instance_present=false construction=not-completed-or-not-reached",
+        "  mod_state id=yes_steve_model entry=com/elfmcys/yesstevemodel/YesSteveModel instance_present=false construction=not-completed-or-not-reached",
+        "  mod_state id=create entry=com/simibubi/create/Create instance_present=false construction=not-completed-or-not-reached",
+        "degraded=false loading_issues=0",
+        "probe_result=failed operation=bootstrap modeled_tick=not-started"
+      ]
+    }
+  ]
+}

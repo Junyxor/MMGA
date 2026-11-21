@@ -1,0 +1,23 @@
+[package]
+name = "mmga-neoforge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Universal NeoForge API & FML mod loader implemented natively in Rust (EventBus, DeferredRegister, Capabilities, Attachments, ModConfigSpec, Brigadier, Network, Minecraft World/Entity/Item APIs)"
+
+[dependencies]
+mmga-classfile = { path = "../mmga-classfile" }
+mmga-runtime = { path = "../mmga-runtime" }
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+zip.workspace = true
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "host_throughput"
+harness = false

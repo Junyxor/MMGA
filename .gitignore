@@ -1,0 +1,11 @@
+/target
+**/*.rs.bk
+*.class
+*.jar
+*.hmod
+/.local
+/horizon/.horizon
+/horizon/target
+**/__pycache__/
+/dist/SHA256SUMS
+/tmp-*

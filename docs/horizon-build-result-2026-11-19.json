@@ -1,0 +1,34 @@
+{
+  "date": "2026-11-19",
+  "artifact": "mmga-0.1.0-horizon-2026-11-18.hmod",
+  "sha256": "e38bc1c8fd9892551cb32f9510c6193e4cc23afc4eeef7cce401d582a3050b76",
+  "bytes": 584542,
+  "files": 116,
+  "horizon": "0b14f8acfd97fa2c750e42795249dcc981178ca4",
+  "nightly": "nightly-2026-11-18-0b14f8a",
+  "native_build": "native-0b14f8a-71bfcf2f9683",
+  "native_build_target": "x86_64-pc-windows-gnu",
+  "toolchain": "1.99.1",
+  "official_package_reader": "accepted",
+  "official_native_build": "passed",
+  "workspace_tests": {
+    "classfile": 9,
+    "runtime": 51,
+    "neoforge": 308,
+    "total": 368,
+    "doc_tests": "passed"
+  },
+  "sdk_contract_tests": {
+    "passed": 2,
+    "game_started": false
+  },
+  "package_tests": {
+    "passed": 4
+  },
+  "sdk_clippy": {
+    "exit": 0,
+    "warnings": true
+  },
+  "in_game_world": "not validated: isolated Horizon launcher requires Microsoft account owning Minecraft",
+  "sdk_host_double": "used in contract tests; not a gameplay result"
+}
